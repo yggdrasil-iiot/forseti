@@ -85,7 +85,7 @@ Forseti is implemented twice, on Apache Flink and on Kafka Streams, behind the s
 - Reason: A hash match alone does not authenticate an approver.
 
 ### 15. Tools as child equipment
-- Decision: A tool is a child of its station in the ISA-95 hierarchy (contract 2.23.0); stations in a rule may not nest (`attribution.station-nested`); an incident on a tool is routed to the one station that is the tool's ancestor-or-self. An incident carries `stationRef`, which every revision must keep; a revision that changes it is rejected with the stage-2 disposition reason `station-change` and a new incident id is required.
+- Decision: A tool is a child of its station in the ISA-95 hierarchy (contract 2.23.0); stations in a rule may not nest (`attribution.station-nested`); an incident on a tool is routed to the one station that is the tool's ancestor-or-self. An incident carries `stationRef`, which every revision must keep; a revision that changes it is rejected with the stage-2 disposition reason `station-change` and a new incident id is required. Bifrost checks only the structure of the hierarchy, not which level may sit under which; in delivery steps 1 and 2 fixtures, a station is authored at ISA-95 level `WORKCELL_6` and a tool under it at `WORKUNIT_11`.
 - Reason: It reuses the published hierarchy and gives each incident exactly one station partition.
 - Consequence: Tools that move between stations are out of scope.
 
@@ -223,6 +223,7 @@ A wrong artifact ID prefix or `file.mediaType` fails with `*.binding-profile`; a
 
 - `sources[]` is a non-empty array of unique source strings; `kinds[]` is a non-empty array of unique incident kinds; Bifrost checks only that, and the job checks that its incident schema supports each kind.
 - `identity.pattern` must match the whole unit ID. Only the syntax common to Java and ECMA-262 is accepted: literals, `.`, bracket character classes with ranges and negation (no property or POSIX classes), the quantifiers `*`, `+`, `?`, `{m}`, `{m,}`, `{m,n}`, alternation `|`, and non-capturing groups `(?:…)`, and a backslash before a non-alphanumeric ASCII character as a literal. Lookaround, backreferences, flags, named and capturing groups, shorthand classes, lazy and possessive quantifiers, a bare `{` and the anchors `^` and `$` are refused (the match is already whole-string).
+- Under `*.binding-profile`, Bifrost refuses non-capturing groups nested deeper than 32 levels, UTF-16 surrogate code units written in the pattern (refusing supplementary characters because Java reads surrogate pairs as one code point and ECMA-262 without the `u` flag as two code units, so quantifiers repeat different things), and, with Java `Pattern.compile` as its last step, repetition bounds above 2147483647 and inverted ranges in bracket classes; Tyr mirrors these refusals.
 - Additional fields, empty values and unsupported syntax fail with `*.binding-profile`.
 
 ### Input events
