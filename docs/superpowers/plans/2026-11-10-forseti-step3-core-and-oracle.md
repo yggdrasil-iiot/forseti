@@ -42,8 +42,8 @@ Seven PRs in this order (owner decision Q1). Each has its own branch off the mer
 | `docs/superpowers/specs/2026-11-05-forseti-design.md` | **PR 0** - Task 1 insertions only (pins, reader path, step-3 interpretations); contracts and gate meaning unchanged |
 | `.gitattributes`, `.gitignore` | LF everywhere; `fixtures/** -text`, `vectors/** -text`, `schemas/** -text`, `core/src/main/resources/forseti/** -text`; ignore `target/`, `build/`, caches, private keys |
 | `.github/workflows/ci.yml` | Linux: ASCII names, dependency-closure check, `mvn -B -ntp install`, oracle `pytest`, `forseti gate --engine core` (exit 0), every control in `gate/core-negative-controls.json` (exit 1), the Bifrost seam job with pinned sibling checkouts; Windows: `mvn -B -ntp install` + oracle tests |
-| `scripts/check-ascii-names.sh`, `scripts/check-dependency-closure.sh` | the family's product-name check; `mvn dependency:tree` grep for banned groups (`dev.krillin.bifrost`, `org.apache.flink`, `org.apache.kafka`) |
-| `pom.xml`, `core/pom.xml`, `cli/pom.xml` | `forseti-parent` 0.1.0-SNAPSHOT (pins above); `forseti-core` (Jackson, JCS, networknt only); `forseti-cli` -> shaded `cli/target/forseti.jar`, main `dev.krillin.forseti.cli.Main` |
+| `scripts/check-ascii-names.sh`, `scripts/check-dependency-closure.sh` | the family's product-name check; `mvn dependency:tree` grep for banned groups (`yggdrasil.bifrost`, `org.apache.flink`, `org.apache.kafka`) |
+| `pom.xml`, `core/pom.xml`, `cli/pom.xml` | `forseti-parent` 0.1.0-SNAPSHOT (pins above); `forseti-core` (Jackson, JCS, networknt only); `forseti-cli` -> shaded `cli/target/forseti.jar`, main `yggdrasil.forseti.cli.Main` |
 | `core/src/main/resources/forseti/schemas/{occupancy,incident}-1.0.0.schema.json` | the two input schemas (spec 280-315); their raw-byte SHA-256 is the profiles' `format.schemaSha256` |
 | `schemas/{occupancy,incident}-1.0.0.schema.json` | the published copies at the root (what Tyr and Bifrost cite); a test asserts byte equality with the core resources |
 | `vectors/jcs-vectors.json` | the shared JCS vector file: inputs as JSON text, expected canonical text and SHA-256, refusal vectors |
@@ -292,7 +292,7 @@ core/src/main/resources/forseti/** -text
 <project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
          xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
   <modelVersion>4.0.0</modelVersion>
-  <groupId>dev.krillin.forseti</groupId>
+  <groupId>yggdrasil.forseti</groupId>
   <artifactId>forseti-parent</artifactId>
   <version>0.1.0-SNAPSHOT</version>
   <packaging>pom</packaging>
@@ -322,9 +322,9 @@ core/src/main/resources/forseti/** -text
 </project>
 ```
 
-`core/pom.xml`: parent above, `artifactId` `forseti-core`, dependencies `jackson-databind`, `java-json-canonicalization`, `json-schema-validator`, `junit-jupiter` (test); a comment at the top: "No Flink, no Kafka Streams, no Kafka client, no other Yggdrasil artifact: the adapters of steps 6-7 depend on this module, never the reverse." `cli/pom.xml`: `forseti-cli`, depends on `forseti-core` and `junit-jupiter`; shade bound to `package`, `finalName` `forseti`, `mainClass` `dev.krillin.forseti.cli.Main`.
+`core/pom.xml`: parent above, `artifactId` `forseti-core`, dependencies `jackson-databind`, `java-json-canonicalization`, `json-schema-validator`, `junit-jupiter` (test); a comment at the top: "No Flink, no Kafka Streams, no Kafka client, no other Yggdrasil artifact: the adapters of steps 6-7 depend on this module, never the reverse." `cli/pom.xml`: `forseti-cli`, depends on `forseti-core` and `junit-jupiter`; shade bound to `package`, `finalName` `forseti`, `mainClass` `yggdrasil.forseti.cli.Main`.
 
-- [ ] **Step 2.3** `scripts/check-dependency-closure.sh` (`set -euo pipefail`): `OUT="$(pwd)/build/deps.txt"; rm -f "$OUT"; mvn -B -ntp -q dependency:tree -DoutputFile="$OUT" -DappendOutput=true` (an absolute path, because a relative `outputFile` is resolved per module and the root file would hold only the parent's tree); then the file must exist and contain the two module headers `dev.krillin.forseti:forseti-core:` and `dev.krillin.forseti:forseti-cli:` (else exit 1, "incomplete tree"), and `grep -E "dev\.krillin\.(bifrost|tyr|vor|muninn)|org\.apache\.flink|org\.apache\.kafka"` over it must find nothing (prints `dependency closure: clean`, exit 1 otherwise). A Maven failure fails the script. Transitive dependencies are checked, not only imports.
+- [ ] **Step 2.3** `scripts/check-dependency-closure.sh` (`set -euo pipefail`): `OUT="$(pwd)/build/deps.txt"; rm -f "$OUT"; mvn -B -ntp -q dependency:tree -DoutputFile="$OUT" -DappendOutput=true` (an absolute path, because a relative `outputFile` is resolved per module and the root file would hold only the parent's tree); then the file must exist and contain the two module headers `yggdrasil.forseti:forseti-core:` and `yggdrasil.forseti:forseti-cli:` (else exit 1, "incomplete tree"), and `grep -E "yggdrasil\.(bifrost|tyr|vor|muninn)|org\.apache\.flink|org\.apache\.kafka"` over it must find nothing (prints `dependency closure: clean`, exit 1 otherwise). A Maven failure fails the script. Transitive dependencies are checked, not only imports.
 
 - [ ] **Step 2.4** `oracle/pyproject.toml`:
 
@@ -454,8 +454,8 @@ The gate and control steps fail until Task 9 adds the gate command and the manif
 
 **Files:**
 - Create: `vectors/jcs-vectors.json`
-- Create: `core/src/main/java/dev/krillin/forseti/core/canon/Canonical.java`, `core/src/main/java/dev/krillin/forseti/core/Json.java`
-- Create: `core/src/test/java/dev/krillin/forseti/core/canon/CanonicalVectorsTest.java`
+- Create: `core/src/main/java/yggdrasil/forseti/core/canon/Canonical.java`, `core/src/main/java/yggdrasil/forseti/core/Json.java`
+- Create: `core/src/test/java/yggdrasil/forseti/core/canon/CanonicalVectorsTest.java`
 - Create: `oracle/src/forseti_oracle/canon.py`, `oracle/tests/test_jcs_vectors.py`
 
 The vector file holds inputs as JSON *text* so each side parses with its own parser (Jackson, `json`) and canonicalizes with its own pinned library; the expected canonical text and SHA-256 are the same for both. Refusal vectors pin that both sides refuse what JCS cannot carry deterministically across the two libraries: a non-finite number and an integer outside `[-(2^53-1), 2^53-1]` (Python `rfc8785` raises `IntegerDomainError` there; the Java library would print it; forseti refuses before either library is reached, per Task 1's insertion at line 56), plus parser-level refusals (duplicate keys, invalid JSON) that both parsers must share.
@@ -494,7 +494,7 @@ After writing, add `"sha256"` to every vector: `python -I -` reading the file, c
 - [ ] **Step 3.2** `Json.java` (one Jackson mapper for the whole core; strict, no non-numeric numbers, duplicate keys refused, big integers kept until the domain check, pretty writer in Tyr's shape):
 
 ```java
-package dev.krillin.forseti.core;
+package yggdrasil.forseti.core;
 
 import com.fasterxml.jackson.core.JsonParser;
 import com.fasterxml.jackson.core.util.DefaultIndenter;
@@ -538,10 +538,10 @@ public final class Json {
 - [ ] **Step 3.3** `Canonical.java`:
 
 ```java
-package dev.krillin.forseti.core.canon;
+package yggdrasil.forseti.core.canon;
 
 import com.fasterxml.jackson.databind.JsonNode;
-import dev.krillin.forseti.core.Json;
+import yggdrasil.forseti.core.Json;
 import java.math.BigInteger;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
@@ -585,11 +585,11 @@ public final class Canonical {
 - [ ] **Step 3.4** `CanonicalVectorsTest.java` (red first: write it, run, see the compilation failure, then add the sources):
 
 ```java
-package dev.krillin.forseti.core.canon;
+package yggdrasil.forseti.core.canon;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.node.DoubleNode;
-import dev.krillin.forseti.core.Json;
+import yggdrasil.forseti.core.Json;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
 import org.junit.jupiter.api.*;
@@ -738,8 +738,8 @@ def test_vector_count_matches_java_side():
 
 **Files:**
 - Create: `schemas/occupancy-1.0.0.schema.json`, `schemas/incident-1.0.0.schema.json`, byte copies under `core/src/main/resources/forseti/schemas/`
-- Create: `core/src/main/java/dev/krillin/forseti/core/input/{Inputs,Ids,InputParser,StatusCodes}.java`
-- Create: `core/src/test/java/dev/krillin/forseti/core/input/{SchemaCopiesTest,InputParserTest,IdsTest}.java`
+- Create: `core/src/main/java/yggdrasil/forseti/core/input/{Inputs,Ids,InputParser,StatusCodes}.java`
+- Create: `core/src/test/java/yggdrasil/forseti/core/input/{SchemaCopiesTest,InputParserTest,IdsTest}.java`
 - Create: `oracle/src/forseti_oracle/inputs.py`, `oracle/tests/test_inputs.py`
 
 - [ ] **Step 4.1** `schemas/occupancy-1.0.0.schema.json` (spec 282-296; EPCIS field names; the spec's optionality kept exactly: every listed field is required unless the spec marks it otherwise (line 117), so `recordTime` (diagnostic) and `visitSeq` (correlation) are required; `arrivalEventId` is "departing events only", so it is required on a departure and must be absent on an arrival; `errorDeclaration` is the one optional field; no additional properties):
@@ -816,7 +816,7 @@ Write both pretty (two-space indent, trailing newline), copy byte for byte to `c
 - [ ] **Step 4.2** `Inputs.java` (records; every input carries its `Origin`):
 
 ```java
-package dev.krillin.forseti.core.input;
+package yggdrasil.forseti.core.input;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import java.util.List;
@@ -842,12 +842,12 @@ public final class Inputs {
 - [ ] **Step 4.3** `Ids.java` (identities as canonical bytes, spec 261, 267, 282, 300, 232-233):
 
 ```java
-package dev.krillin.forseti.core.input;
+package yggdrasil.forseti.core.input;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
-import dev.krillin.forseti.core.Json;
-import dev.krillin.forseti.core.canon.Canonical;
+import yggdrasil.forseti.core.Json;
+import yggdrasil.forseti.core.canon.Canonical;
 
 /** Semantic identities (spec Input events). Each is an ObjectNode in contract field order; `bytes` is its JCS form, used for
  *  ordering (spec 491) and as the ledger `identity`. `payloadDigest` is the JCS SHA-256 of the record value without the
@@ -898,8 +898,8 @@ public final class Ids {
 ### Task 5: Journal types: envelope, rows, deletes, progress, dispositions, revisions, fold
 
 **Files:**
-- Create: `core/src/main/java/dev/krillin/forseti/core/journal/{Envelope,Row,Delete,Pins,Progress,Disposition,Revisions,JournalFold}.java`
-- Create: `core/src/test/java/dev/krillin/forseti/core/journal/{RevisionsTest,DispositionsTest,JournalFoldTest}.java`
+- Create: `core/src/main/java/yggdrasil/forseti/core/journal/{Envelope,Row,Delete,Pins,Progress,Disposition,Revisions,JournalFold}.java`
+- Create: `core/src/test/java/yggdrasil/forseti/core/journal/{RevisionsTest,DispositionsTest,JournalFoldTest}.java`
 
 - [ ] **Step 5.1** Types (every integer field of every record below, `revision`, `eventTimeAt`, `trigger.offset`, `cutId`, `producerEpoch`, `W1`, `W2`, `admissionW`, `restartEpoch`, `barrierRefs[].throughOffset`, `incidentOffsets[].throughOffset`, `initEvidence.declarationOffset`/`endOffset`, `inputPartition`, `inputOffset`, `generation`, is written with `Json.putSafe` and read back with `Json.safeLong`, so progress records, ledger rows, `cuts.json` and the journals never carry an integer outside the JCS domain; the ranges on reading: `barrierRefs[].throughOffset`, `incidentOffsets[].throughOffset` and the recording `throughOffsets` are `Json.THROUGH` (`-1` = no record of that partition included yet, the inclusive convention of spec 406 and 434; a cut with no incident writes six `incidentOffsets` entries with `throughOffset -1`, and a `barrierRefs` entry likewise), `W1`, `W2`, `admissionW` (nullable before the first progress) and `eventTimeAt` are `Json.ANY`, everything else `Json.NON_NEGATIVE`; no other sweep field has a sentinel: `producerEpoch` and `restartEpoch` start at 0 (spec 406), `initEvidence.endOffset >= 1`, and the `-1` of the `W1` formula is arithmetic, not a stored sentinel). `Pins` (`rules, hierarchy, bindings, definitions, job {engine, engineVersion, artifactSha256, runId, timestampSource, idleness, routingDigest}`, spec 329), `Envelope` (`evaluationGeneration, revision, supersedesDigest, cause, eventTimeAt, trigger {topic, partition, offset}, basisRevisions, pins`, spec 321-329; `cause` is `{"kind": "input"|"timer"|"replayed", ...}` per Task 1's insertion at line 553), `Row(String topic, JsonNode logicalKey, JsonNode body, String bodyDigest, Envelope envelope)`, `Delete(generation, logicalKey, revision, supersedesDigest)` (spec 331), `Progress.Stage1` / `Stage2` / `Ledger` records with `toJson()` in the exact field lists of spec 412-452 (`initEvidence` fields per Task 1's line 424), `Disposition(key {generation, inputTopic, inputPartition, inputOffset, part}, body {inputKind, identity, payloadDigest, disposition, reason, refs}, revision)` with the closed vocabulary of spec 445-450 as enums (plus the `refs.check` values of Task 1's line 449).
 
@@ -912,10 +912,10 @@ public final class Ids {
 ### Task 6: Release reader at Vor's level, Tyr's bundles untouched, forseti's re-pinned registry fixtures
 
 **Files:**
-- Create: `core/src/main/java/dev/krillin/forseti/core/release/{Refusal,TrustedKeys,FloorStore,Dsse,HeadVerifier,ReleaseReader}.java`
+- Create: `core/src/main/java/yggdrasil/forseti/core/release/{Refusal,TrustedKeys,FloorStore,Dsse,HeadVerifier,ReleaseReader}.java`
 - Create: `scripts/make_registry_fixture.py`
 - Create: `fixtures/upstream/{bundle,plc-stamped-bundle}/**`, `fixtures/upstream/manifest.json`, `fixtures/registry/**`, `fixtures/registry-next/**`, `fixtures/trusted-keys.jsonl`, `fixtures/registry.lock.json`
-- Create: `core/src/test/java/dev/krillin/forseti/core/release/{HeadVerifierTest,ReleaseReaderTest,BifrostSeamTest,TestKeys}.java`
+- Create: `core/src/test/java/yggdrasil/forseti/core/release/{HeadVerifierTest,ReleaseReaderTest,BifrostSeamTest,TestKeys}.java`
 
 Q3: Tyr's two bundles are copied byte for byte to `fixtures/upstream/` with a manifest of every file digest and the Tyr head; they are never modified and are the refusal fixture of `binding.schema-mismatch` (Task 7). Execution fixtures are forseti's own: the script copies the bundles, replaces the two profile files' `format.schemaSha256` with the real digests of Task 4 and the incident `topic` with `quality.incidents` (spec 463), re-pins (evidence sha, proposal, submission) exactly as the step-1 plan's `pin-fixture.py` does, then approves and publishes with Bifrost's CLI: `line2-rules 1.0.0` (occupancy-join) on stream `line2`, `line2-rules-plc 1.0.0` (plc-stamped, `crossCheck: occupancy` as Tyr authored it) on stream `line2-plc`, and `line2-rules-plc-nocheck 1.0.0` (the same plc bundle with the attribution rule at `1.0.1` and `identity.crossCheck` `none`, the impact rule referencing `1.0.1`; the pinned rule both runs of injection 11b use, spec 631) on stream `line2-plc-nocheck` into `fixtures/registry`; the same plus `line2-rules 1.0.1` (attribution rule 1.0.1 with `coverage.maxMissingPeriods` 4, impact rule 1.0.1 referencing it) on stream `line2` into `fixtures/registry-next` (head version 2, `previous` names version 1; for injection 20); and Tyr's `bundle` with no byte changed as `line2-rules 1.0.0` on stream `line2` into `fixtures/registry-upstream` (so the `binding.schema-mismatch` refusal is reached only after a verified head and release, as at a real start-up). A second release on a stream carries the current head's `{id, version, sha256}` as `baseRelease` in both `proposal.json` and `submission.json` (Bifrost's `submission.base-reference` and `mapping.base-conflict` checks), set before the proposal digest is re-pinned. Private keys live in a temporary directory and are deleted; the public keys go to `fixtures/trusted-keys.jsonl`, outside the registries (a registry cannot vouch for itself). Heads are published with `--expires-in P366D`; every test passes `nowMs`, never the wall clock.
 
@@ -1059,7 +1059,7 @@ The activation policy names the three streams `line2`, `line2-plc` and `line2-pl
 - [ ] **Step 6.3** `Refusal.java` (the closed set of Task 1's insertion at line 84):
 
 ```java
-package dev.krillin.forseti.core.release;
+package yggdrasil.forseti.core.release;
 
 import java.util.*;
 
@@ -1078,9 +1078,9 @@ public final class Refusal extends RuntimeException {
 - [ ] **Step 6.4** `TrustedKeys.java` (JDK only):
 
 ```java
-package dev.krillin.forseti.core.release;
+package yggdrasil.forseti.core.release;
 
-import dev.krillin.forseti.core.Json;
+import yggdrasil.forseti.core.Json;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.*;
 import java.security.*;
@@ -1111,7 +1111,7 @@ public final class TrustedKeys {
 - [ ] **Step 6.5** `Dsse.java` (PAE and raw Ed25519 verification; `verify` never throws):
 
 ```java
-package dev.krillin.forseti.core.release;
+package yggdrasil.forseti.core.release;
 
 import java.io.ByteArrayOutputStream;
 import java.nio.charset.StandardCharsets;
@@ -1144,11 +1144,11 @@ public final class Dsse {
 - [ ] **Step 6.7** `HeadVerifier.java` (Vor's order; every refusal names its rule; the signature is counted by the verified trusted key under the claimed principal, never by `keyid`; the decoded original payload bytes are verified, never a re-serialization):
 
 ```java
-package dev.krillin.forseti.core.release;
+package yggdrasil.forseti.core.release;
 
 import com.fasterxml.jackson.databind.JsonNode;
-import dev.krillin.forseti.core.Json;
-import dev.krillin.forseti.core.canon.Canonical;
+import yggdrasil.forseti.core.Json;
+import yggdrasil.forseti.core.canon.Canonical;
 import java.nio.file.*;
 import java.security.PublicKey;
 import java.time.Instant;
@@ -1244,8 +1244,8 @@ public final class HeadVerifier {
 ### Task 7: Rule set from a release: both rules, both profiles, hierarchy, member catalog, `binding.schema-mismatch`, `rulesDigest`
 
 **Files:**
-- Create: `core/src/main/java/dev/krillin/forseti/core/rules/{Hierarchy,MemberCatalog,AttributionRule,ImpactRule,OccupancyBinding,IncidentBinding,RuleSet}.java`
-- Create: `core/src/test/java/dev/krillin/forseti/core/rules/RuleSetTest.java`
+- Create: `core/src/main/java/yggdrasil/forseti/core/rules/{Hierarchy,MemberCatalog,AttributionRule,ImpactRule,OccupancyBinding,IncidentBinding,RuleSet}.java`
+- Create: `core/src/test/java/yggdrasil/forseti/core/rules/RuleSetTest.java`
 - Create: `oracle/src/forseti_oracle/rules.py`, `oracle/tests/test_rules.py`
 
 Bifrost approved the bundle, so forseti does not re-run the eleven `attribution.*` checks; it resolves what the job needs and refuses only what the spec assigns to the job: `binding.schema-mismatch` (line 192) and the incident schema supporting each `kinds[]` entry (line 224). Resolution follows spec 132: `members[].mappingSetRef + mappingId` -> mapping of the set -> `memberPath[0].memberId` in the semantic definition of the set's target instance -> `name` (= `metric`), `valueType`, `semanticId`; the set's `equipmentInstanceId` -> hierarchy path; roles by reference (activity, identity, measurement).
@@ -1275,9 +1275,9 @@ public List<Resolved> requiredMembersOf(String station)   // every measurement m
 ### Task 8: Recording format, routing manifest, minimal builder, the committed smoke recordings
 
 **Files:**
-- Create: `cli/src/main/java/dev/krillin/forseti/cli/recording/{Recording,RoutingManifest,Murmur2,ScenarioBuilder,Telemetry}.java` (`ScenarioBuilder` in its minimal form: visits, telemetry with tails, sessions, batches with deadline brackets, digests; Task 16 adds overlays and ground truth); Modify: `Main` (`recordings build|verify`)
+- Create: `cli/src/main/java/yggdrasil/forseti/cli/recording/{Recording,RoutingManifest,Murmur2,ScenarioBuilder,Telemetry}.java` (`ScenarioBuilder` in its minimal form: visits, telemetry with tails, sessions, batches with deadline brackets, digests; Task 16 adds overlays and ground truth); Modify: `Main` (`recordings build|verify`)
 - Create: `fixtures/scenarios/{smoke,smoke-plc,smoke-incident}.json` (+ `.lock.json` each), `fixtures/recordings/{smoke,smoke-plc,smoke-incident}/**` (built from those scenarios and committed; `smoke-plc` and `smoke-incident` are used by Tasks 12 and 15)
-- Create: `cli/src/test/java/dev/krillin/forseti/cli/recording/{RecordingTest,Murmur2Test}.java`
+- Create: `cli/src/test/java/yggdrasil/forseti/cli/recording/{RecordingTest,Murmur2Test}.java`
 - Create: `oracle/src/forseti_oracle/recording.py`, `oracle/tests/test_recording.py`
 
 A recording is a directory with the shape the step-5 recorder will write from Kafka, so step-3 recordings and step-5 captures are read by one `Recording.open` and the engines of steps 6-7 replay both:
@@ -1317,9 +1317,9 @@ A process message line (nutrunner1, scan at `T0 + 600000`; all members one `sour
 ### Task 9: `forseti gate --engine core` frame, the foundation manifest, pull request 1
 
 **Files:**
-- Create: `cli/src/main/java/dev/krillin/forseti/cli/{Main,Args}.java`, `cli/src/main/java/dev/krillin/forseti/cli/gate/{CoreGate,Assertions}.java`
+- Create: `cli/src/main/java/yggdrasil/forseti/cli/{Main,Args}.java`, `cli/src/main/java/yggdrasil/forseti/cli/gate/{CoreGate,Assertions}.java`
 - Create: `gate/core-assertions.json`, `gate/core-negative-controls.json`
-- Create: `cli/src/test/java/dev/krillin/forseti/cli/gate/CoreGateTest.java`
+- Create: `cli/src/test/java/yggdrasil/forseti/cli/gate/CoreGateTest.java`
 
 - [ ] **Step 9.1** `Assertions.java` (the accountant: `check(id, condition, evidence)` refuses an id not in the manifest and a duplicate id; `finish()` prints `assertions run N / expected N` and returns 1 when any expected id did not run or failed) and `CoreGate.java`: loads `gate/core-assertions.json` `{"engine": "core", "assertions": [{"id", "pr", "description"}]}`, runs every registered assertion, writes `build/gate/report.json` `{exit, scope: "core", engine, manifestSha256, assertionsExpected, assertionsRun, failed[], notRun[], intendedFailures[] (controls only), pins {jcs {java, python}, python, jdk, forseti artifactSha256}, seed, fixtureDigests {registry, registryNext, upstream, vectors, schemas, scenarios}, startedAt, finishedAt, command}`, prints the line last, exits 0 only when every manifest id ran and held and no unknown id ran; exits 1 otherwise; a crash or a missing artifact still writes a failure report and exits 1; `--negative-control <name>` not in `gate/core-negative-controls.json` exits 2 (usage) so CI's `== 1` check catches an unimplemented control. Foundation assertions (`F-*`, 18):
 
@@ -1352,9 +1352,9 @@ Branch: `git switch -c feat/step3-attribution-core main` after PR 1 merged.
 ### Task 10: Stage 1 decision function (occupancy-join): state, visit claims, attribution, coverage, work record and sample bodies
 
 **Files:**
-- Create: `core/src/main/java/dev/krillin/forseti/core/NegativeControls.java` (B2: the record with `NONE`, a constructor parameter of `Stage1` from its first commit; PR 6 adds the behaviours)
-- Create: `core/src/main/java/dev/krillin/forseti/core/stage1/{Events,Stage1State,Stage1,VisitClaim,Attribution,Coverage,Sessions,WorkRecord,SampleRow,DeadlineIndex}.java`
-- Create: `core/src/test/java/dev/krillin/forseti/core/stage1/{Stage1OccupancyJoinTest,CoverageTest,DeadlineIndexTest}.java`
+- Create: `core/src/main/java/yggdrasil/forseti/core/NegativeControls.java` (B2: the record with `NONE`, a constructor parameter of `Stage1` from its first commit; PR 6 adds the behaviours)
+- Create: `core/src/main/java/yggdrasil/forseti/core/stage1/{Events,Stage1State,Stage1,VisitClaim,Attribution,Coverage,Sessions,WorkRecord,SampleRow,DeadlineIndex}.java`
+- Create: `core/src/test/java/yggdrasil/forseti/core/stage1/{Stage1OccupancyJoinTest,CoverageTest,DeadlineIndexTest}.java`
 
 The stage-1 rule sheet below is the two implementations' shared reading of the spec as corrected by Task 1 (the oracle implements it from the spec text in Task 18). Per station `s`; `P = expectedPeriodMs`, `L = allowedLatenessMs`, `H = horizonMs`, `O = outOfOrdernessMs`, `tolE/tolL` enter/leave tolerance.
 
@@ -1383,9 +1383,9 @@ The stage-1 rule sheet below is the two implementations' shared reading of the s
 ### Task 11: Reference harness for stage 1: stations, cuts, `W1`, timers, journals, ledgers, cut log, run record
 
 **Files:**
-- Create: `core/src/main/java/dev/krillin/forseti/core/generation/{Generation,GenerationStore}.java` (B2: the row record and the store interface the harness reads), `cli/src/main/java/dev/krillin/forseti/cli/generation/FileGenerationStore.java` (read side only; `append` unsupported until PR 5)
-- Create: `cli/src/main/java/dev/krillin/forseti/cli/harness/{ReferenceEngine,StationTask,RejectCollector,ContractOrder,JournalFiles,CutLog,RunRecord}.java`
-- Create: `cli/src/test/java/dev/krillin/forseti/cli/harness/ReferenceEngineTest.java`
+- Create: `core/src/main/java/yggdrasil/forseti/core/generation/{Generation,GenerationStore}.java` (B2: the row record and the store interface the harness reads), `cli/src/main/java/yggdrasil/forseti/cli/generation/FileGenerationStore.java` (read side only; `append` unsupported until PR 5)
+- Create: `cli/src/main/java/yggdrasil/forseti/cli/harness/{ReferenceEngine,StationTask,RejectCollector,ContractOrder,JournalFiles,CutLog,RunRecord}.java`
+- Create: `cli/src/test/java/yggdrasil/forseti/cli/harness/ReferenceEngineTest.java`
 
 `forseti run --engine core --recording <dir> --registry <dir> --state <dir> --generation <n> --out <run dir> [--seed <n>] [--shuffle] [--subscribe <topic>=<p,p>] [--artifact-sha256 <hex>]`. The harness is the engine-independent reference adapter; it owns only Decision 12's adapter duties (partitioning, timers, state, side outputs, sinks). It never writes a generation row and never verifies a head: it runs the registered generation from its pinned snapshot (spec 553, "a replay uses the snapshot"; Task 1's line 553 insertion). This task creates the core types the harness reads (B2): `core/.../core/generation/Generation.java` (the row record of spec 540-548 with `toJson`/`fromJson`; `generation`, `headVersion`, `replayFrom` offsets and `at` written with `Json.putSafe` and read with `Json.safeLong`, `generation >= 1`) and `GenerationStore.java` (the interface: `append`, `all`, `current(scope)`, `byNumber`), plus the read side of `cli/.../cli/generation/FileGenerationStore.java` (`<stateDir>/generations.jsonl`, one transport record per line; `append` throws `UnsupportedOperationException` until PR 5 adds the locked, durable writer). Until PR 5 a test writes the one `registered` row (carrying `releaseEvidence`) by hand; PR 5 adds the CLI, the policy and the writer.
 
@@ -1398,7 +1398,7 @@ The stage-1 rule sheet below is the two implementations' shared reading of the s
 ### Task 12: Stage 1 plc-stamped and cross-check
 
 **Files:**
-- Create: `core/src/main/java/dev/krillin/forseti/core/stage1/PlcStamped.java`; Create: `core/src/test/java/dev/krillin/forseti/core/stage1/Stage1PlcStampedTest.java`; Uses: `fixtures/recordings/smoke-plc/**` (built in Task 8 from `fixtures/scenarios/smoke-plc.json`: the smoke visit with `UnitId`, `VisitId`, `VisitPresent` stamped on `station1` and `nutrunner1`, rule `line2-plc`, the same telemetry tail)
+- Create: `core/src/main/java/yggdrasil/forseti/core/stage1/PlcStamped.java`; Create: `core/src/test/java/yggdrasil/forseti/core/stage1/Stage1PlcStampedTest.java`; Uses: `fixtures/recordings/smoke-plc/**` (built in Task 8 from `fixtures/scenarios/smoke-plc.json`: the smoke visit with `UnitId`, `VisitId`, `VisitPresent` stamped on `station1` and `nutrunner1`, rule `line2-plc`, the same telemetry tail)
 
 Rule sheet addition (spec 135, 261, 506; `visitRef = {mode: "plc-stamped", namespace, station, visitId}`, `readPoint` = the station path, `visitSeq` null, `unitId` from the identity members):
 - **P1 Coherence.** For an equipment `q` with an identity entry, a message is coherent when its identity (`UnitId`, `VisitId`, `VisitPresent`), activity and measurement members of `q` all carry a `sourceTs` and all are equal; otherwise every sample of that message for `q` is `unattributed incoherent-snapshot`.
@@ -1434,8 +1434,8 @@ Branch: `git switch -c feat/step3-impact-and-progress main` after PR 2 merged.
 ### Task 14: `ProgressTracker` and the stage-2 decision function
 
 **Files:**
-- Create: `core/src/main/java/dev/krillin/forseti/core/stage2/{Events2,ProgressTracker,Stage2State,Stage2,Incidents,Relatedness,DecisionTable,SetCoverage,Assessment,AffectedSet}.java`
-- Create: `core/src/test/java/dev/krillin/forseti/core/stage2/{ProgressTrackerTest,Stage2Test,RelatednessTest,SetCoverageTest}.java`
+- Create: `core/src/main/java/yggdrasil/forseti/core/stage2/{Events2,ProgressTracker,Stage2State,Stage2,Incidents,Relatedness,DecisionTable,SetCoverage,Assessment,AffectedSet}.java`
+- Create: `core/src/test/java/yggdrasil/forseti/core/stage2/{ProgressTrackerTest,Stage2Test,RelatednessTest,SetCoverageTest}.java`
 
 **Stage-2 rule sheet.** Per station `s`; inputs are the stage-1 rows of partition `p(s)` of `forseti.work-records` and `forseti.samples` (current revisions, deletes applied), their stage-1 progress records, and incidents routed to `s`.
 
@@ -1462,7 +1462,7 @@ Branch: `git switch -c feat/step3-impact-and-progress main` after PR 2 merged.
 
 **Files:**
 - Modify: `ReferenceEngine` (stage-2 tasks fed from the cut's stage-1 outputs and routed incidents; stage-2 reject collector; deletes; `cuts.json` gains `W2`), `JournalFold` (deletes across topics), `gate/core-assertions.json` (+5)
-- Uses: `fixtures/recordings/smoke-incident/**` (built in Task 8 from `fixtures/scenarios/smoke-incident.json`: the smoke visit plus one closed `tool-check-failed` incident on nutrunner1 over the visit, keyed by `equipmentRef` on `quality.incidents`, `suspectFrom 600000`, `suspectTo = detectedAt = leave = 660000` (spec 170: for `tool-check-failed` the producer closes the interval with `suspectTo = detectedAt`; the builder refuses a closed `tool-check-failed` revision 1 whose `suspectTo != detectedAt` or whose `revisionEventTime != detectedAt`), revision 1 `revisionEventTime 660000`, delivered at `1,400,000`, after the visit's settlement bracket; its settlement `suspectTo + L = 1,380,000` equals the visit's. Under the one rule for the telemetry end (Task 8: `lastBusinessEvent` is the latest of every occupancy `eventTime`, every incident `detectedAt` and `revisionEventTime`, every session event time, every overlay `deliverAt` and `declarationTime`, and every listed horizon deadline), `lastBusinessEvent = 1,400,000` (the delivery), `E = 1,400,000 + 751,000 = 2,151,000`: `(2,151,000 - 600,000) / 1000 + 1 = 1,552` scans per device, 6,208 messages, 9,312 samples; cuts: 30 s boundaries `630,000 ... 2,130,000` = 51, plus the bracket `cutB` at `1,411,000` (`cutA` is the boundary `1,410,000`), plus the final batch ending at the last scan `2,151,000` = 53 cuts, pinned by `smoke-incident.lock.json`); Create: `cli/src/test/java/dev/krillin/forseti/cli/harness/CascadeTest.java`
+- Uses: `fixtures/recordings/smoke-incident/**` (built in Task 8 from `fixtures/scenarios/smoke-incident.json`: the smoke visit plus one closed `tool-check-failed` incident on nutrunner1 over the visit, keyed by `equipmentRef` on `quality.incidents`, `suspectFrom 600000`, `suspectTo = detectedAt = leave = 660000` (spec 170: for `tool-check-failed` the producer closes the interval with `suspectTo = detectedAt`; the builder refuses a closed `tool-check-failed` revision 1 whose `suspectTo != detectedAt` or whose `revisionEventTime != detectedAt`), revision 1 `revisionEventTime 660000`, delivered at `1,400,000`, after the visit's settlement bracket; its settlement `suspectTo + L = 1,380,000` equals the visit's. Under the one rule for the telemetry end (Task 8: `lastBusinessEvent` is the latest of every occupancy `eventTime`, every incident `detectedAt` and `revisionEventTime`, every session event time, every overlay `deliverAt` and `declarationTime`, and every listed horizon deadline), `lastBusinessEvent = 1,400,000` (the delivery), `E = 1,400,000 + 751,000 = 2,151,000`: `(2,151,000 - 600,000) / 1000 + 1 = 1,552` scans per device, 6,208 messages, 9,312 samples; cuts: 30 s boundaries `630,000 ... 2,130,000` = 51, plus the bracket `cutB` at `1,411,000` (`cutA` is the boundary `1,410,000`), plus the final batch ending at the last scan `2,151,000` = 53 cuts, pinned by `smoke-incident.lock.json`); Create: `cli/src/test/java/yggdrasil/forseti/cli/harness/CascadeTest.java`
 
 - [ ] **Step 15.1** Harness: after stage 1 of cut `k`, each station's `Stage2` receives the cut's stage-1 rows and deletes of `p(s)`, the two stage-1 progress records (through `ProgressTracker`), the incidents routed to `s` (T1; rejections to the stage-2 collector), fires timers `<= W2(s)`, writes rows, deletes, dispositions, stage-2 progress, ledger progress, partition-6 progress. `cuts.json` records `W2` per station (equal to `W1` by construction, spec 588).
 
@@ -1487,9 +1487,9 @@ Branch: `git switch -c feat/step3-recordings-and-oracle main` after PR 3 merged.
 ### Task 16: Scenario builder, ground truth, injection overlays, the hand-made scenarios
 
 **Files:**
-- Create: `cli/src/main/java/dev/krillin/forseti/cli/recording/{ScenarioBuilder,Overlays,GroundTruth,Telemetry}.java`; Modify: `Main` (`recordings build|verify`)
+- Create: `cli/src/main/java/yggdrasil/forseti/cli/recording/{ScenarioBuilder,Overlays,GroundTruth,Telemetry}.java`; Modify: `Main` (`recordings build|verify`)
 - Create: `fixtures/scenarios/{baseline,held-back-10min,redelivery,overlap,bad-quality,clock-plus-30,clock-plus-90,corrections,corrections-10b-before,corrections-10b-after,corrections-10c,session,quiet-occupancy,quiet-occupancy-control,plc-stamped,plc-nocheck,plc-held-back,stage2,stage2-early,cascade}.json` (+ `.lock.json` each)
-- Create: `cli/src/test/java/dev/krillin/forseti/cli/recording/ScenarioBuilderTest.java`
+- Create: `cli/src/test/java/yggdrasil/forseti/cli/recording/ScenarioBuilderTest.java`
 
 Hand-made recordings are authored as scenario files, built deterministically by the builder and **committed** under `fixtures/recordings/<name>/` with their locks (DECISIONS-P3: hand-made recordings are committed; only the synthesized horizon recordings are generated at gate time); the lock pins every file's digest, the message, sample and occupancy counts, `firstBatchTelemetryPartitions` and the cut count; the gate verifies the committed files against the lock before every run, and `ScenarioBuilderTest` proves each committed recording byte-identical to a fresh build of its scenario. Size: about 330 bytes per message line, so a 12,608-message recording is about 4.5 MB and the twenty hand-made recordings about 90 MB in the working tree (JSONL packs roughly tenfold in git objects); `fixtures/** -text` keeps the bytes fixed. Sizes (spec 607): two stations (the fixtures' rule), 4 devices, 12 visits (8 at Station1 in the four tool patterns, 4 at Station2), and, by the builder's rule "telemetry from `telemetryFrom` to `E = max(telemetryTo, lastBusinessEvent) + tailMs`, where `lastBusinessEvent` is the latest of every occupancy `eventTime`, every incident `detectedAt` and `revisionEventTime`, every session event time, every overlay `deliverAt` and `declarationTime`, and every listed horizon deadline (one rule for every scenario, hand-made and synthesized, spec 594), every 1,000 ms, both ends included, so `scans = (E - telemetryFrom) / 1000 + 1`": `baseline` `E = 2,400,000 + 751,000 = 3,151,000` -> 3,152 scans per device, 12,608 messages, 18,912 samples (6 members per scan); `stage2` (last business event `inc-3` revision 2 at 2,600,000) `E = 3,351,000` -> 3,352 scans, 13,408 messages, 20,112 samples; `cascade` (last at 2,700,000) `E = 3,451,000` -> 3,452 scans, 13,808 messages, 20,712 samples; every other hand-made scenario's count follows the same rule from its last business event and is pinned by its lock (Open point 4 covers the two-station shape against the three-station sim of step 4).
 
@@ -1575,9 +1575,9 @@ Times are offsets from `T0`. Visits 60 s long and 120 s apart (spec 598), the la
 ### Task 17: Synthesizer and the horizon scenarios
 
 **Files:**
-- Create: `cli/src/main/java/dev/krillin/forseti/cli/recording/Synthesizer.java`; Modify: `ScenarioBuilder` (`"synthetic": true` delegates telemetry to the synthesizer), `Main` (`recordings synth`)
+- Create: `cli/src/main/java/yggdrasil/forseti/cli/recording/Synthesizer.java`; Modify: `ScenarioBuilder` (`"synthetic": true` delegates telemetry to the synthesizer), `Main` (`recordings synth`)
 - Create: `fixtures/scenarios/{horizon-no-departure,horizon-reopened,horizon-correction-beyond,plc-horizon-no-end,horizon-planned-late}.json` (+ locks)
-- Create: `cli/src/test/java/dev/krillin/forseti/cli/recording/SynthesizerTest.java`
+- Create: `cli/src/test/java/yggdrasil/forseti/cli/recording/SynthesizerTest.java`
 
 Horizon scenarios (spec 594) need continuous telemetry on every subscribed device from `T0` (`telemetryFrom 0`) to the scenario's end `E`, every 1,000 ms, both ends included: `scans = E / 1000 + 1` per device, `messages = 4 x scans`, samples = scans x members per scan (6 for the occupancy-join devices: 1 + 1 + 2 + 2; 12 for the plc devices: 4 + 1 + 5 + 2). Per scenario: `horizon-no-departure` `E = leave(visit 9) + tailMs = 88,560,000 + 751,000 = 89,311,000` (visit 9 is the later same-station visit of injection 6, below; its settlement `88,560,000 + 720,000 = 89,280,000` is bracketed inside that tail: `cutB` at scan `89,311,000`, `W1 = 89,280,999`) -> 89,312 scans, 357,248 messages, 535,872 samples; `horizon-reopened` `E = enter(visit 8) + H + tailMs = 1,860,000 + 86,400,000 + 751,000 = 89,011,000` -> 89,012 scans, 356,048 messages, 534,072 samples; `horizon-correction-beyond` `E = deliverAt + tailMs = 87,992,000 + 751,000 = 88,743,000` -> 88,744 scans, 354,976 messages, 532,464 samples; `plc-horizon-no-end` `E = enter(V3) + H + tailMs = 960,000 + 86,400,000 + 751,000 = 88,111,000` -> 88,112 scans, 352,448 messages, 1,057,344 samples; `horizon-planned-late` `E = T + tailMs = 87,410,000 + 751,000 = 88,161,000` -> 88,162 scans, a base of 352,648 messages and 528,972 samples; after the overlay the delivered counts are 352,651 messages (the three late samples are three DDATA records, one `Torque` member each, with `seq` continuing the session) and 528,974 samples (528,972 - 1 removed `Torque` observation at `holeAt`, whose message keeps its `Running` member, + 3 late samples); the locks pin the delivered counts; they are built at gate time to `build/recordings/<name>` and verified against the lock; never committed. Synthetic tails are ordinary data (`Running=false`, idle torque, Good quality) and follow every rule, so a horizon run produces one sample row per sample and one disposition per member; the volume is the requirement (Decision 8).
 
@@ -1604,8 +1604,8 @@ Horizon scenarios (spec 594) need continuous telemetry on every subscribed devic
 ### Task 19: Comparison, integrity, injection assertions, determinism, item 2 reference values, pull request 4
 
 **Files:**
-- Create: `cli/src/main/java/dev/krillin/forseti/cli/gate/{Comparison,Integrity,Injections}.java`; Modify: `CoreGate`, `gate/core-assertions.json` (+43 = 72)
-- Create: `cli/src/test/java/dev/krillin/forseti/cli/gate/{ComparisonTest,IntegrityTest}.java`
+- Create: `cli/src/main/java/yggdrasil/forseti/cli/gate/{Comparison,Integrity,Injections}.java`; Modify: `CoreGate`, `gate/core-assertions.json` (+43 = 72)
+- Create: `cli/src/test/java/yggdrasil/forseti/cli/gate/{ComparisonTest,IntegrityTest}.java`
 
 - [ ] **Step 19.1** `Comparison`: for every completed cut `k` of a run, fold the harness journals through progress `k` per partition (`JournalFold`), load the oracle's `cut-<k>` files, compare key sets and recomputed `bodyDigest` per key for the four journals (a reported digest alone is not trusted: the gate recomputes `Canonical.digest(body)` on both sides); on a difference write `build/gate/diffs/<scenario>/cut-<k>/<topic>/<n>.json` {generation, cut, key, JSON path of the first difference, expected, actual, input offset ranges} (CI artifact, spec 671) and fail; compare dispositions by identity (`disposition` and `reason`; which delivery is `duplicate` is not compared, spec 452); apply the comparable-cut predicate (spec 590) for direct run-to-run comparisons (1, 11b, 26, determinism) and fail when a scenario that needs a settled cut has none. `Integrity`: revisions contiguous from 1 per key; no equal consecutive digests; progress `cutId` increasing and `eventTimeAt` non-decreasing per partition; no business row of cut `k` after its progress; every delivery (with its parts) has a disposition; `W1` equals the formula; `admissionW` equals the previous `W1`; stage-2 `W2 == W1`; `incidentOffsets` count 6; every `basis[].bodyDigest` current; pins cross-check: for every row, `Canonical.digest(envelope.pins.withoutJob())` (the four fields `rules`, `hierarchy`, `bindings`, `definitions`; never `job`, which differs per run) equals the generation row's `rulesDigest`, and for the two bodies that carry `rulesDigest` (work record, spec 355; impact assessment, spec 379; the sample journal and the affected set carry none, spec 362-366, 385-398) the body value equals it too, all recomputed by the gate (the hook `wrong-rules-pin` fails in PR 6). `Injections`: one assertion per id below; each verifies the committed recording against its lock (hand-made scenarios) or builds the recording and verifies it against its lock (the five horizon scenarios, never committed), registers a generation in a temp state (the PR 1-4 stub store; PR 5 switches to the CLI), runs the harness, runs the oracle (`--python`), compares every completed cut, checks integrity, asserts `expected.json` at the last cut and `transitions[]` at the bracketing cuts.
 
@@ -1661,8 +1661,8 @@ Branch: `git switch -c feat/step3-generation-cli main` after PR 4 merged.
 ### Task 20: Generation rows, transition policy, the locked durable file store, the CLI verbs
 
 **Files:**
-- Create: `core/src/main/java/dev/krillin/forseti/core/generation/GenerationPolicy.java`, `core/src/test/java/dev/krillin/forseti/core/generation/GenerationPolicyTest.java`; Modify: `core/.../generation/{Generation,GenerationStore}.java` (created in Task 11; `Generation` gains nothing, `GenerationStore` gains `latestStatus(n)`)
-- Create: `cli/src/main/java/dev/krillin/forseti/cli/generation/GenerationCli.java`, `cli/src/test/java/dev/krillin/forseti/cli/generation/{GenerationCliTest,FileGenerationStoreTest}.java`; Modify: `cli/.../generation/FileGenerationStore.java` (the locked, durable `append` replaces Task 11's read-only stub), `ReferenceEngine` (reads the real store; writes nothing to it)
+- Create: `core/src/main/java/yggdrasil/forseti/core/generation/GenerationPolicy.java`, `core/src/test/java/yggdrasil/forseti/core/generation/GenerationPolicyTest.java`; Modify: `core/.../generation/{Generation,GenerationStore}.java` (created in Task 11; `Generation` gains nothing, `GenerationStore` gains `latestStatus(n)`)
+- Create: `cli/src/main/java/yggdrasil/forseti/cli/generation/GenerationCli.java`, `cli/src/test/java/yggdrasil/forseti/cli/generation/{GenerationCliTest,FileGenerationStoreTest}.java`; Modify: `cli/.../generation/FileGenerationStore.java` (the locked, durable `append` replaces Task 11's read-only stub), `ReferenceEngine` (reads the real store; writes nothing to it)
 
 Decision 11, spec 540-553 as extended by Task 1's line 553. `GenerationStore` is the transport boundary; `FileGenerationStore` is the step-3 implementation: `<stateDir>/generations.jsonl`, one transport record per line `{"topic": "forseti.generations", "key": "<scope>", "headers": {"forseti-generation": "<n>"}, "value": <the generation row>}` (the payload is the spec's row, the wrapping stays outside it), appended under the two-level lock of Task 6 (`LockedFile`: an in-JVM `ReentrantLock` per canonical path of `<stateDir>/generations.lock`, then the `FileLock`; one JVM's threads would otherwise meet `OverlappingFileLockException`), each append `force(true)`d, a partial last line (no trailing newline, or invalid JSON) fails closed with `control-log-corrupt` and is never discarded silently; `<stateDir>/recovery-control.jsonl` holds the generation's initial declaration `{generation, injectionId: null, stage: 1, epochBefore: null, targetEpoch: 0, lastWrittenCutId: 0, routingDigest}` (spec 408). `GenerationPolicy` (core, pure): `next(number)`, the allowed transitions `registered -> replaying -> verified -> current -> retired` (and `registered|replaying|verified -> retired`), "one current per scope", numbers unique across scopes (`next()` reads the highest number of the whole store), `promoteRequires(report)`. The scope of a generation is the `streamId` of the release holding its attribution rule (the key of `forseti.generations`, spec 474); `run`, `promote` and `retire` address a generation by its store-wide unique number and need no scope argument.
 
@@ -1688,7 +1688,7 @@ Only these verbs write `forseti.generations` (spec 72, 474: jobs never write it;
 ### Task 21: Promotion bound to verified gate evidence; injections 20 and 23; pull request 5
 
 **Files:**
-- Create: `cli/src/main/java/dev/krillin/forseti/cli/generation/GateReportReader.java`, `cli/src/test/java/dev/krillin/forseti/cli/generation/GateReportReaderTest.java`; Modify: `GenerationCli` (`promote`), `ReferenceEngine` (`--replay event-time`, cause `replayed`), `CoreGate` (`--state`, `generations[]` and `runs[]` in the report; the real store), `Stage1`/`Stage2` (cause kind), `Injections` (+ `I-20`, `I-23`), `gate/core-assertions.json` (+7 = 79)
+- Create: `cli/src/main/java/yggdrasil/forseti/cli/generation/GateReportReader.java`, `cli/src/test/java/yggdrasil/forseti/cli/generation/GateReportReaderTest.java`; Modify: `GenerationCli` (`promote`), `ReferenceEngine` (`--replay event-time`, cause `replayed`), `CoreGate` (`--state`, `generations[]` and `runs[]` in the report; the real store), `Stage1`/`Stage2` (cause kind), `Injections` (+ `I-20`, `I-23`), `gate/core-assertions.json` (+7 = 79)
 
 - [ ] **Step 21.1** `GateReportReader`: reads a `report.json`, verifies its raw SHA-256 (the digest `promote` records), `exit == 0`, loads the committed `gate/core-assertions.json` itself and requires `assertionsExpected == N` and `assertionsRun == N` where N is that manifest's entry count (a report's own counts are never trusted against each other: a `0/0` or a reduced `k/k` report is refused, spec 671), `failed` and `notRun` empty, `manifestSha256` equals the committed manifest's, `generations[]` names the generation with its `rulesDigest` and `runs[]` names the run record given by `--run` (`runId`, recording digests, offset ranges), and `scope`. `promote --generation n --run <run.json> --gate-report <report>` refuses a report whose scope is `core` unless `--accept-scope core` is given explicitly (a core report never impersonates the semantic gate; the default policy requires scope `semantic`, steps 6-7; Open point 3), verifies the head again now (approval evidence valid now), and appends in one locked operation `replaying` (citing the run), `verified` (citing the report digest), `current`, and `retired` for the previous current of the scope. The gate gains `--state <dir>`: with it the generations it registers for its runs live in that store (and `report.json.generations[]`/`runs[]` describe them, each with `state: shared`); without it a temp state is used and discarded. Two assertions never touch the shared state, because a verified head of version 2 would raise that state's `line2` floor and every later version-1 registration and the final `promote --mappings fixtures/registry/mappings` would be `head-rollback` (spec 84, 553; the floor is not weakened): `F-GEN-FLOOR` and the generation-2 half of `I-20` run in their own temporary state directories and appear in the report as `state: isolated`, which `promote` refuses as a target (`gate-report-generation-isolated`); every shared-state generation reads `fixtures/registry` (head version 1), so the floor of the shared state stays at 1 and the Verification promote stays valid whatever the assertion order. Isolation was chosen over ordering because the floor belongs to the state directory, so the version-raise evidence and the operational state must not share one directory, and because the manifest order is not a contract.
 
@@ -1715,8 +1715,8 @@ Branch: `git switch -c test/step3-core-gate main` after PR 5 merged.
 ### Task 22: The eight negative controls and the gate self-tests
 
 **Files:**
-- Modify: `core/src/main/java/dev/krillin/forseti/core/NegativeControls.java` (created in Task 10 with `NONE`; unchanged shape, now read by the code paths below), `Stage1`, `Stage2`, `ReferenceEngine` (composes the record from `--negative-control`), `CoreGate`, `oracle/src/forseti_oracle/stage1.py` (`--lenient`), `gate/core-negative-controls.json` (8), `gate/core-assertions.json` (+2 = 81)
-- Create: `cli/src/test/java/dev/krillin/forseti/cli/gate/NegativeControlsTest.java`
+- Modify: `core/src/main/java/yggdrasil/forseti/core/NegativeControls.java` (created in Task 10 with `NONE`; unchanged shape, now read by the code paths below), `Stage1`, `Stage2`, `ReferenceEngine` (composes the record from `--negative-control`), `CoreGate`, `oracle/src/forseti_oracle/stage1.py` (`--lenient`), `gate/core-negative-controls.json` (8), `gate/core-assertions.json` (+2 = 81)
+- Create: `cli/src/test/java/yggdrasil/forseti/cli/gate/NegativeControlsTest.java`
 
 The controls are flags the harness passes to the core (the core's `NegativeControls` record, `NONE` in production; `Stage1` and `Stage2` are constructed with it; core never references cli) or to the oracle. They prove the gate's assertions can fail (spec 655-667). A control run uses the same manifest and must exit 1 with its intended assertion in `failed`; `report.json.intendedFailures` lists the ids and CI checks the subset.
 
