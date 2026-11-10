@@ -1,0 +1,1894 @@
+# Forseti Step 3: Engine-Independent Core and Oracle Implementation Plan
+
+> **For agentic workers:** REQUIRED: Use superpowers:subagent-driven-development (if subagents available) or superpowers:executing-plans to implement this plan. Steps use checkbox (`- [ ]`) syntax for tracking.
+
+**Goal:** Forseti gets its first code: `forseti-core` (Java 17; value types, RFC 8785 canonical digests, the release reader at Vor's level, rule and binding-profile loading from a Bifrost-published release, the two stage decision functions as pure functions, `ProgressTracker`), a `forseti` CLI (`generation new|promote|retire|list`, a reference harness that drives the core without an engine through cut barriers, a recording builder and synthesizer, and `forseti gate --engine core`), an independent Python oracle (sort-and-sweep, no shared code), the shared JCS vector file run by both test suites, the two input JSON Schemas (`urn:forseti:schema:occupancy:1.0.0`, `urn:forseti:schema:incident:1.0.0`), hand-made recordings and synthesized continuous recordings for the horizon scenarios. The step is complete when `forseti gate --engine core` runs every engine-independent injection of the spec's table, prints `assertions run N / expected N` with N equal to its committed manifest, exits 0, and each of the eight engine-independent negative controls exits 1 for its intended assertion; the spec's completion gate: "without an engine, core equals the oracle on every engine-independent injection". A step-3 report names its scope `core` and never claims the semantic gate of spec line 671 or engine eligibility.
+
+**Architecture:** Two Maven modules and one Python package, coupled only by files. `core` holds everything the engine adapters of steps 6-7 will call: `decide(keyState, event, watermark) -> (newState, outputs)` for stage 1 (per station) and stage 2 (per station, driven by `ProgressTracker`), the journal row and progress record types with their envelopes, the disposition ledger types, the canonical digest, the release reader and the rule set, and the pure generation transition policy. `cli` holds what runs the core without an engine: the reference harness (stations as keyed state, cut barriers per subscribed partition, the per-station `W1` formula, timers fired in deadline order after the cut's inputs, journals written as JSONL files in the record shape the Kafka topics will carry), the recording builder and synthesizer (scenario JSON -> recording directory, ground truth kept apart from delivered records), the generation CLI over a locked, durable file-backed control log (the Kafka transport is step 6), and the gate that folds the journals, runs the oracle as a subprocess, compares live rows and dispositions by identity, and counts assertions against a committed manifest. `oracle/` is a Python package that reads the same recording, the cut log the harness exports and the release payload named by the pins, and recomputes every live row body from scratch per cut by sort-and-sweep. Nothing in forseti imports Bifrost, Tyr, Vor or Muninn code; the only cross-repository execution is Bifrost's `gates` CLI inside the fixture-generation script and one seam test, as Tyr runs it.
+
+**Tech Stack:** Java 17 (Temurin 17 in CI), Maven multi-module (`forseti-parent`, `core`, `cli`), Jackson 2.17.2, `io.github.erdtman:java-json-canonicalization:1.1` (JCS), `com.networknt:json-schema-validator:1.5.1` (draft 2020-12, as Bifrost), JUnit 5.10.3, maven-compiler 3.13.0, surefire 3.2.5, maven-shade 3.6.0 for the `forseti` jar. Python 3.13 pinned in CI (`>=3.11` declared), `rfc8785==0.1.4`, `jsonschema==4.26.0`, `pytest==8.3.5`; the oracle runs under `python -I`. Engines are not dependencies of step 3; the spec records the proposed pins Flink `2.2.1`, `org.apache.flink:flink-connector-kafka:5.0.0-2.2`, Kafka Streams `4.2.2` (Task 1). Files are LF (`.gitattributes`); fixture, vector and schema bytes are `-text`. Product names in prose are ASCII (Mimir, Tyr). Branches off forseti `main` (`384933d`), one per PR: `docs/step3-pins-and-decisions`, `feat/step3-foundation-and-release-reader`, `feat/step3-attribution-core`, `feat/step3-impact-and-progress`, `feat/step3-recordings-and-oracle`, `feat/step3-generation-cli`, `test/step3-core-gate`.
+
+---
+
+All spec line references are lines of `docs/superpowers/specs/2026-11-05-forseti-design.md` at `384933d`, before the Task 1 edits. Commands and expected outputs below are acceptance criteria for implementation; none was executed while planning.
+
+## Spec and rules applied
+
+- Spec: Delivery plan row 3 (line 714). Decisions 1 (30), 2 (34), 4 (42-44), 5 (47), 6 (52), 7 (56), 8 (60), 9 (64), 11 (72), 12 (76), 14 (84), 15 (88), 16 (93), 17 (97). Contracts: input events (231-233), process messages (237-263), session events (265-278), occupancy (280-296), incidents (298-315), output rows and envelope (317-333), work record body (335-355), sample journal body (357-368), impact assessment body (370-379), affected set body (381-400), cut barriers, progress records and the disposition ledgers (402-452), topics and partitioning (454-484). Correction semantics (486-535), generations and revisions (537-553). Testing and gates: cuts and the independent oracle (576-607), fault injections (609-651), negative controls (653-667), proving the gates run (669-701). Open questions (722-732).
+- Owner decisions of 2026-11-09 (`DECISIONS-P3.md`): Q1 the split below (a spec-correction PR, then six code PRs in this order); Q2 Kafka Streams pinned at 4.2.2 (same 4.2 client line as the connector's parent, one broker version); Q3 Tyr's committed bundle bytes stay untouched and prove `binding.schema-mismatch`, execution uses forseti's own re-pinned registry fixture (real schema digests, incident topic `quality.incidents`), and a Tyr re-author PR then a Bifrost copy PR follow (Follow-up section); Q4 every step-3 interpretation the spec leaves open is written into the spec by the first PR, before any code freezes bytes (Task 1 gives the exact text). Merge rules: gate command `forseti gate --engine core` (steps 6-7 widen the same command with `flink` and `kafka-streams`); pytest for the oracle.
+- Facts checked by the controller on 2026-11-09 and used as given: the newest `flink-connector-kafka` is `5.0.0-2.2` (built for Flink 2.2; parent `kafka.version` 4.2.0); Flink 2.2.x releases are 2.2.0 and 2.2.1; Kafka Streams 4.2.2 exists (4.4.0 is the latest); the Java JCS library is published as `io.github.erdtman:java-json-canonicalization` (1.1 latest; the spec's `org.erdtman` is not a published coordinate); Python `rfc8785` latest 0.1.4; JDK 17 Ed25519 (JEP 339) with a self-written DSSE PAE is what Bifrost runs on Temurin 17 in CI.
+- Rules the plan applies as the spec states them. Line 56: `bodyDigest` = SHA-256 over the UTF-8 JCS bytes of the body; pinned libraries in both languages; one shared vector file run by both suites; times are epoch milliseconds as integers; non-finite values are not aggregated. Line 76: `forseti-core` has no Flink or Kafka Streams dependency; decision functions are pure; `ProgressTracker` drives stage 2 from stage-1 progress records. Line 84: `heads -> release.json -> payload` by raw-byte SHA-256; each head verified as Vor's `head.py` does (two signatures from distinct trusted keys, a version floor that never goes down, expiry). Line 72: a generation pins both rules, the hierarchy, the binding profiles and the input releases; jobs refuse an unregistered generation; `promote` requires the gate report digest. Line 553: the floor at `<stateDir>/head-floors/<stream>.json` in Vor's shape. Lines 192, 204: the job compares `format.schemaSha256` with its built-in schema and refuses to start on a difference (`binding.schema-mismatch`). Line 588: the oracle is a Python batch program sharing no code with core, sort-and-sweep; it receives per cut the included offset ranges, the batch manifest, each station's `cutId` and `admissionW`, evaluates inputs admitted against `admissionW` and timers up to the reported `W1`, with `W2(s, cut) = W1(s, cut)`; intermediate revisions are checked only for monotonicity, integrity and no equal consecutive bodies. Lines 592-594: mandatory deadline-bracketing cuts, injection 23's planned `A`, synthesized continuous recordings with telemetry tails. Line 596: ground truth kept separate from delivered records; the JCS vector file executes in both suites. Lines 598-607: scenario fixture shape; sizes pinned in the plan. Lines 671, 696-703: the gate's assertion manifest, `assertions run N / expected N`, exit 1 on any assertion not run; every run records seed, fixture digest, pins, engine and job digests, offset ranges; a step is complete when the controller runs the commands and retains the logs.
+- Zero shared code (line 5, Decision 1): no Bifrost, Tyr, Vor or Muninn artifact on any Maven or Python classpath (a dependency-tree check enforces it, Task 2); published files only (Tyr's bundles as inputs to a fixture script, Bifrost's registry layout, Bifrost-published heads); Bifrost's `gates` CLI runs only inside `scripts/make_registry_fixture.py` and the seam test.
+- Precedents read: Bifrost step-1 plan and Tyr step-2 plan (plan form); Bifrost `core/.../identity/{Ed25519Keys,Dsse}.java`, `mapping/MappingHeadAttestation.java`, `MappingGate.java` (CLI syntax), `docs/MAPPING-PUBLICATION.md` "Head freshness (TUF rules)", `MappingTyrAttributionRuleTest.java`; Vor `head.py`, `release.py`, `tests/fixtures/registries/active`, `scripts/make_fixtures.py`, `tests/helpers.py`, CI; Tyr `fixtures/attribution-rule/{bundle,plc-stamped-bundle}` (verified byte-identical to Bifrost's `tyr-attribution-impact` and `tyr-attribution-plc-stamped` with `diff -r`), Tyr CI (sibling Bifrost checkout).
+
+## Sub-steps
+
+Seven PRs in this order (owner decision Q1). Each has its own branch off the merged predecessor, an executable gate (`forseti gate --engine core` with the committed manifest `gate/core-assertions.json` growing from 18 to 82 assertions, plus the Maven and pytest commands of its tasks), and a pull-request task. Earlier gates report their sub-step; only PR 6 closes step 3. No `tools/verify.py` wrapper is kept: the gate binary, Maven and pytest are the three commands, and a wrapper would be a fourth place where a skipped test could hide.
+
+| PR | Branch | Tasks | Executable gate | Why the boundary is here |
+|---|---|---|---|---|
+| 0 | `docs/step3-pins-and-decisions` | 1 | `bash scripts/check-spec-decisions.sh` exits 0 (every required phrase present in the spec; only the spec and the script changed against `main`) | The pins and every step-3 interpretation are written into the spec before any code freezes bytes (Q4); a reviewer sees the decisions without code |
+| 1 | `feat/step3-foundation-and-release-reader` | 2-9 | manifest at 18 `F-*` assertions; `mvn install`; `pytest` | Everything the decision functions consume is fixed as files and types (canonical bytes, schemas, identities, journal reducers, verified releases, rule set, recording format); none of it depends on a semantic decision |
+| 2 | `feat/step3-attribution-core` | 10-13 | manifest at 24 (+6 `S-*`): stage 1 through the reference harness on the committed smoke recordings and inline sequences, without the oracle | Stage 1 is one rule and one owner; its outputs (`forseti.work-records`, `forseti.samples`) are stage 2's published inputs; the harness is how the core runs without an engine, so it belongs with the first decision function |
+| 3 | `feat/step3-impact-and-progress` | 14-15 | manifest at 29 (+5 `T-*`): `ProgressTracker`, stage 2, cascade, deletes on the same recording | The second rule and owner; the cascade and the progress protocol must exist before differential testing crosses two stages |
+| 4 | `feat/step3-recordings-and-oracle` | 16-19 | manifest at 72 (+32 `I-*`, +8 `J-*`, +3 `C-*`): every engine-independent injection except 20 and 23, the oracle, integrity, determinism, item 2 reference values | The independent implementation and the fixtures it is compared on are reviewed together; the synthesized horizon recordings (350k messages) enter here |
+| 5 | `feat/step3-generation-cli` | 20-21 | manifest at 79 (+5 `F-GEN-*`, `I-20`, `I-23`) | Persistent control state, promotion and generation replay are reviewed apart from business evaluation |
+| 6 | `test/step3-core-gate` | 22-23 | manifest at 82 (+`C-1`, +2 gate self-tests); eight negative controls exit 1; CI | Closes the step: assertion accounting proven to run, controls, CI, documentation |
+
+## File Structure
+
+| File | Responsibility |
+|---|---|
+| `docs/superpowers/specs/2026-11-05-forseti-design.md` | **PR 0** - Task 1 insertions only (pins, reader path, step-3 interpretations); contracts and gate meaning unchanged |
+| `.gitattributes`, `.gitignore` | LF everywhere; `fixtures/** -text`, `vectors/** -text`, `schemas/** -text`, `core/src/main/resources/forseti/** -text`; ignore `target/`, `build/`, caches, private keys |
+| `.github/workflows/ci.yml` | Linux: ASCII names, dependency-closure check, `mvn -B -ntp install`, oracle `pytest`, `forseti gate --engine core` (exit 0), every control in `gate/core-negative-controls.json` (exit 1), the Bifrost seam job with pinned sibling checkouts; Windows: `mvn -B -ntp install` + oracle tests |
+| `scripts/check-ascii-names.sh`, `scripts/check-dependency-closure.sh` | the family's product-name check; `mvn dependency:tree` grep for banned groups (`dev.krillin.bifrost`, `org.apache.flink`, `org.apache.kafka`) |
+| `pom.xml`, `core/pom.xml`, `cli/pom.xml` | `forseti-parent` 0.1.0-SNAPSHOT (pins above); `forseti-core` (Jackson, JCS, networknt only); `forseti-cli` -> shaded `cli/target/forseti.jar`, main `dev.krillin.forseti.cli.Main` |
+| `core/src/main/resources/forseti/schemas/{occupancy,incident}-1.0.0.schema.json` | the two input schemas (spec 280-315); their raw-byte SHA-256 is the profiles' `format.schemaSha256` |
+| `schemas/{occupancy,incident}-1.0.0.schema.json` | the published copies at the root (what Tyr and Bifrost cite); a test asserts byte equality with the core resources |
+| `vectors/jcs-vectors.json` | the shared JCS vector file: inputs as JSON text, expected canonical text and SHA-256, refusal vectors |
+| `core/.../core/Json.java` | the one Jackson mapper (strict, duplicate keys refused, no NaN/Infinity, big integers kept) and the pretty writer in Tyr's shape |
+| `core/.../core/canon/Canonical.java` | `bytes(JsonNode)`, `digest(JsonNode)`, `digestOf(byte[])`; the two pre-checks; the only call site of the JCS library |
+| `core/.../core/input/{Inputs,Ids,InputParser,StatusCodes}.java` | input records with `Origin`; semantic identities and `payloadDigest`; schema validation (`schema-invalid`) and structural parsing; OPC UA severity bits |
+| `core/.../core/journal/{Envelope,Row,Delete,Pins,Progress,Disposition,Revisions,JournalFold}.java` | the common envelope (spec 321-331), `delete` control record, the three progress bodies (412-452), the ledger key and body (437-450), revision emission (one revision per body change, deletes in the chain), the fold (current generation, highest revision per key, deletes applied, progress excluded) |
+| `core/.../core/release/{Refusal,TrustedKeys,FloorStore,Dsse,HeadVerifier,ReleaseReader}.java` | the reader at Vor's level (Decision 14); the closed refusal set of Task 1 |
+| `core/.../core/rules/{Hierarchy,MemberCatalog,AttributionRule,ImpactRule,OccupancyBinding,IncidentBinding,RuleSet}.java` | typed views of the released documents, member resolution and roles (spec 132), `binding.schema-mismatch`, `pins()` and `rulesDigest()` (spec 355) |
+| `core/.../core/stage1/{Events,Stage1State,Stage1,PlcStamped,VisitClaim,Attribution,Coverage,Sessions,WorkRecord,SampleRow}.java` | stage 1 (rule sheet S1-S11 and P1-P3) |
+| `core/.../core/stage2/{Events2,ProgressTracker,Stage2State,Stage2,Incidents,Relatedness,DecisionTable,SetCoverage,Assessment,AffectedSet}.java` | stage 2 (rule sheet T1-T10) |
+| `core/.../core/generation/{Generation,GenerationStore}.java` | the generation row (spec 540-548) and the store interface (**PR 2**, Task 11: the harness reads them from its first run) |
+| `core/.../core/generation/GenerationPolicy.java` | the pure transition policy (`registered -> replaying -> verified -> current -> retired`, one current per scope) (**PR 5**) |
+| `cli/.../cli/{Main,Args}.java` | `forseti generation ...`, `forseti recordings build|synth|verify`, `forseti run --engine core`, `forseti gate --engine core` |
+| `cli/.../cli/recording/{Recording,RoutingManifest,Murmur2}.java` | recording directory format, routing manifest and `routingDigest`, Kafka's default partitioner for raw device keys (**PR 1**) |
+| `cli/.../cli/recording/{ScenarioBuilder,Overlays,GroundTruth,Synthesizer,Telemetry}.java` | scenario JSON -> recording + ground truth; injection overlays; streamed continuous recordings and lock files (**PR 4**) |
+| `core/.../core/NegativeControls.java` | the record of control flags the decision functions are constructed with, `NONE` in production (**PR 2**, Task 10, as a parameter nothing reads yet); PR 6 adds the behaviours and cli composes its values from `--negative-control`; core never depends on cli |
+| `cli/.../cli/harness/{ReferenceEngine,StationTask,RejectCollector,ContractOrder,JournalFiles,CutLog,RunRecord}.java` | the engine-independent reference adapter (stage 1 in PR 2, stage 2 in PR 3, controls in PR 6) |
+| `cli/.../cli/generation/{GenerationCli,FileGenerationStore,GateReportReader}.java` | the CLI verbs and gate-report verification for `promote` (**PR 5**); `FileGenerationStore`'s read side arrives in **PR 2** (Task 11) and its locked, durable `append` in PR 5 |
+| `cli/.../cli/gate/{CoreGate,Assertions,Comparison,Integrity,Injections}.java` | manifest loading, assertion accounting, folding, oracle comparison, integrity checks, per-injection assertions |
+| `gate/core-assertions.json`, `gate/core-negative-controls.json` | the committed assertion manifest of `--engine core` (ids below) and the control list CI loops over |
+| `oracle/pyproject.toml`, `oracle/src/forseti_oracle/{canon,inputs,rules,recording,cuts,stage1,stage2,fold,cli}.py`, `oracle/tests/*.py` | the oracle and its pytest suite |
+| `fixtures/registry/**`, `fixtures/registry-next/**`, `fixtures/registry-upstream/**`, `fixtures/trusted-keys.jsonl`, `fixtures/registry.lock.json` | Bifrost-published registries: `registry` holds forseti's re-pinned copies of Tyr's bundles on streams `line2`, `line2-plc` and `line2-plc-nocheck` (the plc rule with `crossCheck: none`, for 11b); `registry-next` adds rule 1.0.1 on stream `line2` (head version 2); `registry-upstream` publishes Tyr's `bundle` untouched (the `binding.schema-mismatch` fixture reached after head and release verification); the trusted public keys outside the registries; the lock (Bifrost and Tyr heads, schema digests, every file digest of the three registries) |
+| `fixtures/upstream/{bundle,plc-stamped-bundle}/**`, `fixtures/upstream/manifest.json` | Tyr's two bundles copied byte for byte (39 + 59 files) with their digests; they stay untouched and prove `binding.schema-mismatch` (Q3) |
+| `fixtures/recordings/{smoke,smoke-plc,smoke-incident}/**`, `fixtures/scenarios/smoke*.json` (+ locks) | the three committed one-visit recordings (3,248 messages each, built from their scenarios with the full telemetry tail and re-verified by `recordings verify`) that show the format and carry PRs 2-3; PR 4 commits every other hand-made recording the same way (`fixtures/recordings/<name>/`, about 90 MB in all); only the five horizon recordings are built at gate time |
+| `fixtures/scenarios/*.json`, `fixtures/scenarios/*.lock.json` | scenario definitions and pinned digests of the recordings they build (hand-made: committed under `fixtures/recordings/`; horizon: built at gate time) |
+| `scripts/make_registry_fixture.py` | copies Tyr's bundles, re-pins the two profile files (real digests, `quality.incidents`), approves and publishes with Bifrost's CLI into `registry` and `registry-next` |
+| `README.md`, `docs/CORE-GATE.md` | **PR 6** - what the core and oracle are, the three regimes of Decision 16, how to run the gate and the controls, the fixture provenance, what the core scope does not establish; the assertion table, formats, controls |
+
+## Engine-independent injection list
+
+"In" = run by `forseti gate --engine core`; "Out" = needs an engine, Kafka or the full loop. Included means the specified observable input and business semantics are tested on recordings; it does not claim a bridge, simulator, engine timer, transaction or broker was exercised.
+
+| Id | In/Out | PR / later step | Reason (one line) |
+|---|---|---|---|
+| 1 | In | 4 | a delivery-order permutation of the same recording; compared at the settled cut |
+| 2 | In | 4 | occupancy after samples; the stage-1 transition at the bracketing cuts |
+| 2b | In | 4 | samples before their arrival; `unattributed` -> `attributed` revision |
+| 3 | In | 4 | Bad is a `uaStatusCode` in the recording; the sim's `Sim/<member>.StatusCode` is how the loop produces it (step 4-5) |
+| 4 | In | 4 | two overlapping closed visits are occupancy content |
+| 5 | In | 4 | a duplicated record in the recording |
+| 6 | In | 4 | a 24 h continuous recording (synthesized) |
+| 7 | In | 4 | activity true with no open visit is telemetry content |
+| 8 | In (consumption) | 4; production in 5 | the core consumes `seq-gap`/`session-down`/`session-up`; Muninn's termination, the Will and the bridge's event production are step 5 |
+| 9, 9b | In | 4 | `sourceTs` shifted +30 s / +90 s in the recording; 9b's bands are per-sample expectations |
+| 10, 10b, 10c, 10d, 10f | In | 4 | EPCIS error declarations and re-sends are occupancy content |
+| 10e | In | 4 | needs the horizon (synthesized) |
+| 11, 11c, 11d | In | 4 | plc-stamped identity members are telemetry content |
+| 11b | In | 4 | held-back plc-stamped run with the occupancy partitions not subscribed |
+| 11e | In | 4 | needs the horizon |
+| 12-17 | In | 4 | stage 2 from stage-1 journals and incident content |
+| 18, 19 | In | 4 | the cascade through the harness: stage-1 output re-drives stage 2 |
+| 20 | In | 5 | two generations of one recording with two rule versions through the generation CLI and the two registry fixtures |
+| 21 | Out | 6, 7 | `kill -9`, checkpoint restore and transactional sinks are engine behaviour |
+| 22 (i)-(iv) | Out | 6, 7 | restart, rebalance and recovery control need the engines and Kafka |
+| 23 | In | 5 | planned late samples at `A - horizonMs +- 1`; the second generation replays in event-time order |
+| 24 | Out | 6, 7 (`forseti requirements`) | starvation and the 60 s observation deadline are engine time behaviour; both raw placements are step-5 fixtures |
+| 25 (a), (b) | In (consumption) | 4; classification in 5 | the core consumes `stale-death` (session stays open) and `session-ambiguous` (coverage `unknown`); NDEATH assignment and missing-NBIRTH detection (Decision 10) are bridge logic |
+| 26 | In | 4 | a quiet occupancy stream is a recording variant compared with its control run |
+| alpha `processing-time` | In | 6 | the harness orders by arrival instead of event time; fails `I-1` |
+| beta `drop-late` | In | 6 | the harness drops a beyond-horizon input without a disposition; fails `J-DISPOSITION-COVERAGE` on 23 |
+| gamma `no-cascade` | In | 6 | stage 2 ignores basis changes; fails `I-18`, `J-BASIS-CURRENT` |
+| delta `lenient-oracle` | In | 6 | the oracle counts `provisional` as `complete`; fails `I-2` and `I-6` at the mandatory cuts |
+| epsilon `first-wins` | In | 6 | the first visit wins an overlap; fails `I-4` |
+| zeta `station-granularity` | In | 6 | stage 2 matches station activity; fails `I-16` |
+| eta `ignore-session-gap` | In | 6 | fails `I-8` |
+| theta `non-transactional-output` | Out | 6, 7 | a failure between output and state commit is sink behaviour |
+| iota `wrong-rules-pin` | In | 6 | the gate's cross-check of body `rulesDigest`, generation row and envelope pins |
+| item 1 | In | 6 (aggregate) | core equals the oracle at every compared cut on every injection above |
+| item 2 | In (reference values) | 4 | longest lateness corrected online, journal counts, zero inputs without disposition; engine values in 6-7 |
+| item 6 | In | 4 | three runs with shuffled delivery order inside every batch |
+| items 3, 4, 5(c)(d), 7, 8, 9 | Out | 6-8 | restart, replay wall time, isolation, adapter cost, footprint, latency are engine measurements (5(a) and 5(b) are the semantic obligations of 26 and 7, included) |
+
+34 injection ids are included. Pure protocol types for `restartEpoch`, `recoveryRef`, `mergedCutIds` and `initEvidence` exist in the progress records from PR 1 on; they do not discharge 21 or 22.
+
+## Conventions the tasks follow
+
+- **Names come from the spec, as corrected by Task 1.** Statuses, reasons, dispositions, topics, body fields, progress fields and refusal codes are the spec's strings byte for byte. The names step 3 adds (CLI flags, file names) are listed in Task 1's insertion for line 714 or in this plan's File Structure, nowhere else.
+- **Pure decision functions.** `Stage1.decide(state, event, watermark)` and `Stage2.decide(state, event, w2)` read nothing but their arguments and the `RuleSet` and the core's `NegativeControls` record they were constructed with (all false outside a control run; the cli only composes its values); no clock, random, file, environment or static mutable state. The caller owns the state object and gets it back (adapters load it from their store and write it back); a test runs one sequence twice from fresh states and asserts identical outputs and identical serialized state.
+- **Emission.** A row is emitted when its `bodyDigest` differs from the last emitted digest of its logical key; `Revisions` assigns `revision` (from 1 per generation per key) and `supersedesDigest`; `delete` control records take the next revision; a run id or envelope-only change emits nothing. Progress records have no envelope and are never rows.
+- **Contract order inside a cut.** `(eventTime, kindRank session 0 < occupancy 1 < sample 2, identity bytes, payloadDigest)` (spec 491); every input of a cut applies before the cut's timers, which fire in deadline order up to the engine's own event time; incidents (no event time) apply in stage 2 after the cut's stage-1 progress in `(identity bytes, payloadDigest)` order.
+- **Oracle independence.** The oracle is written from the spec text (as corrected by Task 1), not from the Java. No constants file, schema loader, fixture helper or expected body is shared; the two meet only at the vector file, the recording files, the cut log, the released bytes and the journal files. An independence test asserts the oracle imports nothing from `cli/` or `core/` and never launches Java, and that Java never launches Python for a business decision (only the gate launches the oracle, to compare).
+- **Tests.** Java: JUnit 5, `mvn -q -pl core -Dtest=<Class> test`; `cli` tests need `mvn -q -pl core install -DskipTests` first. Python: pytest from `oracle/` (parametrized vector and expectation tables; Vor's precedent). Every harness run writes `run.json` {seed (default `20261109`), fixture digests, pins, JCS library versions, engine `core-harness`, artifact digest, offset ranges, command}; a unit test without topic inputs records an empty offset-range list; the gate writes `report.json` with the same fields plus the manifest digest and scope `core`.
+- **Commits.** One per task, conventional subjects (`feat(core): ...`, `feat(cli): ...`, `feat(oracle): ...`, `test(...)`, `docs(...)`, `build: ...`), the attribution trailer the session requires. Never on `main`. `git diff --check` clean before each commit.
+- **Byte stability.** `Canonical.bytes` is the only serializer for anything digested; raw-file SHA-256 and canonical SHA-256 are never mixed (`Canonical.digestOf(bytes)` vs `Canonical.digest(node)`). Pretty JSON written by forseti uses two-space indent, `\n`, UTF-8, trailing newline, `": "` separators (Tyr's shape) through `Json.pretty`.
+- **Time.** Epoch milliseconds as integers everywhere; `T0 = 1794182400000` (2026-11-09T00:00:00Z) is the scenario epoch; scenario durations in milliseconds from `T0`.
+- **Partitions.** Six everywhere except the two ledgers (seven), `forseti.generations` and `forseti.recovery-control` (one). Station partitions from the sorted `stations[]` of the pinned rule (`synthetic-site:line2:station1` -> 0, `station2` -> 1; 2-5 unassigned in the two-station fixtures). Raw topics keep device keys with Kafka's default partitioner placement, recorded in `routing.json`.
+
+---
+
+## Chunk 1: Spec correction PR (PR 0)
+
+### Task 0: Branches and the reference checkouts
+
+**Files:** none
+
+- [ ] `git -C forseti status --short` is empty and `git -C forseti log -1 --format=%h main` prints `384933d` (if `main` moved, record the new head in the PR bodies and re-check the line numbers of Task 1 before editing).
+- [ ] `git -C forseti switch -c docs/step3-pins-and-decisions main`.
+- [ ] Sibling checkouts used read-only: `../tyr` at `main` (`fixtures/attribution-rule/{bundle,plc-stamped-bundle}`), `../bifrost` at `main` with `gates/target/bifrost-gates.jar` built (`mvn -B -ntp -pl gates -am package -DskipTests`). Record both heads (`git rev-parse HEAD`); `scripts/make_registry_fixture.py` writes them into `fixtures/registry.lock.json` and CI checks out exactly those refs.
+
+### Task 1: Spec correction PR: pins, the reader path, and every step-3 interpretation (Q4)
+
+**Files:**
+- Modify: `docs/superpowers/specs/2026-11-05-forseti-design.md`
+- Create: `scripts/check-spec-decisions.sh` (the executable gate of this PR)
+
+Each insertion below is given with the spec line it follows (or replaces) and its exact text. Nothing changes a contract field list, a reason vocabulary, a hypothesis or the meaning of a gate; the insertions fix readings the spec left open so that both implementations and the fixtures freeze the same bytes. Apply them from the bottom of the file upward so earlier line numbers stay valid.
+
+- [ ] **Step 1.1** Replace line 724 (first Open question) with:
+
+```
+* Pinned versions (confirmed 2026-11-09 against Maven Central and PyPI): JCS in Java is `io.github.erdtman:java-json-canonicalization:1.1` (this spec earlier named the group `org.erdtman`, which is not the published coordinate), JCS in Python is `rfc8785==0.1.4`. For delivery steps 6-7 the pins are Flink `2.2.1` with `org.apache.flink:flink-connector-kafka:5.0.0-2.2` (the newest connector, built for Flink 2.2; its parent pins `kafka.version` 4.2.0; Flink 2.3.0 has no connector release) and Kafka Streams `4.2.2` (the 4.2 client line the connector's parent names, so both engines use one client line against one broker version; 4.4.0 is the latest release). Step 3 depends on neither engine; the step-6 plan confirms the native-time assumptions listed below for these versions.
+```
+
+- [ ] **Step 1.2** Replace line 725 with:
+
+```
+* The JDK 17 Ed25519 path (JEP 339: `KeyFactory`/`Signature` "Ed25519", X.509 SubjectPublicKeyInfo public keys, raw 64-byte signatures) and a self-written DSSE PAE (`"DSSEv1" SP LEN(type) SP type SP LEN(body) SP body`, lengths in ASCII decimal) are confirmed (2026-11-09): Bifrost signs and verifies heads with exactly this API on Temurin 17 in CI. Forseti writes its own reader and proves it in a test against a head Bifrost publishes (step 3).
+```
+
+- [ ] **Step 1.3** Replace line 714 (Delivery plan row 3) with (the scope wording; the completion gate is unchanged):
+
+```
+| 3 | forseti | `forseti-core`, `ProgressTracker`, generation CLI, oracle, JCS vectors, hand-made recordings, synthesized continuous recordings for horizon scenarios; the engine-independent subset of the injection table (1, 2, 2b, 3, 4, 5, 6, 7, 8 and 25 as consumption of recorded session events, 9, 9b, 10, 10b, 10c, 10d, 10e, 10f, 11, 11b, 11c, 11d, 11e, 12, 13, 14, 15, 16, 17, 18, 19, 20, 23, 26), the negative controls other than `non-transactional-output`, and comparison items 1, 2 (reference values) and 6, run by `forseti gate --engine core` against its own assertion manifest; a `core` report never claims the semantic gate or engine eligibility; the generation store and recovery control are files in step 3 and Kafka topics from step 6, with the row shapes of `forseti.generations` and `forseti.recovery-control` unchanged | without an engine, core equals the oracle on every engine-independent injection |
+```
+
+- [ ] **Step 1.4** Insert after line 588 (end of the oracle paragraph in "Cuts and the independent oracle"):
+
+```
+In the engine-independent reference harness of step 3, which runs the core with no engine, `W1(s)` is the per-station formula (the largest telemetry `sourceTs` routed to `s` over everything delivered through the cut, minus `outOfOrdernessMs`, minus 1), `admissionW` is the previous cut's `W1`, `restartEpoch` is 0, `recoveryRef` is null, `mergedCutIds` is empty, and the single recovery declaration is the generation's initial one; the Flink minimum-over-partitions form becomes a harness option in step 6.
+```
+
+- [ ] **Step 1.5** Insert after line 553 (end of "Generations and revisions"):
+
+```
+Generation status moves `registered` -> `replaying` -> `verified` -> `current` -> `retired`. Every status row is written by the operator CLI and by nothing else (jobs, the reference harness and the gate never write `forseti.generations`): `generation new` writes `registered`; `generation promote --run <run record> --gate-report <report>` writes, in one locked operation, `replaying` (citing the run's `runId` and offset ranges), `verified` (citing the gate report's digest, whose runs must include that run and whose scope the operator accepts explicitly) and `current`, and a `retired` row for the previous `current` of the scope; `generation retire` writes `retired`. Every change appends a row, no row is rewritten, and generation numbers are allocated once, increasing across the whole control store (never per scope, so a number names one generation whatever its scope, as the journal identity `(evaluationGeneration, key)` and the recovery declaration carry no scope); `current` is kept per scope, the scope being the `streamId` of the release that carries the attribution rule (the record key of `forseti.generations`). A job or the harness reads a registered generation's pinned `releaseEvidence` and verifies the release files against those digests; it does not re-verify the head (that is `new` and `promote`, against the current time). A generation replayed in event-time order (`forseti run --replay event-time`, Decision 11) carries `cause` `{"kind": "replayed", "inputKind", "identity"}` on every row it emits; other rows carry `{"kind": "input", "inputKind", "identity"}` or `{"kind": "timer", "deadline"}`.
+```
+
+- [ ] **Step 1.5b** Insert after line 515 (the row-set paragraph of "Stage 2"):
+
+```
+The row set accumulates over every delivered revision that passed the schema, scope, station and `revisionEventTime` checks, whatever its disposition: a superseded lower revision still widens the row set, while only the highest valid revision is judged; a revision in conflict or rejected contributes nothing. The final key set and bodies therefore do not depend on the order in which revisions arrive.
+```
+
+- [ ] **Step 1.6** Insert after line 502 (session gaps in "Stage 1"):
+
+```
+A `session-ambiguous` event opens an unknown interval for its device from the device's last valid observation before `detectedEventTime` to the next `session-up` `at`, or to `W1` while none has arrived; coverage over it is `unknown`. A sample whose `sourceTs` lies inside a `session-down` interval of its device is `unattributed` with reason `outside-session`; one inside an unknown interval is `unattributed` with reason `session-ambiguous`.
+```
+
+- [ ] **Step 1.7** Insert after line 491 (sample attribution in "Stage 1"):
+
+```
+Candidates are every visit of the read point whose window contains the sample, whatever its status; when exactly one candidate is not retracted the sample attributes to it; two or more non-retracted candidates make the sample `ambiguous`; when no candidate is non-retracted, the sample attributes to the retracted candidate whose actual `[enter, leave)` contains it (a retracted visit keeps the evidence of what happened), and when none or several do it is `unattributed` with reason `ambiguous`. Coverage counts observations by their quality-blind candidate (the same window rule with the quality, finiteness and session steps skipped): a Bad or rejected-Uncertain observation is never attributed and never aggregated, yet it counts for that visit's `observedPeriods`; `badSlots` counts only slots holding a raw Bad observation (line 137: Bad is judged from the status code's severity bits; a rejected Uncertain observation is not Bad and adds nothing to `badSlots` or the bad share); a sample that is `ambiguous`, `outside-session`, `session-ambiguous`, `non-finite` or without `sourceTs` counts for no visit.
+```
+
+- [ ] **Step 1.8** Insert after line 450 (the `replay-required` line, the last line of the ledger reason vocabulary block, so the block itself stays byte-identical for Step 1.15's hash):
+
+```
+An occupancy event whose `source` is not in the profile's `sources[]`, whose `unitId` does not match `identity.pattern`, whose `bizStep` is neither the profile's `enter` nor its `leave` value, or whose `errorDeclaration.reason` is not in the profile's `correction.reasons`, and an incident whose `kind` is not in the profile's `kinds[]`, or whose `revisionEventTime` breaks line 308 (revision 1 must carry `revisionEventTime == detectedAt`; a later revision's `revisionEventTime` must be at least that of every accepted lower revision and at most that of every accepted higher revision, judged by revision number whatever the arrival order), are `rejected` with reason `schema-invalid` and `refs.check` naming the field (`sources`, `identity.pattern`, `bizStep`, `correction.reasons`, `kinds`, `revisionEventTime`): the profile approves the vocabulary, the identity scheme and the correction reasons as part of the accepted format (Decision 4; line 213), and the retention rule of line 397 reads `revisionEventTime`, so its producer contract is checked at the door.
+```
+
+- [ ] **Step 1.8b** Insert after line 440 (the `payloadDigest` bullet of the ledger body):
+
+```
+- `payloadDigest` is the JCS SHA-256 of the record value without the diagnostic fields; when that value cannot be canonicalized (an integer outside [-(2^53-1), 2^53-1], a non-finite number, an unpaired surrogate, or a value that is not a JSON object) the `payloadDigest` is the SHA-256 of the raw record value bytes as delivered and `refs.digestRule` is `raw-bytes` (absent otherwise). The digest rule never decides the disposition: an occupancy event or incident whose value fails its schema or is not an object is `rejected schema-invalid`; a process message keeps every member that parses, a measurement member's numeric `value` is read as a binary64 double on both sides, so `9007199254740992`, `9007199254740992.0` and `9.007199254740992e15` are one value (the integer-domain refusal guards only the identity and body digests and never changes a sample's reason), and a member whose `value` is non-finite (`NaN`, `Infinity`, or a literal beyond the double range in either notation, such as `1e400` or `1` followed by 400 zeros, which both sides map to a signed infinity) gets the sample reason `non-finite` (lines 56, 364), with no effect on the message's other members or on its event time; a record that is not JSON at all is `rejected schema-invalid`. Such inputs never stop the job and always have their ledger rows.
+```
+
+- [ ] **Step 1.9a** Insert after line 406 (the cut-barrier paragraph):
+
+```
+An inclusive `throughOffset`, wherever it appears (the barrier itself, `barrierRefs`, `incidentOffsets`, a batch manifest), ranges over [-1, 2^53-1]: `-1` means that no business record of that partition is included yet, every other value is the offset of the last business record included; actual record offsets stay at or above 0. A barrier with `-1` is a complete barrier like any other.
+```
+
+- [ ] **Step 1.9** Replace line 424 (`initEvidence` bullet of the stage-1 progress body) with:
+
+```
+- `initEvidence` (only on the first progress after an initialization): {`declarationOffset` (the offset of the selected recovery declaration), `endOffset` (the control partition's end offset H read at initialization), `restore` (the engine's restore evidence; `"none"` in the step-3 reference harness)}
+```
+
+- [ ] **Step 1.10** Replace lines 392-393 (`provisionalUnits`, `insufficientUnits`) with:
+
+```
+  - `provisionalUnits`: Count of units whose assessment reason is `basis-provisional`
+  - `insufficientUnits`: Count of units whose assessment status is `insufficient-evidence` with any other reason
+```
+
+and replace line 398 (`retentionGap`) with:
+
+```
+  - `retentionGap`: True unless the verified evidence-retention range recorded in the input and restore manifests (ranges verified to be empty included; in step 3 the recording manifest's verified telemetry range per subscribed device) covers the required interval `[suspectFrom, suspectTo)` (or `[suspectFrom, W2(s))` while open); first and last sample times are not used
+```
+
+- [ ] **Step 1.11** Insert after line 364 (`reason` of the sample journal body):
+
+```
+- `reason` is null when the sample is `attributed` and no diagnostic applies; an attributed sample under `crossCheck: occupancy` may carry `identity-mismatch`.
+```
+
+- [ ] **Step 1.12** Insert after line 353 (the `coverage` bullet of the work record body):
+
+```
+- Serialization of the aggregates: each `members[]` entry is `{mappingId, metric, equipmentPath, valueType, observedPeriods, missingPeriods, badSlots, <aggregate by result type>}`, one entry per required member and per any other measurement member with at least one coverage observation inside J, sorted by `mappingId`; the aggregate counts accepted-quality observations only, that is Good observations and, when the rule's `quality.uncertainInput` is `propagate`, Uncertain ones; Bad and rejected-Uncertain observations are never aggregated and never attributed, though they count for `observedPeriods`, and only raw Bad observations count for `badSlots` and the bad share (`count` may be 0, then `min`, `max` and `last` are null, `trueCount` and `distinctCount` 0); the activity support of line 351 uses the same accepted-quality set; the visit-level `coverage` takes `observedPeriods` as the minimum and `missingPeriods` and `badSlots` as the maximum over the `equipmentEvidence[]` entries' `coverage` (which equals the extremes over the required members when the station or its tools have measurement members, and falls back to the activity members when the station has none, as a station whose only member is `Running` does: its visit-level values are then its activity member's `observedPeriods` and `missingPeriods` and `badSlots` 0), and `sessionGaps` as the sum over the equipment entries; each `equipmentEvidence[]` entry takes its `coverage` values the same way over that equipment's measurement members (an equipment with none takes its activity member's `observedPeriods` and `missingPeriods` and `badSlots` 0), lists `memberRefs` sorted, lists intervals in time order as `[start, end)` pairs, and is sorted by `equipmentPath`; its `coverage.status` is `unknown` when `unknownActivityPeriods > 0` or an unknown session interval overlaps J, else `incomplete` when `missingPeriods > maxMissingPeriods`, `sessionGaps > 0` or any of its measurement members exceeds `maxBadShare`, else `complete`; every `samplesDigest` is taken over the distinct contributing observations sorted by `device`, `metric`, `sourceTs`, then canonical bytes; `insufficiencyReasons[]` is sorted by code.
+```
+
+- [ ] **Step 1.13** Insert after line 84 (Decision 14's Decision sentence):
+
+```
+- The reader's refusals form a closed set with Vor's names for the same failures, `head-unverified`, `head-rollback`, `head-expired`, `provenance-mismatch`, plus the start-up refusal `binding.schema-mismatch`; a refusal names its rule and evidence and is never a disposition reason.
+```
+
+- [ ] **Step 1.14** Insert after line 56 (Decision 7's Decision sentence):
+
+```
+- Before canonicalization, forseti refuses a body holding a non-finite number or an integer outside [-(2^53-1), 2^53-1], so the two pinned libraries are never asked to print what they would print differently; the shared vector file carries refusal vectors for both.
+```
+
+- [ ] **Step 1.15** `scripts/check-spec-decisions.sh`, the executable gate of PR 0: (a) the changed-file set is exactly `docs/superpowers/specs/2026-11-05-forseti-design.md` and `scripts/check-spec-decisions.sh`: with `--working-tree` (the pre-commit mode) the set is `git diff --name-only main` plus `git ls-files --others --exclude-standard`, with `--committed` (the post-commit mode, what CI and the PR review run) it is `git diff --name-only main...HEAD`, which sees nothing before the first commit; (b) each of these seventeen phrases occurs in the spec exactly once (`grep -c -F`): `io.github.erdtman:java-json-canonicalization:1.1`, `rfc8785==0.1.4`, `flink-connector-kafka:5.0.0-2.2`, `Kafka Streams \`4.2.2\``, `JEP 339`, `forseti gate --engine core`, `per-station formula`, `generation promote --run`, `"kind": "replayed"`, `last valid observation before \`detectedEventTime\``, `retracted candidate whose actual`, `refs.check`, `declarationOffset`, `head-unverified`, `over the \`equipmentEvidence[]\` entries' \`coverage\``, `no business record of that partition is included yet`, `a superseded lower revision still widens the row set` (each string is quoted verbatim from the insertion texts of Steps 1.1-1.14 above, 1.5b, 1.8b and 1.9a included; before committing, run the script against the edited spec and against this plan's fenced insertion blocks, both must count every string exactly once); (c) `grep -c -F "org.erdtman:java-json-canonicalization"` is 0; (d) the contract tables are unchanged: the SHA-256 of the two refusal-code tables (the blocks from the lines starting `| Refusal Code |` to their next blank line) and of the ledger reason vocabulary (the block from `Reasons form a closed vocabulary:` to its next blank line), extracted by pattern so the insertions above and below do not move them, equals the values the script records from `main`. Prints `spec decisions: 17/17 present, contracts unchanged`, exit 1 otherwise. Run `bash scripts/check-spec-decisions.sh --working-tree` before the edits (red: `0/17`) and after them (green), then commit, then `bash scripts/check-spec-decisions.sh --committed` (green; this is the mode CI runs). `git diff --check` clean; re-read every inserted paragraph against its surroundings. Commit `docs(spec): record the step-3 pins, the reader path and the interpretations step 3 fixes`; push; open PR `docs: step 3 pins and decisions` against `main`. The PR body lists the seventeen insertions by spec line (seventeen check strings) and states that no contract field list, reason vocabulary or gate meaning changed. Merge before PR 1; every later line reference in this plan is to the file before these edits.
+
+## Chunk 2: Foundation and release reader (PR 1)
+
+Branch: `git switch -c feat/step3-foundation-and-release-reader main` after PR 0 merged.
+
+### Task 2: Repository skeleton, CI, LF, ASCII names, dependency closure
+
+**Files:**
+- Create: `pom.xml`, `core/pom.xml`, `cli/pom.xml`, `.gitattributes`, `.gitignore`, `.github/workflows/ci.yml`, `scripts/check-ascii-names.sh`, `scripts/check-dependency-closure.sh`, `oracle/pyproject.toml`, `oracle/src/forseti_oracle/__init__.py`, `oracle/tests/__init__.py`
+
+- [ ] **Step 2.1** `.gitattributes`:
+
+```
+# LF everywhere a text file is written; digested bytes are never normalised.
+* text=auto eol=lf
+fixtures/** -text
+vectors/** -text
+schemas/** -text
+core/src/main/resources/forseti/** -text
+```
+
+`.gitignore`: `target/`, `build/`, `oracle/.pytest_cache/`, `oracle/**/__pycache__/`, `oracle/src/*.egg-info/`, `.venv/`, `*.key`.
+
+- [ ] **Step 2.2** `pom.xml` (parent; the shape of Bifrost's):
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+  <groupId>dev.krillin.forseti</groupId>
+  <artifactId>forseti-parent</artifactId>
+  <version>0.1.0-SNAPSHOT</version>
+  <packaging>pom</packaging>
+  <modules><module>core</module><module>cli</module></modules>
+  <properties>
+    <maven.compiler.release>17</maven.compiler.release>
+    <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+    <jackson.version>2.17.2</jackson.version>
+    <jcs.version>1.1</jcs.version>
+    <networknt.version>1.5.1</networknt.version>
+    <junit.version>5.10.3</junit.version>
+    <maven-compiler-plugin.version>3.13.0</maven-compiler-plugin.version>
+    <maven-surefire-plugin.version>3.2.5</maven-surefire-plugin.version>
+    <maven-shade-plugin.version>3.6.0</maven-shade-plugin.version>
+  </properties>
+  <dependencyManagement><dependencies>
+    <dependency><groupId>com.fasterxml.jackson.core</groupId><artifactId>jackson-databind</artifactId><version>${jackson.version}</version></dependency>
+    <dependency><groupId>io.github.erdtman</groupId><artifactId>java-json-canonicalization</artifactId><version>${jcs.version}</version></dependency>
+    <dependency><groupId>com.networknt</groupId><artifactId>json-schema-validator</artifactId><version>${networknt.version}</version></dependency>
+    <dependency><groupId>org.junit.jupiter</groupId><artifactId>junit-jupiter</artifactId><version>${junit.version}</version><scope>test</scope></dependency>
+  </dependencies></dependencyManagement>
+  <build><pluginManagement><plugins>
+    <plugin><groupId>org.apache.maven.plugins</groupId><artifactId>maven-compiler-plugin</artifactId><version>${maven-compiler-plugin.version}</version></plugin>
+    <plugin><groupId>org.apache.maven.plugins</groupId><artifactId>maven-surefire-plugin</artifactId><version>${maven-surefire-plugin.version}</version></plugin>
+    <plugin><groupId>org.apache.maven.plugins</groupId><artifactId>maven-shade-plugin</artifactId><version>${maven-shade-plugin.version}</version></plugin>
+  </plugins></pluginManagement></build>
+</project>
+```
+
+`core/pom.xml`: parent above, `artifactId` `forseti-core`, dependencies `jackson-databind`, `java-json-canonicalization`, `json-schema-validator`, `junit-jupiter` (test); a comment at the top: "No Flink, no Kafka Streams, no Kafka client, no other Yggdrasil artifact: the adapters of steps 6-7 depend on this module, never the reverse." `cli/pom.xml`: `forseti-cli`, depends on `forseti-core` and `junit-jupiter`; shade bound to `package`, `finalName` `forseti`, `mainClass` `dev.krillin.forseti.cli.Main`.
+
+- [ ] **Step 2.3** `scripts/check-dependency-closure.sh` (`set -euo pipefail`): `OUT="$(pwd)/build/deps.txt"; rm -f "$OUT"; mvn -B -ntp -q dependency:tree -DoutputFile="$OUT" -DappendOutput=true` (an absolute path, because a relative `outputFile` is resolved per module and the root file would hold only the parent's tree); then the file must exist and contain the two module headers `dev.krillin.forseti:forseti-core:` and `dev.krillin.forseti:forseti-cli:` (else exit 1, "incomplete tree"), and `grep -E "dev\.krillin\.(bifrost|tyr|vor|muninn)|org\.apache\.flink|org\.apache\.kafka"` over it must find nothing (prints `dependency closure: clean`, exit 1 otherwise). A Maven failure fails the script. Transitive dependencies are checked, not only imports.
+
+- [ ] **Step 2.4** `oracle/pyproject.toml`:
+
+```toml
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "forseti-oracle"
+version = "0.1.0"
+description = "Independent oracle for forseti: recomputes every journal row body per cut by sort-and-sweep; shares no code with forseti-core"
+requires-python = ">=3.11"
+license = "Apache-2.0"
+dependencies = ["rfc8785==0.1.4", "jsonschema==4.26.0"]
+
+[project.optional-dependencies]
+dev = ["pytest==8.3.5"]
+
+[project.scripts]
+forseti-oracle = "forseti_oracle.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+```
+
+- [ ] **Step 2.5** `scripts/check-ascii-names.sh`: Vor's script in form (grep for the accented spellings of Mimir, Tyr and Vor outside `fixtures/`, with the spec's first-mention allowance; exit 1 on a hit; prints `product names: ASCII only`).
+
+- [ ] **Step 2.6** `.github/workflows/ci.yml` (sibling checkouts pinned to the refs in `fixtures/registry.lock.json`, read in a first step; Tyr's sibling-checkout pattern):
+
+```yaml
+name: CI
+on:
+  push: {branches: [main]}
+  pull_request:
+  workflow_dispatch:
+permissions: {contents: read}
+jobs:
+  build:
+    name: core + cli tests, oracle tests, core gate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: {path: forseti}
+      - name: Product names in ASCII
+        working-directory: forseti
+        run: bash scripts/check-ascii-names.sh
+      - uses: actions/setup-java@v4
+        with: {java-version: '17', distribution: temurin, cache: maven}
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.13'}
+      - name: Install the oracle
+        working-directory: forseti/oracle
+        run: python -m pip install -e ".[dev]"
+      - name: Oracle tests
+        working-directory: forseti/oracle
+        run: python -m pytest -q
+      - name: Build and test (core, cli)
+        working-directory: forseti
+        run: mvn -B -ntp install
+      - name: Dependency closure
+        working-directory: forseti
+        run: bash scripts/check-dependency-closure.sh
+      - name: Core gate
+        working-directory: forseti
+        run: java -jar cli/target/forseti.jar gate --engine core --out build/gate --python "$(command -v python)"
+      - name: Negative controls exit 1 for their intended assertion
+        working-directory: forseti
+        run: |
+          for c in $(python -I -c 'import json;print(" ".join(json.load(open("gate/core-negative-controls.json"))["controls"]))'); do
+            set +e; java -jar cli/target/forseti.jar gate --engine core --negative-control "$c" --out "build/gate-$c" --python "$(command -v python)"; rc=$?; set -e
+            [ "$rc" -eq 1 ] || { echo "negative control $c exited $rc, expected 1"; exit 1; }
+            python -I -c "import json,sys;r=json.load(open('build/gate-$c/report.json'));sys.exit(0 if set(r['intendedFailures'])<=set(r['failed']) else 1)" || { echo "$c did not fail its intended assertion"; exit 1; }
+          done
+      - name: Gate reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with: {name: core-gate, path: forseti/build/gate*/, if-no-files-found: error}
+  bifrost-seam:
+    name: release reader against a head Bifrost publishes now
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: {path: forseti}
+      - id: pins
+        working-directory: forseti
+        run: |
+          echo "bifrost=$(python3 -c 'import json;print(json.load(open("fixtures/registry.lock.json"))["bifrost"])')" >> "$GITHUB_OUTPUT"
+          echo "tyr=$(python3 -c 'import json;print(json.load(open("fixtures/registry.lock.json"))["tyr"])')" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@v4
+        with: {repository: yggdrasil-iiot/bifrost, path: bifrost, ref: "${{ steps.pins.outputs.bifrost }}"}
+      - uses: actions/checkout@v4
+        with: {repository: yggdrasil-iiot/tyr, path: tyr, ref: "${{ steps.pins.outputs.tyr }}"}
+      - uses: actions/setup-java@v4
+        with: {java-version: '17', distribution: temurin, cache: maven}
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.13'}
+      - name: Build Bifrost's gates CLI
+        working-directory: bifrost
+        run: mvn -B -ntp -pl gates -am package -DskipTests
+      - name: Seam test
+        working-directory: forseti
+        env: {FORSETI_BIFROST_JAR: ../bifrost/gates/target/bifrost-gates.jar, FORSETI_TYR_FIXTURES: ../tyr/fixtures/attribution-rule}
+        run: mvn -B -ntp -pl core -am -Dtest=BifrostSeamTest -Dsurefire.failIfNoSpecifiedTests=false test
+  windows:
+    name: tests on Windows
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with: {java-version: '17', distribution: temurin, cache: maven}
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.13'}
+      - run: python -m pip install -e "oracle[dev]"
+      - run: python -m pytest -q oracle
+      - run: mvn -B -ntp install
+```
+
+The gate and control steps fail until Task 9 adds the gate command and the manifest; intended (CI is red on the branch until PR 1's last task). The `windows` job runs the oracle tests and the Maven build; the gate runs on Linux. During implementation pin the `uses:` actions to full commit SHAs and record them in the PR body (none is invented here).
+
+- [ ] **Step 2.7** `mvn -B -ntp -q install` -> `BUILD SUCCESS` (empty modules); `bash scripts/check-dependency-closure.sh` -> `dependency closure: clean`; `python -m pip install -e "oracle[dev]" && python -m pytest -q oracle` -> `no tests ran`. Commit `build: Maven skeleton, oracle package, CI, LF, ASCII-name and dependency-closure rules`.
+
+### Task 3: Canonical form (JCS) in Java and Python, the shared vector file
+
+**Files:**
+- Create: `vectors/jcs-vectors.json`
+- Create: `core/src/main/java/dev/krillin/forseti/core/canon/Canonical.java`, `core/src/main/java/dev/krillin/forseti/core/Json.java`
+- Create: `core/src/test/java/dev/krillin/forseti/core/canon/CanonicalVectorsTest.java`
+- Create: `oracle/src/forseti_oracle/canon.py`, `oracle/tests/test_jcs_vectors.py`
+
+The vector file holds inputs as JSON *text* so each side parses with its own parser (Jackson, `json`) and canonicalizes with its own pinned library; the expected canonical text and SHA-256 are the same for both. Refusal vectors pin that both sides refuse what JCS cannot carry deterministically across the two libraries: a non-finite number and an integer outside `[-(2^53-1), 2^53-1]` (Python `rfc8785` raises `IntegerDomainError` there; the Java library would print it; forseti refuses before either library is reached, per Task 1's insertion at line 56), plus parser-level refusals (duplicate keys, invalid JSON) that both parsers must share.
+
+- [ ] **Step 3.1** `vectors/jcs-vectors.json` (the `canonical` strings are what RFC 8785 produces; compute `sha256` of the UTF-8 canonical bytes with `python -I` after writing; a wrong expected value fails both suites):
+
+```json
+{
+  "vectorsVersion": 1,
+  "vectors": [
+    {"id": "empty-object", "inputText": "{}", "canonical": "{}"},
+    {"id": "empty-array", "inputText": "[]", "canonical": "[]"},
+    {"id": "key-order-utf16", "inputText": "{\"b\":1,\"a\":2,\"\\u00e9\":3,\"B\":4,\"aa\":5,\"\\ud83d\\ude00\":6}", "canonical": "{\"B\":4,\"a\":2,\"aa\":5,\"b\":1,\"\u00e9\":3,\"\ud83d\ude00\":6}"},
+    {"id": "integers", "inputText": "[0,-0,1,-1,9007199254740991,-9007199254740991,1794182400000]", "canonical": "[0,0,1,-1,9007199254740991,-9007199254740991,1794182400000]"},
+    {"id": "doubles-es6", "inputText": "[1.0,100.0,0.1,1e21,1e-7,1.2345678901234568e20,5e-324,1.7976931348623157e308,0.30000000000000004,-0.0,2.5]", "canonical": "[1,100,0.1,1e+21,1e-7,123456789012345680000,5e-324,1.7976931348623157e+308,0.30000000000000004,0,2.5]"},
+    {"id": "strings-escapes", "inputText": "[\"\\u0000\",\"\\u001f\",\"\\\"\",\"\\\\\",\"/\",\"\\b\\f\\n\\r\\t\",\"\\u007f\",\"\\u2028\",\"e\\u0301\"]", "canonical": "[\"\\u0000\",\"\\u001f\",\"\\\"\",\"\\\\\",\"/\",\"\\b\\f\\n\\r\\t\",\"\u007f\",\"\u2028\",\"e\u0301\"]"},
+    {"id": "nested", "inputText": "{\"z\":[{\"y\":null,\"x\":true,\"w\":false}],\"a\":{\"c\":[],\"b\":{}}}", "canonical": "{\"a\":{\"b\":{},\"c\":[]},\"z\":[{\"w\":false,\"x\":true,\"y\":null}]}"},
+    {"id": "whitespace-ignored", "inputText": "{ \"k\" : [ 1 , 2 ] , \"j\" : \"v\" }", "canonical": "{\"j\":\"v\",\"k\":[1,2]}"},
+    {"id": "work-record-shape", "inputText": "{\"status\":\"complete\",\"interval\":{\"enter\":1794183000000,\"leave\":1794183060000,\"attributionEnd\":null},\"members\":[{\"mappingId\":\"nutrunner1-torque\",\"count\":55,\"min\":10.5,\"max\":42.0,\"last\":41.25}],\"insufficiencyReasons\":[]}", "canonical": "{\"insufficiencyReasons\":[],\"interval\":{\"attributionEnd\":null,\"enter\":1794183000000,\"leave\":1794183060000},\"members\":[{\"count\":55,\"last\":41.25,\"mappingId\":\"nutrunner1-torque\",\"max\":42,\"min\":10.5}],\"status\":\"complete\"}"}
+  ],
+  "refusals": [
+    {"id": "integer-above-safe", "inputText": "[9007199254740992]", "reason": "integer-domain"},
+    {"id": "integer-below-safe", "inputText": "[-9007199254740992]", "reason": "integer-domain"},
+    {"id": "nan-literal", "inputText": "[NaN]", "reason": "non-finite"},
+    {"id": "infinity-literal", "inputText": "[Infinity]", "reason": "non-finite"},
+    {"id": "duplicate-key", "inputText": "{\"a\":1,\"a\":2}", "reason": "not-json"},
+    {"id": "lone-surrogate", "inputText": "[\"\\ud83d\"]", "reason": "not-json"},
+    {"id": "truncated", "inputText": "{\"a\":", "reason": "not-json"},
+    {"id": "two-values", "inputText": "{} {}", "reason": "not-json"}
+  ]
+}
+```
+
+After writing, add `"sha256"` to every vector: `python -I -` reading the file, computing `hashlib.sha256(v["canonical"].encode("utf-8")).hexdigest()`, rewriting with `json.dumps(indent=2, ensure_ascii=False) + "\n"`. (`NaN`/`Infinity` are not JSON: Jackson refuses them with `ALLOW_NON_NUMERIC_NUMBERS` off while Python's `json` accepts them by default, so each side's test states which layer refused: both refusals are forseti's, the reason is what the test pins. A lone surrogate is refused by Python's `rfc8785` (it cannot encode it) and by forseti's Java pre-check (`Canonical.check` refuses an unpaired surrogate in any string); the duplicate key is refused by both parsers with the strict mapper of Step 3.2 and `json.loads(..., object_pairs_hook=...)` in the oracle.)
+
+- [ ] **Step 3.2** `Json.java` (one Jackson mapper for the whole core; strict, no non-numeric numbers, duplicate keys refused, big integers kept until the domain check, pretty writer in Tyr's shape):
+
+```java
+package dev.krillin.forseti.core;
+
+import com.fasterxml.jackson.core.JsonParser;
+import com.fasterxml.jackson.core.util.DefaultIndenter;
+import com.fasterxml.jackson.core.util.DefaultPrettyPrinter;
+import com.fasterxml.jackson.core.util.Separators;
+import com.fasterxml.jackson.databind.*;
+import com.fasterxml.jackson.databind.node.ObjectNode;
+import java.io.IOException;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.*;
+
+/** The one JSON mapper of forseti: strict parsing, no NaN/Infinity, duplicate keys refused, pretty output in the shape Tyr writes. */
+public final class Json {
+    public static final ObjectMapper JSON = new ObjectMapper()
+        .enable(JsonParser.Feature.STRICT_DUPLICATE_DETECTION)
+        .disable(JsonParser.Feature.ALLOW_NON_NUMERIC_NUMBERS)
+        .disable(DeserializationFeature.USE_BIG_DECIMAL_FOR_FLOATS)
+        .enable(DeserializationFeature.USE_BIG_INTEGER_FOR_INTS)
+        .enable(DeserializationFeature.FAIL_ON_TRAILING_TOKENS);   // "{} {}" is two values, not JSON; Python's json.loads refuses it too (Extra data)
+    private Json() {}
+    public static JsonNode read(byte[] b) {
+        try { return JSON.readTree(b); }
+        catch (com.fasterxml.jackson.core.JsonProcessingException e) { throw new IllegalArgumentException("not-json: " + e.getOriginalMessage(), e); }
+        catch (IOException e) { throw new IllegalArgumentException("not-json: " + e.getMessage(), e); }
+    }
+    public static JsonNode read(Path p) { try { return read(Files.readAllBytes(p)); } catch (IOException e) { throw new IllegalArgumentException(p + ": " + e.getMessage(), e); } }
+    public static ObjectNode object() { return JSON.createObjectNode(); }
+    public static byte[] pretty(JsonNode n) {
+        DefaultIndenter two = new DefaultIndenter("  ", "\n");
+        DefaultPrettyPrinter pp = new DefaultPrettyPrinter().withObjectIndenter(two).withArrayIndenter(two)
+            .withSeparators(Separators.createDefaultInstance().withObjectFieldValueSpacing(Separators.Spacing.AFTER));
+        try { return (JSON.writer(pp).writeValueAsString(n) + "\n").getBytes(StandardCharsets.UTF_8); } catch (IOException e) { throw new IllegalStateException(e); }
+    }
+    public static void write(Path p, JsonNode n) { try { Files.createDirectories(p.getParent()); Files.write(p, pretty(n)); } catch (IOException e) { throw new IllegalStateException(p.toString(), e); } }
+    public static String text(JsonNode n, String k) { JsonNode v = n.path(k); if (!v.isTextual()) throw new IllegalArgumentException("missing text field " + k); return v.asText(); }
+}
+```
+
+`Json` also carries the one integer policy of forseti: `public static long safeLong(JsonNode n, String field, long min, long max)` returns the value when `n` is an integral node whose `bigIntegerValue()` lies in `[min, max]` with `-9007199254740991 <= min <= max <= 9007199254740991` (`Canonical.MAX_SAFE`, the JCS domain), and throws `IllegalArgumentException("schema-invalid: " + field)` otherwise (a non-integral node, a value below `min`, `2^53` or anything larger, `Long.MAX_VALUE + 2` included, never reaches a `long` conversion). Three named ranges cover every integer forseti reads: `Json.NON_NEGATIVE = [0, MAX_SAFE]` for record offsets, counts, epochs, partitions and the business times of inputs (their schemas say `minimum 0`); `Json.THROUGH = [-1, MAX_SAFE]` for inclusive through-offsets, where `-1` means "no record of that partition included" (spec 406 defines `throughOffset` as the last business input offset *included*, so the inclusive convention is kept and `-1` is its empty value; Kafka's exclusive next-offset is not used); and `Json.ANY = [-MAX_SAFE, MAX_SAFE]` for computed times (`W1`, `W2`, `admissionW`, `eventTimeAt`, which the formulas may in principle drive below zero and which the spec never bounds). `public static ObjectNode putSafe(ObjectNode o, String field, long v)` writes a `long` and throws `IllegalStateException` when `|v| > 2^53-1`; per-field minima are the reader's (a forseti-written integer outside the safe range is a programming error, never a wire value). Every integer any forseti reader takes from a file goes through `safeLong`, every integer it writes through `putSafe`, so each schema range, each Java `long` and the JCS domain agree by construction.
+
+- [ ] **Step 3.3** `Canonical.java`:
+
+```java
+package dev.krillin.forseti.core.canon;
+
+import com.fasterxml.jackson.databind.JsonNode;
+import dev.krillin.forseti.core.Json;
+import java.math.BigInteger;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
+import java.util.HexFormat;
+import java.util.Iterator;
+import org.erdtman.jcs.JsonCanonicalizer;
+
+/** RFC 8785 (JCS) bytes and SHA-256 of a JSON value (Decision 7). The pinned library is io.github.erdtman
+ *  java-json-canonicalization 1.1; forseti refuses, before the library runs, what the two pinned libraries would not
+ *  print identically: non-finite numbers, integers outside [-(2^53-1), 2^53-1], unpaired surrogates. The oracle applies
+ *  the same refusals in its own code; the shared vector file pins both. digestOf(bytes) is the raw-file digest and is
+ *  never mixed with digest(node), the canonical one. */
+public final class Canonical {
+    public static final BigInteger MAX_SAFE = BigInteger.valueOf(9007199254740991L);
+    private Canonical() {}
+
+    public static byte[] bytes(JsonNode value) {
+        check(value);
+        try { return new JsonCanonicalizer(Json.JSON.writeValueAsString(value)).getEncodedUTF8(); }
+        catch (Exception e) { throw new IllegalArgumentException("not canonicalizable: " + e.getMessage(), e); }
+    }
+    public static String digest(JsonNode value) { return digestOf(bytes(value)); }
+    public static String digestOf(byte[] b) {
+        try { return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(b)); }
+        catch (NoSuchAlgorithmException e) { throw new IllegalStateException(e); }
+    }
+    static void check(JsonNode n) {
+        if (n.isFloatingPointNumber()) { double d = n.doubleValue(); if (Double.isNaN(d) || Double.isInfinite(d)) throw new IllegalArgumentException("non-finite"); }
+        else if (n.isIntegralNumber()) { BigInteger i = n.bigIntegerValue(); if (i.abs().compareTo(MAX_SAFE) > 0) throw new IllegalArgumentException("integer-domain"); }
+        else if (n.isTextual()) { String s = n.textValue(); for (int i = 0; i < s.length(); i++) { char c = s.charAt(i);
+            if (Character.isHighSurrogate(c)) { if (i + 1 >= s.length() || !Character.isLowSurrogate(s.charAt(i + 1))) throw new IllegalArgumentException("not-json: lone surrogate"); i++; }
+            else if (Character.isLowSurrogate(c)) throw new IllegalArgumentException("not-json: lone surrogate"); } }
+        else if (n.isObject()) { for (Iterator<String> it = n.fieldNames(); it.hasNext();) check(new com.fasterxml.jackson.databind.node.TextNode(it.next())); for (Iterator<JsonNode> it = n.elements(); it.hasNext();) check(it.next()); }
+        else if (n.isArray()) { for (Iterator<JsonNode> it = n.elements(); it.hasNext();) check(it.next()); }
+    }
+    public static String utf8(byte[] b) { return new String(b, StandardCharsets.UTF_8); }
+}
+```
+
+- [ ] **Step 3.4** `CanonicalVectorsTest.java` (red first: write it, run, see the compilation failure, then add the sources):
+
+```java
+package dev.krillin.forseti.core.canon;
+
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.node.DoubleNode;
+import dev.krillin.forseti.core.Json;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Path;
+import org.junit.jupiter.api.*;
+import static org.junit.jupiter.api.Assertions.*;
+
+/** The shared JCS vector file (vectors/jcs-vectors.json) run by the Java side; the oracle runs the same file. */
+class CanonicalVectorsTest {
+    static final Path VECTORS = Path.of("..", "vectors", "jcs-vectors.json");
+    static JsonNode file;
+    @BeforeAll static void load() { file = Json.read(VECTORS); assertEquals(1, file.path("vectorsVersion").asInt()); assertEquals(9, file.path("vectors").size()); assertEquals(8, file.path("refusals").size()); }
+
+    @Test void everyVectorCanonicalizesAndDigestsAsPinned() {
+        for (JsonNode v : file.path("vectors")) {
+            JsonNode in = Json.read(Json.text(v, "inputText").getBytes(StandardCharsets.UTF_8));
+            byte[] c = Canonical.bytes(in);
+            assertEquals(Json.text(v, "canonical"), Canonical.utf8(c), Json.text(v, "id"));
+            assertEquals(Json.text(v, "sha256"), Canonical.digestOf(c), Json.text(v, "id"));
+        }
+    }
+    @Test void everyRefusalVectorIsRefusedWithItsReason() {
+        for (JsonNode r : file.path("refusals")) {
+            String reason = Json.text(r, "reason"), text = Json.text(r, "inputText");
+            IllegalArgumentException e = assertThrows(IllegalArgumentException.class, () -> Canonical.bytes(Json.read(text.getBytes(StandardCharsets.UTF_8))), Json.text(r, "id"));
+            // NaN/Infinity are not JSON: Jackson refuses them at parse time (not-json), which is also forseti's refusal; the domain cases reach the pre-check.
+            assertTrue(e.getMessage().startsWith(reason) || reason.equals("non-finite") && e.getMessage().startsWith("not-json"), Json.text(r, "id") + ": " + e.getMessage());
+        }
+    }
+    @Test void aNaNPlacedInATreeIsRefusedBeforeTheLibrary() {
+        assertEquals("non-finite", assertThrows(IllegalArgumentException.class, () -> Canonical.bytes(new DoubleNode(Double.NaN))).getMessage());
+        assertEquals("non-finite", assertThrows(IllegalArgumentException.class, () -> Canonical.bytes(new DoubleNode(Double.POSITIVE_INFINITY))).getMessage());
+    }
+    @Test void digestIsSha256OfTheCanonicalUtf8Bytes() {
+        assertEquals("44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a", Canonical.digest(Json.object()));   // sha256("{}")
+    }
+}
+```
+
+- [ ] **Step 3.5** `mvn -q -pl core -Dtest=CanonicalVectorsTest test`: before 3.2-3.3 a compilation error; after, `Tests run: 4, Failures: 0`. The `doubles-es6` input writes `1.2345678901234568e20` in exponent form on purpose: both parsers read it as a double, and RFC 8785 prints an integer-valued double below 1e21 without an exponent (`123456789012345680000`); written as a plain integer literal the same digits would parse as an integer above 2^53 and be refused by the domain check (that case is the `integer-above-safe` refusal vector). The `canonical` strings of `key-order-utf16` and `strings-escapes` are JSON strings whose escapes decode to the real characters JCS emits (`é`, the emoji, U+007F, U+2028, the combining accent) and to the literal escapes JCS keeps (`\u0000`, `\u001f`, `\b\f\n\r\t`, `\"`, `\\`).
+
+- [ ] **Step 3.6** `oracle/src/forseti_oracle/canon.py`:
+
+```python
+"""RFC 8785 bytes and SHA-256 of a JSON value, with forseti's refusals applied before the library (rfc8785 0.1.4)."""
+from __future__ import annotations
+
+import hashlib
+import json
+import math
+
+import rfc8785
+
+MAX_SAFE = 9007199254740991
+
+
+class CanonicalRefusal(ValueError):
+    pass
+
+
+def _no_duplicates(pairs):
+    d = {}
+    for k, v in pairs:
+        if k in d:
+            raise CanonicalRefusal("not-json: duplicate key")
+        d[k] = v
+    return d
+
+
+def loads(text: str):
+    """The oracle's strict parser: duplicate keys refused (Python's json keeps the last one by default)."""
+    try:
+        return json.loads(text, object_pairs_hook=_no_duplicates)
+    except json.JSONDecodeError as e:
+        raise CanonicalRefusal(f"not-json: {e.msg}") from e
+
+
+def _check(v) -> None:
+    if isinstance(v, bool):
+        return
+    if isinstance(v, int):
+        if abs(v) > MAX_SAFE:
+            raise CanonicalRefusal("integer-domain")
+    elif isinstance(v, float):
+        if math.isnan(v) or math.isinf(v):
+            raise CanonicalRefusal("non-finite")
+    elif isinstance(v, str):
+        try:
+            v.encode("utf-8")
+        except UnicodeEncodeError:
+            raise CanonicalRefusal("not-json: lone surrogate")
+    elif isinstance(v, dict):
+        for k, x in v.items():
+            _check(k)
+            _check(x)
+    elif isinstance(v, list):
+        for x in v:
+            _check(x)
+
+
+def canonical_bytes(value) -> bytes:
+    _check(value)
+    return rfc8785.dumps(value)
+
+
+def sha256(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()
+
+
+def digest(value) -> str:
+    return sha256(canonical_bytes(value))
+```
+
+- [ ] **Step 3.7** `oracle/tests/test_jcs_vectors.py`:
+
+```python
+import json
+from pathlib import Path
+
+import pytest
+
+from forseti_oracle.canon import CanonicalRefusal, canonical_bytes, loads, sha256
+
+VECTORS = json.loads((Path(__file__).resolve().parents[2] / "vectors" / "jcs-vectors.json").read_text(encoding="utf-8"))
+
+
+@pytest.mark.parametrize("v", VECTORS["vectors"], ids=[v["id"] for v in VECTORS["vectors"]])
+def test_vector(v):
+    c = canonical_bytes(loads(v["inputText"]))
+    assert c.decode("utf-8") == v["canonical"]
+    assert sha256(c) == v["sha256"]
+
+
+@pytest.mark.parametrize("r", VECTORS["refusals"], ids=[r["id"] for r in VECTORS["refusals"]])
+def test_refusal(r):
+    # Python's json accepts NaN/Infinity literals; forseti's pre-check refuses them with the pinned reason.
+    with pytest.raises(CanonicalRefusal, match=r["reason"]):
+        canonical_bytes(loads(r["inputText"]))
+
+
+def test_vector_count_matches_java_side():
+    assert len(VECTORS["vectors"]) == 9 and len(VECTORS["refusals"]) == 8
+```
+
+- [ ] **Step 3.8** `cd oracle && python -m pytest -q` -> `18 passed`. Commit `feat(core,oracle): RFC 8785 canonical digest with the shared vector file`.
+
+### Task 4: Input schemas, input types, identities, payload digests
+
+**Files:**
+- Create: `schemas/occupancy-1.0.0.schema.json`, `schemas/incident-1.0.0.schema.json`, byte copies under `core/src/main/resources/forseti/schemas/`
+- Create: `core/src/main/java/dev/krillin/forseti/core/input/{Inputs,Ids,InputParser,StatusCodes}.java`
+- Create: `core/src/test/java/dev/krillin/forseti/core/input/{SchemaCopiesTest,InputParserTest,IdsTest}.java`
+- Create: `oracle/src/forseti_oracle/inputs.py`, `oracle/tests/test_inputs.py`
+
+- [ ] **Step 4.1** `schemas/occupancy-1.0.0.schema.json` (spec 282-296; EPCIS field names; the spec's optionality kept exactly: every listed field is required unless the spec marks it otherwise (line 117), so `recordTime` (diagnostic) and `visitSeq` (correlation) are required; `arrivalEventId` is "departing events only", so it is required on a departure and must be absent on an arrival; `errorDeclaration` is the one optional field; no additional properties):
+
+```json
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:forseti:schema:occupancy:1.0.0",
+  "title": "forseti occupancy event 1.0.0 (EPCIS 2.0 ObjectEvent field names, no EPCIS capture)",
+  "type": "object",
+  "properties": {
+    "eventId": {"type": "string", "minLength": 1, "maxLength": 256},
+    "eventTime": {"type": "integer", "minimum": 0, "maximum": 9007199254740991},
+    "recordTime": {"type": "integer", "minimum": 0, "maximum": 9007199254740991},
+    "unitId": {"type": "string", "minLength": 1, "maxLength": 256},
+    "action": {"const": "OBSERVE"},
+    "bizStep": {"enum": ["urn:epcglobal:cbv:bizstep:arriving", "urn:epcglobal:cbv:bizstep:departing"]},
+    "readPoint": {"type": "string", "pattern": "^[a-z][a-z0-9._/-]*(:[a-z][a-z0-9._/-]*)*$", "maxLength": 4096},
+    "visitSeq": {"type": "integer", "minimum": 0, "maximum": 9007199254740991},
+    "arrivalEventId": {"type": "string", "minLength": 1, "maxLength": 256},
+    "source": {"type": "string", "minLength": 1, "maxLength": 256},
+    "errorDeclaration": {
+      "type": "object",
+      "properties": {
+        "declarationTime": {"type": "integer", "minimum": 0, "maximum": 9007199254740991},
+        "reason": {"enum": ["urn:epcglobal:cbv:er:did_not_occur", "urn:epcglobal:cbv:er:incorrect_data"]},
+        "correctiveEventIDs": {"type": "array", "items": {"type": "string", "minLength": 1}, "maxItems": 64}
+      },
+      "required": ["declarationTime", "reason", "correctiveEventIDs"],
+      "additionalProperties": false
+    }
+  },
+  "required": ["eventId", "eventTime", "recordTime", "unitId", "action", "bizStep", "readPoint", "visitSeq", "source"],
+  "additionalProperties": false,
+  "allOf": [
+    {"if": {"properties": {"bizStep": {"const": "urn:epcglobal:cbv:bizstep:departing"}}}, "then": {"required": ["arrivalEventId"]}},
+    {"if": {"properties": {"bizStep": {"const": "urn:epcglobal:cbv:bizstep:arriving"}}}, "then": {"not": {"required": ["arrivalEventId"]}}}
+  ]
+}
+```
+
+`schemas/incident-1.0.0.schema.json` (spec 302-315):
+
+```json
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:forseti:schema:incident:1.0.0",
+  "title": "forseti quality incident 1.0.0",
+  "type": "object",
+  "properties": {
+    "incidentId": {"type": "string", "minLength": 1, "maxLength": 256},
+    "revision": {"type": "integer", "minimum": 1, "maximum": 9007199254740991},
+    "stationRef": {"type": "string", "pattern": "^[a-z][a-z0-9._/-]*(:[a-z][a-z0-9._/-]*)*$", "maxLength": 4096},
+    "equipmentRef": {"type": "string", "pattern": "^[a-z][a-z0-9._/-]*(:[a-z][a-z0-9._/-]*)*$", "maxLength": 4096},
+    "kind": {"enum": ["tool-check-failed", "gauge-drift"]},
+    "detectedAt": {"type": "integer", "minimum": 0, "maximum": 9007199254740991},
+    "revisionEventTime": {"type": "integer", "minimum": 0, "maximum": 9007199254740991},
+    "suspectFrom": {"type": "integer", "minimum": 0, "maximum": 9007199254740991},
+    "suspectTo": {"type": ["integer", "null"], "minimum": 0, "maximum": 9007199254740991},
+    "status": {"enum": ["open", "closed", "withdrawn"]},
+    "evidenceRef": {"type": "string", "minLength": 1, "maxLength": 2048},
+    "source": {"type": "string", "minLength": 1, "maxLength": 256}
+  },
+  "required": ["incidentId", "revision", "stationRef", "equipmentRef", "kind", "detectedAt", "revisionEventTime", "suspectFrom", "suspectTo", "status", "evidenceRef", "source"],
+  "additionalProperties": false,
+  "allOf": [
+    {"if": {"properties": {"status": {"const": "closed"}}}, "then": {"properties": {"suspectTo": {"type": "integer"}}}}
+  ]
+}
+```
+
+Write both pretty (two-space indent, trailing newline), copy byte for byte to `core/src/main/resources/forseti/schemas/`. Record their digests: `sha256sum schemas/*.json` -> two 64-hex values used by Task 6's fixture script and cited in the README. `SchemaCopiesTest` asserts the resource bytes equal `../schemas/*.json` when that directory exists (never absent in the repository build).
+
+- [ ] **Step 4.2** `Inputs.java` (records; every input carries its `Origin`):
+
+```java
+package dev.krillin.forseti.core.input;
+
+import com.fasterxml.jackson.databind.JsonNode;
+import java.util.List;
+
+public final class Inputs {
+    private Inputs() {}
+    public record Origin(String topic, int partition, long offset) {}
+    /** One Kafka record as delivered: raw value, origin, parsed view (null when schema-invalid), payload digest. */
+    public record InputRecord(Origin origin, String key, byte[] rawValue, JsonNode value, Object parsed, Ids.Digest payloadDigest) {}
+    public record Member(String metric, JsonNode value, Long uaStatusCode, Long quality, Long sourceTs, Long serverTs) {}   // every integer a Long read through Json.safeLong
+    public record ProcessMessage(String edge, String device, long birthPublishTs, long bdSeq, long seq, long publishTs, Long bridgeReceivedAt,
+                                 String definitionSha256, List<Member> members) {}
+    public record SessionEvent(String edge, String device, long birthPublishTs, long bdSeq, String kind, long atSeq, JsonNode payload) {}
+    public record OccupancyEvent(String eventId, long eventTime, long recordTime, String unitId, String bizStep, String readPoint, Long visitSeq,
+                                 String arrivalEventId, String source, JsonNode errorDeclaration) {   // visitSeq is Long: the schema admits any safe integer, 2147483648 included
+        public boolean arriving() { return bizStep.equals("urn:epcglobal:cbv:bizstep:arriving"); }
+    }
+    public record IncidentEvent(String incidentId, long revision, String stationRef, String equipmentRef, String kind, long detectedAt, long revisionEventTime,
+                                long suspectFrom, Long suspectTo, String status, String evidenceRef, String source) {}
+}
+```
+
+- [ ] **Step 4.3** `Ids.java` (identities as canonical bytes, spec 261, 267, 282, 300, 232-233):
+
+```java
+package dev.krillin.forseti.core.input;
+
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.node.ObjectNode;
+import dev.krillin.forseti.core.Json;
+import dev.krillin.forseti.core.canon.Canonical;
+
+/** Semantic identities (spec Input events). Each is an ObjectNode in contract field order; `bytes` is its JCS form, used for
+ *  ordering (spec 491) and as the ledger `identity`. `payloadDigest` is the JCS SHA-256 of the record value without the
+ *  diagnostic fields recordTime and bridgeReceivedAt (spec 232). */
+public final class Ids {
+    private Ids() {}
+    public static ObjectNode sampleId(Inputs.ProcessMessage m, String metric) {
+        return Json.object().put("edge", m.edge()).put("device", m.device()).put("birthPublishTs", m.birthPublishTs()).put("metric", metric)
+            .put("bdSeq", m.bdSeq()).put("seq", m.seq()).put("publishTs", m.publishTs());
+    }
+    public static ObjectNode messageId(Inputs.ProcessMessage m) {   // the whole-message delivery identity: sampleId without metric
+        return Json.object().put("edge", m.edge()).put("device", m.device()).put("birthPublishTs", m.birthPublishTs()).put("bdSeq", m.bdSeq()).put("seq", m.seq()).put("publishTs", m.publishTs());
+    }
+    public static ObjectNode measurementId(String device, String metric, long sourceTs, JsonNode value, Long uaStatusCode) {
+        ObjectNode n = Json.object().put("device", device).put("metric", metric).put("sourceTs", sourceTs); n.set("value", value);
+        if (uaStatusCode == null) n.putNull("uaStatusCode"); else n.put("uaStatusCode", uaStatusCode); return n;
+    }
+    public static ObjectNode sessionEventId(Inputs.SessionEvent s) {
+        return Json.object().put("edge", s.edge()).put("device", s.device()).put("birthPublishTs", s.birthPublishTs()).put("bdSeq", s.bdSeq()).put("kind", s.kind()).put("atSeq", s.atSeq());
+    }
+    public static ObjectNode occupancyId(Inputs.OccupancyEvent o) { return Json.object().put("source", o.source()).put("eventId", o.eventId()); }
+    public static ObjectNode incidentId(Inputs.IncidentEvent i) { return Json.object().put("source", i.source()).put("incidentId", i.incidentId()).put("revision", i.revision()); }
+    public static byte[] bytes(JsonNode identity) { return Canonical.bytes(identity); }
+    /** JCS SHA-256 of the record value without the diagnostic fields recordTime and bridgeReceivedAt and without each member's lossy
+     *  `quality` (spec 232, 261): two deliveries that differ only there are one redelivery, never a conflict. */
+    /** The ledger's payloadDigest with the rule that produced it: "jcs" for a canonicalizable object value, "raw-bytes" for an input
+     *  that cannot be canonicalized (Task 1's insertion after spec line 440), which is rejected schema-invalid but still gets its row. */
+    public record Digest(String sha256, String rule) {}
+    public static Digest payloadDigest(JsonNode value, byte[] rawValue) {
+        if (value != null && value.isObject()) {
+            ObjectNode v = value.deepCopy(); v.remove("recordTime"); v.remove("bridgeReceivedAt");
+            if (v.path("members").isArray()) for (JsonNode m : v.path("members")) if (m.isObject()) ((ObjectNode) m).remove("quality");
+            try { return new Digest(Canonical.digest(v), "jcs"); } catch (IllegalArgumentException e) { /* integer-domain, non-finite, lone surrogate */ }
+        }
+        return new Digest(Canonical.digestOf(rawValue), "raw-bytes");
+    }
+}
+```
+
+- [ ] **Step 4.4** `StatusCodes.java`: `static boolean bad(Long code) { return code != null && (code & 0xC0000000L) == 0x80000000L; }`, `uncertain` = `0x40000000L`, `good` otherwise (spec 137: raw severity bits; a null status code is neither Bad nor Uncertain).
+
+- [ ] **Step 4.5** `InputParser.java`: `parse(String topic, JsonNode value) -> Object` for the four input kinds; a process member's numeric `value` is normalized to a `double` (`node.doubleValue()`, so integer, fractional and exponent notations of one number are one value; the oracle does `float(v)` and, because Python raises `OverflowError: int too large to convert to float` for an integer literal beyond the double range while `json.loads("1e400")` already yields `inf`, catches `OverflowError` and substitutes `math.inf if v >= 0 else -math.inf` (not `math.copysign(math.inf, v)`, whose second argument is itself converted to a double and raises the same `OverflowError` for such an `int`); on the Java side such a literal is a `BigIntegerNode` and `BigInteger.doubleValue()` returns `Double.POSITIVE_INFINITY` or `NEGATIVE_INFINITY` for a magnitude too great for a double, so both sides reach the same signed infinity and the sample is `non-finite`), a Boolean or String value kept as is; occupancy and incidents validated against the built-in schemas with networknt (`SpecVersion.VersionFlag.V202012`; a non-empty validation set -> `IllegalArgumentException("schema-invalid")`); process messages and session events structurally (required fields and types; `members[]` entries with optional `sourceTs`; a message with no member `sourceTs` is not refused here: that is a disposition, spec 261); every integer field of every input kind is read with `Json.safeLong` against the same range the schemas state, `0 .. 9007199254740991` (`uaStatusCode` additionally `<= 4294967295`, a 32-bit status code): occupancy `eventTime`, `recordTime`, `visitSeq`, `errorDeclaration.declarationTime`; incident `revision` (`>= 1`), `detectedAt`, `revisionEventTime`, `suspectFrom`, `suspectTo`; process message `birthPublishTs`, `bdSeq`, `seq`, `publishTs`, `bridgeReceivedAt`, member `uaStatusCode`, `quality`, `sourceTs`, `serverTs`; session event `birthPublishTs`, `bdSeq`, `atSeq` and the payload fields `from`, `to`, `missing`, `at`, `detectedEventTime`, `rawPublishTs`, `bdSeq`; an out-of-range or non-integral value is `rejected schema-invalid` (`refs.check <field>`) with the raw-bytes digest of Task 1's line-440 insertion when the value is also not canonicalizable, and processing continues (the Sparkplug 0-255 range of `seq`/`bdSeq` is the bridge's concern, step 5, not a parser bound here). Exposes `schemaSha256(String schemaId)` over the resource bytes and `incidentKinds()` (the schema's `kind` enum). `InputParserTest`: a valid arrival without `arrivalEventId` and without `errorDeclaration` parses; `visitSeq 2147483648` parses to the `Long` 2147483648; `integerRangeBoundariesPerInputKind` (one boundary case per input kind, on `visitSeq`, incident `revision`, process-message `seq` and session-event `atSeq`: `9007199254740991` accepted, `9007199254740992` and `18446744073709551617` (above `Long.MAX_VALUE`) each `rejected schema-invalid` with `refs.check` naming the field, no exception, the next record processed); an arrival without `recordTime` or without `visitSeq` is `schema-invalid`; a departing event without `arrivalEventId` is `schema-invalid`; an arriving event carrying `arrivalEventId` is `schema-invalid`; an incident `closed` with `suspectTo` null is `schema-invalid`; an unknown extra field is `schema-invalid`; `schemaSha256("urn:forseti:schema:occupancy:1.0.0")` equals `sha256sum schemas/occupancy-1.0.0.schema.json`. `IdsTest`: `payloadDigest` ignores `recordTime`, `bridgeReceivedAt` and every member's `quality` and nothing else (two process messages differing only in a member's `quality` share the digest; a changed `value` does not; pins the literal digest of the smoke recording's first occupancy record of Task 8); `aNonCanonicalizableValueGetsARawBytesDigest` (`[9007199254740992]`, `{"eventTime": 9007199254740992, ...}` and `"text"` give `rule raw-bytes` with the SHA-256 of the delivered bytes, no exception); the harness test of Task 11 then shows such a record `rejected schema-invalid` with `refs.digestRule raw-bytes` and the run continuing; sample ids of two members differ only in `metric`; identity bytes order `{"a":..}` before `{"b":..}`.
+
+- [ ] **Step 4.6** Oracle `inputs.py`: the same identities and `payload_digest` written independently (dicts in contract field order, `canonical_bytes`), schema validation with `jsonschema.Draft202012Validator` over `schemas/*.json` given by path, `is_bad(code)`. `oracle/tests/test_inputs.py`: the same cases as `InputParserTest` plus `test_payload_digest_equals_java_pin` (the same literal `IdsTest` pins), `test_payload_digest_ignores_member_quality`, `test_visit_seq_above_int32_is_preserved` (2147483648 parsed and kept), `test_integer_range_boundaries_per_input_kind` (the same four fields and three values as the Java test: Python's unbounded `int` is bounded by the oracle's own `safe_int(v, field, lo, hi)` to `0 .. 2^53-1`, so `18446744073709551617` is `schema-invalid`, never a silent big integer) and `test_non_canonicalizable_value_gets_raw_bytes_digest` (the same three inputs, `rule raw-bytes`, digest of the delivered bytes) and, in `test_stage1.py`, `test_mixed_message_keeps_its_good_members` (the same `1e400` message: `Running` processed, `Torque` row `non-finite`, `observedPeriods 59`, `missingPeriods 1`, `count 59`, two `accepted` dispositions) and `test_three_notations_are_one_measurement`, `test_overflowing_integer_and_exponent_literals_are_non_finite` (`1e400`, `-1e400`, `1` followed by 400 zeros and its negative, each as a `Torque` value beside `Running true`: `Torque` row `non-finite`, `Running` processed, both dispositions `accepted`, no exception), so the two sides agree on which bytes identify an input.
+
+- [ ] **Step 4.7** `mvn -q -pl core -Dtest='SchemaCopiesTest,InputParserTest,IdsTest' test` -> `Tests run: 14, Failures: 0`; `pytest -q oracle` -> `28 passed`. Commit `feat(core,oracle): input schemas 1.0.0, input types, identities and payload digests`.
+
+### Task 5: Journal types: envelope, rows, deletes, progress, dispositions, revisions, fold
+
+**Files:**
+- Create: `core/src/main/java/dev/krillin/forseti/core/journal/{Envelope,Row,Delete,Pins,Progress,Disposition,Revisions,JournalFold}.java`
+- Create: `core/src/test/java/dev/krillin/forseti/core/journal/{RevisionsTest,DispositionsTest,JournalFoldTest}.java`
+
+- [ ] **Step 5.1** Types (every integer field of every record below, `revision`, `eventTimeAt`, `trigger.offset`, `cutId`, `producerEpoch`, `W1`, `W2`, `admissionW`, `restartEpoch`, `barrierRefs[].throughOffset`, `incidentOffsets[].throughOffset`, `initEvidence.declarationOffset`/`endOffset`, `inputPartition`, `inputOffset`, `generation`, is written with `Json.putSafe` and read back with `Json.safeLong`, so progress records, ledger rows, `cuts.json` and the journals never carry an integer outside the JCS domain; the ranges on reading: `barrierRefs[].throughOffset`, `incidentOffsets[].throughOffset` and the recording `throughOffsets` are `Json.THROUGH` (`-1` = no record of that partition included yet, the inclusive convention of spec 406 and 434; a cut with no incident writes six `incidentOffsets` entries with `throughOffset -1`, and a `barrierRefs` entry likewise), `W1`, `W2`, `admissionW` (nullable before the first progress) and `eventTimeAt` are `Json.ANY`, everything else `Json.NON_NEGATIVE`; no other sweep field has a sentinel: `producerEpoch` and `restartEpoch` start at 0 (spec 406), `initEvidence.endOffset >= 1`, and the `-1` of the `W1` formula is arithmetic, not a stored sentinel). `Pins` (`rules, hierarchy, bindings, definitions, job {engine, engineVersion, artifactSha256, runId, timestampSource, idleness, routingDigest}`, spec 329), `Envelope` (`evaluationGeneration, revision, supersedesDigest, cause, eventTimeAt, trigger {topic, partition, offset}, basisRevisions, pins`, spec 321-329; `cause` is `{"kind": "input"|"timer"|"replayed", ...}` per Task 1's insertion at line 553), `Row(String topic, JsonNode logicalKey, JsonNode body, String bodyDigest, Envelope envelope)`, `Delete(generation, logicalKey, revision, supersedesDigest)` (spec 331), `Progress.Stage1` / `Stage2` / `Ledger` records with `toJson()` in the exact field lists of spec 412-452 (`initEvidence` fields per Task 1's line 424), `Disposition(key {generation, inputTopic, inputPartition, inputOffset, part}, body {inputKind, identity, payloadDigest, disposition, reason, refs}, revision)` with the closed vocabulary of spec 445-450 as enums (plus the `refs.check` values of Task 1's line 449).
+
+- [ ] **Step 5.2** `Revisions` (per logical key `(nextRevision, lastDigest)`; `next(key, bodyDigest) -> Optional<(revision, supersedesDigest)>` empty when the digest equals the last emitted one; `delete(key) -> (revision, supersedesDigest)` and a later `next` continues the numbering; per generation). `JournalFold` reads one generation's records of a partition up to a progress record, keeps the highest revision per key, drops deleted keys, ignores progress, and returns `Violations` {revision gaps, equal consecutive digests, a delete whose `supersedesDigest` is not the last digest, a business row after its cut's progress}.
+
+- [ ] **Step 5.3** Tests (red first): `RevisionsTest` (first revision 1; changed body revision 2 with `supersedesDigest`; unchanged body emits nothing; an envelope-only change emits nothing; delete continuity; reappearance after delete continues at the next number; another generation starts at 1). `DispositionsTest` (a delivery key with `part`, a later `conflict` revision under the same key, `member:<metric>` parts for one message). `JournalFoldTest` (fold with two keys and a delete; the four violations each detected).
+
+- [ ] **Step 5.4** `mvn -q -pl core -Dtest='RevisionsTest,DispositionsTest,JournalFoldTest' test` -> `Tests run: 13, Failures: 0`. Commit `feat(core): journal envelope, rows, deletes, progress and disposition types; revision emission and fold`.
+
+### Task 6: Release reader at Vor's level, Tyr's bundles untouched, forseti's re-pinned registry fixtures
+
+**Files:**
+- Create: `core/src/main/java/dev/krillin/forseti/core/release/{Refusal,TrustedKeys,FloorStore,Dsse,HeadVerifier,ReleaseReader}.java`
+- Create: `scripts/make_registry_fixture.py`
+- Create: `fixtures/upstream/{bundle,plc-stamped-bundle}/**`, `fixtures/upstream/manifest.json`, `fixtures/registry/**`, `fixtures/registry-next/**`, `fixtures/trusted-keys.jsonl`, `fixtures/registry.lock.json`
+- Create: `core/src/test/java/dev/krillin/forseti/core/release/{HeadVerifierTest,ReleaseReaderTest,BifrostSeamTest,TestKeys}.java`
+
+Q3: Tyr's two bundles are copied byte for byte to `fixtures/upstream/` with a manifest of every file digest and the Tyr head; they are never modified and are the refusal fixture of `binding.schema-mismatch` (Task 7). Execution fixtures are forseti's own: the script copies the bundles, replaces the two profile files' `format.schemaSha256` with the real digests of Task 4 and the incident `topic` with `quality.incidents` (spec 463), re-pins (evidence sha, proposal, submission) exactly as the step-1 plan's `pin-fixture.py` does, then approves and publishes with Bifrost's CLI: `line2-rules 1.0.0` (occupancy-join) on stream `line2`, `line2-rules-plc 1.0.0` (plc-stamped, `crossCheck: occupancy` as Tyr authored it) on stream `line2-plc`, and `line2-rules-plc-nocheck 1.0.0` (the same plc bundle with the attribution rule at `1.0.1` and `identity.crossCheck` `none`, the impact rule referencing `1.0.1`; the pinned rule both runs of injection 11b use, spec 631) on stream `line2-plc-nocheck` into `fixtures/registry`; the same plus `line2-rules 1.0.1` (attribution rule 1.0.1 with `coverage.maxMissingPeriods` 4, impact rule 1.0.1 referencing it) on stream `line2` into `fixtures/registry-next` (head version 2, `previous` names version 1; for injection 20); and Tyr's `bundle` with no byte changed as `line2-rules 1.0.0` on stream `line2` into `fixtures/registry-upstream` (so the `binding.schema-mismatch` refusal is reached only after a verified head and release, as at a real start-up). A second release on a stream carries the current head's `{id, version, sha256}` as `baseRelease` in both `proposal.json` and `submission.json` (Bifrost's `submission.base-reference` and `mapping.base-conflict` checks), set before the proposal digest is re-pinned. Private keys live in a temporary directory and are deleted; the public keys go to `fixtures/trusted-keys.jsonl`, outside the registries (a registry cannot vouch for itself). Heads are published with `--expires-in P366D`; every test passes `nowMs`, never the wall clock.
+
+- [ ] **Step 6.1** `scripts/make_registry_fixture.py` (run with `python -I scripts/make_registry_fixture.py --bifrost ../bifrost --tyr ../tyr/fixtures/attribution-rule`; the form of Vor's `make_fixtures.py`):
+
+```python
+"""Publish forseti's fixture registries with Bifrost's own CLI from Tyr's committed bundles.
+
+Tyr's bundles are copied untouched to fixtures/upstream (they prove binding.schema-mismatch). The execution fixtures are
+re-pinned copies: the two profile data files get the real schema digests of schemas/*.json and the incident topic
+quality.incidents, and the bundle is re-pinned (evidence sha256, proposal sha256 list, submission digests).
+  registry:      line2-rules 1.0.0 on stream line2, line2-rules-plc 1.0.0 on stream line2-plc
+  registry-next: the same plus line2-rules 1.0.1 (maxMissingPeriods 4) on stream line2 (head version 2)
+Needs <bifrost>/gates/target/bifrost-gates.jar. Private keys are deleted; public keys go to fixtures/trusted-keys.jsonl.
+"""
+from __future__ import annotations
+
+import argparse, hashlib, json, shutil, subprocess, tempfile
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent.parent
+STREAMS = {"bundle": ("line2", "line2-rules"), "plc-stamped-bundle": ("line2-plc", "line2-rules-plc")}
+
+
+def sha(b: bytes) -> str: return hashlib.sha256(b).hexdigest()
+def load(p: Path): return json.loads(p.read_bytes())
+def dump(p: Path, d) -> None: p.write_bytes((json.dumps(d, indent=2, ensure_ascii=False) + "\n").encode("utf-8"))
+def git_head(p: Path) -> str: return subprocess.run(["git", "-C", str(p), "rev-parse", "HEAD"], capture_output=True, text=True, check=True).stdout.strip()
+def inventory(root: Path) -> dict: return {str(p.relative_to(root)).replace("\\", "/"): sha(p.read_bytes()) for p in sorted(q for q in root.rglob("*") if q.is_file())}
+
+
+def repin(bundle: Path) -> None:
+    p = load(bundle / "proposal.json")
+    for f in p["files"]:
+        if f["kind"] == "evidence-artifact":
+            e = load(bundle / f["path"]); e["file"]["sha256"] = sha((bundle / e["file"]["path"]).read_bytes()); dump(bundle / f["path"], e)
+    for f in p["files"]:
+        d = load(bundle / f["path"]); f["id"], f["version"] = d["id"], d["version"]; f["sha256"] = sha((bundle / f["path"]).read_bytes())
+    dump(bundle / "proposal.json", p)
+    s = load(bundle / "submission.json"); s["proposalSha256"] = s["workspaceSha256"] = sha((bundle / "proposal.json").read_bytes()); dump(bundle / "submission.json", s)
+
+
+def fix_profiles(bundle: Path, occupancy_sha: str, incident_sha: str) -> None:
+    occ = bundle / "data" / "occupancy-binding-0.json"; d = load(occ); d["format"]["schemaSha256"] = occupancy_sha; dump(occ, d)
+    inc = bundle / "data" / "incident-binding-0.json"; d = load(inc); d["format"]["schemaSha256"] = incident_sha; d["topic"] = "quality.incidents"; dump(inc, d)
+
+
+def bump_rules(bundle: Path) -> None:
+    a = bundle / "attribution-rules" / "0.json"; d = load(a); d["version"] = "1.0.1"; d["coverage"]["maxMissingPeriods"] = 4; dump(a, d)
+    i = bundle / "impact-rules" / "0.json"; d = load(i); d["version"] = "1.0.1"; d["attributionRuleRef"]["version"] = "1.0.1"; dump(i, d)
+
+
+class Gates:
+    def __init__(self, jar: Path): self.jar = jar
+    def __call__(self, *args: str) -> None:
+        r = subprocess.run(["java", "-jar", str(self.jar), *args], capture_output=True, text=True)
+        if r.returncode != 0:
+            raise SystemExit(f"gates {' '.join(args[:2])} failed ({r.returncode}): {r.stdout}{r.stderr}")
+
+
+def main() -> None:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--bifrost", type=Path, default=ROOT.parent / "bifrost")
+    ap.add_argument("--tyr", type=Path, default=ROOT.parent / "tyr" / "fixtures" / "attribution-rule")
+    ap.add_argument("--out", type=Path, default=ROOT / "fixtures")
+    a = ap.parse_args()
+    gates = Gates(a.bifrost / "gates" / "target" / "bifrost-gates.jar")
+    occupancy_sha = sha((ROOT / "schemas" / "occupancy-1.0.0.schema.json").read_bytes())
+    incident_sha = sha((ROOT / "schemas" / "incident-1.0.0.schema.json").read_bytes())
+    upstream = a.out / "upstream"
+    if upstream.exists(): shutil.rmtree(upstream)
+    for name in STREAMS: shutil.copytree(a.tyr / name, upstream / name)
+    dump(upstream / "manifest.json", {"tyr": git_head(a.tyr), "files": inventory(upstream)})
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp = Path(tmp); keys = tmp / "keys"; reg = tmp / "registry"; (reg / "identity").mkdir(parents=True)
+        lines = []
+        for principal in ("proposer", "approver"):
+            gates("identity", "keygen", principal, "--out", str(keys))
+            lines.append(json.dumps({"principal": principal, "publicKey": (keys / f"{principal}.pub").read_text().strip()}))
+        (reg / "identity" / "authorized-keys.jsonl").write_text("\n".join(lines) + "\n", newline="\n")
+        rules = []
+        for stream in ("line2", "line2-plc", "line2-plc-nocheck"):
+            rules += [{"id": f"publish-{stream}", "principal": "proposer", "action": "publish", "target": "mapping-publication", "kind": "mapping-release", "ref": stream},
+                      {"id": f"approve-{stream}", "principal": "approver", "action": "approve", "target": "mapping-publication", "kind": "mapping-release", "ref": stream}]
+        dump(reg / "identity" / "activation-policy.json", {"version": "1.0.0", "default": "deny", "rules": rules})
+        signers = ["--by", "proposer", "--by-key", str(keys / "proposer.key"), "--approved-by", "approver", "--approved-by-key", str(keys / "approver.key")]
+
+        def publish(reg: Path, name: str, stream: str, release: str, version: str, edit=None, touch: bool = True) -> None:
+            bundle = tmp / f"{reg.name}-{release}-{version}"; shutil.copytree(a.tyr / name, bundle)   # unique per release: the plc bundle is published twice (line2-plc and line2-plc-nocheck)
+            if touch:
+                fix_profiles(bundle, occupancy_sha, incident_sha)
+                if edit: edit(bundle)
+                # A second release on a stream must name the current head exactly ({id, version, sha256}) in BOTH
+                # proposal.json and submission.json (MappingBundle: submission.base-reference; MappingRegistry.base:
+                # mapping.base-conflict compares the whole head object), before the proposal digest is re-pinned.
+                head = reg / "mappings" / "heads" / f"{stream}.json"
+                base = load(head) if head.exists() else None
+                p = load(bundle / "proposal.json"); p["baseRelease"] = base; dump(bundle / "proposal.json", p)
+                s = load(bundle / "submission.json"); s["baseRelease"] = base; s["streamId"] = stream; s["version"] = version; dump(bundle / "submission.json", s)
+                repin(bundle)
+            gates("mapping", "validate", str(bundle))
+            gates("mapping", "approve", str(reg), str(bundle), f"approval-{release}-{version}", *signers)
+            gates("mapping", "publish", str(reg), str(bundle), release, version, "--approval", f"approval-{release}-{version}", *signers, "--expires-in", "P366D")
+
+        def nocheck(bundle: Path) -> None:
+            r = bundle / "attribution-rules" / "0.json"; d = load(r); d["version"] = "1.0.1"; d["identity"]["crossCheck"] = "none"; dump(r, d)
+            i = bundle / "impact-rules" / "0.json"; d = load(i); d["version"] = "1.0.1"; d["attributionRuleRef"]["version"] = "1.0.1"; dump(i, d)
+
+        def snapshot(reg: Path, name: str) -> Path:
+            out = a.out / name
+            if out.exists(): shutil.rmtree(out)
+            shutil.copytree(reg, out, ignore=shutil.ignore_patterns(".lock")); return out
+
+        for name, (stream, release) in STREAMS.items(): publish(reg, name, stream, release, "1.0.0")
+        publish(reg, "plc-stamped-bundle", "line2-plc-nocheck", "line2-rules-plc-nocheck", "1.0.0", edit=nocheck)
+        target = snapshot(reg, "registry")
+        publish(reg, "bundle", "line2", "line2-rules", "1.0.1", edit=bump_rules)
+        nxt = snapshot(reg, "registry-next")
+        # Tyr's bundle untouched, in its own registry: head and release verify, then RuleSet.load refuses binding.schema-mismatch.
+        regu = tmp / "registry-upstream"; (regu / "identity").mkdir(parents=True)
+        shutil.copy(reg / "identity" / "authorized-keys.jsonl", regu / "identity" / "authorized-keys.jsonl")
+        dump(regu / "identity" / "activation-policy.json", {"version": "1.0.0", "default": "deny", "rules": rules})
+        publish(regu, "bundle", "line2", "line2-rules", "1.0.0", touch=False)
+        ups = snapshot(regu, "registry-upstream")
+        (a.out / "trusted-keys.jsonl").write_text("\n".join(lines) + "\n", newline="\n")
+        dump(a.out / "registry.lock.json", {"bifrost": git_head(a.bifrost), "tyr": git_head(a.tyr),
+                                            "occupancySchemaSha256": occupancy_sha, "incidentSchemaSha256": incident_sha,
+                                            "files": inventory(target), "next": inventory(nxt), "upstreamRegistry": inventory(ups)})
+    bundles = sum(1 for p in upstream.rglob("*") if p.is_file() and p.name != "manifest.json")
+    print(f"wrote {upstream} ({bundles} bundle files + manifest), {target} ({len(inventory(target))} files), {nxt} ({len(inventory(nxt))} files), {ups} ({len(inventory(ups))} files)")
+
+
+if __name__ == "__main__":
+    main()
+```
+
+The activation policy names the three streams `line2`, `line2-plc` and `line2-plc-nocheck`. The submission `streamId` is re-stamped on the touched copies because Tyr's plc bundle names `line2` too and a stream has one head; Bifrost pins the proposal digest, not the stream, into the submission. The untouched publication into `registry-upstream` changes no bundle byte at all (its submission already says `line2`, `baseRelease null`). Never change rule or profile bytes beyond the listed edits (`fix_profiles`, `bump_rules`, `nocheck`).
+
+- [ ] **Step 6.2** Run it. Expected: `wrote .../fixtures/upstream (98 bundle files + manifest), .../fixtures/registry (177 files), .../fixtures/registry-next (219 files), .../fixtures/registry-upstream (47 files)`. Counts: identity 2; per stream heads 1 + head-attestations 1 + anchor 1; per release approvals 1 + attestations 1 + release.json 1 + payload files (39 for `bundle`, 59 for `plc-stamped-bundle`). `registry` = 2 + 3 x 3 + (42 + 62 + 62) = 177; `registry-next` = 177 + 42 (the 1.0.1 release; the `line2` head, attestation and anchor are replaced, not added) = 219; `registry-upstream` = 2 + 3 + 42 = 47. `file fixtures/registry/mappings/heads/line2.json` shows no CRLF. Decode the `registry-next` head statement: `python -I -c "import json,base64;e=json.load(open('fixtures/registry-next/mappings/head-attestations/line2.dsse.json'));print(json.dumps(json.loads(base64.b64decode(e['payload'])),indent=1))"` -> `headVersion 2`, `cause publish`, `previous {headVersion 1, release {...1.0.0...}}`.
+
+- [ ] **Step 6.3** `Refusal.java` (the closed set of Task 1's insertion at line 84):
+
+```java
+package dev.krillin.forseti.core.release;
+
+import java.util.*;
+
+/** The reader's closed refusal set: Vor's four names for the same failures plus the spec's start-up refusal. A refusal names
+ *  its rule and evidence, never carries secrets, and is never a disposition reason. */
+public final class Refusal extends RuntimeException {
+    public static final List<String> REASONS = List.of("head-unverified", "head-rollback", "head-expired", "provenance-mismatch", "binding.schema-mismatch");
+    public final String reason; public final Map<String, Object> evidence;
+    public Refusal(String reason, Object... kv) {
+        super(reason); if (!REASONS.contains(reason)) throw new IllegalArgumentException("not a refusal reason: " + reason);
+        this.reason = reason; Map<String, Object> e = new LinkedHashMap<>(); for (int i = 0; i + 1 < kv.length; i += 2) e.put(String.valueOf(kv[i]), kv[i + 1]); this.evidence = Collections.unmodifiableMap(e);
+    }
+}
+```
+
+- [ ] **Step 6.4** `TrustedKeys.java` (JDK only):
+
+```java
+package dev.krillin.forseti.core.release;
+
+import dev.krillin.forseti.core.Json;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.*;
+import java.security.*;
+import java.security.spec.X509EncodedKeySpec;
+import java.util.*;
+
+/** principal -> Ed25519 public keys from JSON lines {"principal", "publicKey"} (X.509 SubjectPublicKeyInfo, base64), the file
+ *  Bifrost's `identity keygen` prints and Vor reads. The operator gives it to forseti outside the registry. */
+public final class TrustedKeys {
+    private final Map<String, List<PublicKey>> keys = new HashMap<>();
+    public static TrustedKeys load(Path file) throws java.io.IOException {
+        TrustedKeys t = new TrustedKeys();
+        for (String line : Files.readAllLines(file, StandardCharsets.UTF_8)) {
+            if (line.isBlank()) continue;
+            var e = Json.read(line.getBytes(StandardCharsets.UTF_8));
+            t.keys.computeIfAbsent(Json.text(e, "principal"), k -> new ArrayList<>()).add(publicKey(Json.text(e, "publicKey")));
+        }
+        return t;
+    }
+    public static PublicKey publicKey(String b64) {
+        try { return KeyFactory.getInstance("Ed25519").generatePublic(new X509EncodedKeySpec(Base64.getDecoder().decode(b64))); }
+        catch (GeneralSecurityException | IllegalArgumentException e) { throw new IllegalArgumentException("not an Ed25519 public key", e); }
+    }
+    public List<PublicKey> of(String principal) { return keys.getOrDefault(principal, List.of()); }
+}
+```
+
+- [ ] **Step 6.5** `Dsse.java` (PAE and raw Ed25519 verification; `verify` never throws):
+
+```java
+package dev.krillin.forseti.core.release;
+
+import java.io.ByteArrayOutputStream;
+import java.nio.charset.StandardCharsets;
+import java.security.PublicKey;
+import java.security.Signature;
+import java.util.Base64;
+
+public final class Dsse {
+    public static final String IN_TOTO = "application/vnd.in-toto+json";
+    private Dsse() {}
+    /** "DSSEv1" SP LEN(type) SP type SP LEN(body) SP body, lengths as ASCII decimal. */
+    public static byte[] pae(String type, byte[] body) {
+        byte[] t = type.getBytes(StandardCharsets.UTF_8); ByteArrayOutputStream out = new ByteArrayOutputStream();
+        out.writeBytes(("DSSEv1 " + t.length + " ").getBytes(StandardCharsets.US_ASCII)); out.writeBytes(t);
+        out.writeBytes((" " + body.length + " ").getBytes(StandardCharsets.US_ASCII)); out.writeBytes(body); return out.toByteArray();
+    }
+    /** The envelope spec allows standard or URL-safe Base64. */
+    public static byte[] decode(String b64) {
+        try { return Base64.getDecoder().decode(b64); } catch (IllegalArgumentException e) { return Base64.getUrlDecoder().decode(b64); }
+    }
+    public static boolean verify(byte[] message, byte[] signature, PublicKey key) {
+        try { Signature s = Signature.getInstance("Ed25519"); s.initVerify(key); s.update(message); return s.verify(signature); }
+        catch (Exception e) { return false; }
+    }
+}
+```
+
+- [ ] **Step 6.6** `FloorStore.java`: `record Floor(long headVersion, String statementSha256)`; `<stateDir>/head-floors/<stream>.json` = `{"headVersion": n, "statementSha256": "<hex>"}`; `get(stream) -> Optional<Floor>` (read only, for reports); `streams()`; and the one mutating entry point, `update(stream, candidateVersion, statementSha, boolean raise) -> Outcome`, which first takes an in-JVM `ReentrantLock` keyed by the canonical path of `<stateDir>/head-floors/.lock` (a static `ConcurrentHashMap<Path, ReentrantLock>`, because overlapping `FileLock` requests from one JVM throw `OverlappingFileLockException` instead of waiting) and then the `FileLock` on that file against other processes, re-reads the current floor, returns `ROLLBACK(floor)` when `candidate < floor.headVersion` or (`candidate == floor.headVersion` and the statement digest differs), otherwise, when `raise` is true and `candidate > floor.headVersion` (or no floor exists), writes `<stream>.json.tmp`, `FileChannel.force(true)`, `Files.move(tmp, file, ATOMIC_MOVE, REPLACE_EXISTING)` and returns `RAISED`, else `UNCHANGED`. Read, compare and write happen inside one lock hold, so two concurrent verifiers cannot interleave a lower version behind a higher one (spec 84: the floor never goes down). A test with two threads of one JVM and versions 3 and 2 ends with the floor at 3 whichever thread runs first and throws no `OverlappingFileLockException`; a second test with two processes (the test forks `java -cp ... FloorStoreMain`) shows the same. The same two-level lock (`cli/.../LockedFile` helper, shared by nothing else) guards the generation store's `append` in Task 20.
+
+- [ ] **Step 6.7** `HeadVerifier.java` (Vor's order; every refusal names its rule; the signature is counted by the verified trusted key under the claimed principal, never by `keyid`; the decoded original payload bytes are verified, never a re-serialization):
+
+```java
+package dev.krillin.forseti.core.release;
+
+import com.fasterxml.jackson.databind.JsonNode;
+import dev.krillin.forseti.core.Json;
+import dev.krillin.forseti.core.canon.Canonical;
+import java.nio.file.*;
+import java.security.PublicKey;
+import java.time.Instant;
+import java.time.format.DateTimeParseException;
+import java.util.*;
+import java.util.regex.Pattern;
+
+/** Verifies mappings/heads/<stream>.json through mappings/head-attestations/<stream>.dsse.json as Vor's head.py does:
+ *  envelope shape, two distinct principals, one verifying signature per principal under two different trusted keys, the
+ *  statement names exactly this head and its release.json by raw-byte SHA-256, signedAt not in the future, a version floor
+ *  that never goes down (the same version must carry the same statement), then expiry. Pure: `nowMs` is a parameter. */
+public final class HeadVerifier {
+    public static final String STATEMENT = "https://in-toto.io/Statement/v1";
+    public static final String PREDICATE = "https://github.com/yggdrasil-iiot/bifrost/attestation/mapping-head/v1";
+    static final Pattern STREAM = Pattern.compile("[A-Za-z0-9][A-Za-z0-9._-]{0,127}");
+    static final Pattern INSTANT = Pattern.compile("[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z");
+    private HeadVerifier() {}
+
+    public record Head(String stream, String releaseId, String version, String releaseSha256, String headFile, String headSha256,
+                       String attestationFile, String attestationSha256, String statementSha256, long headVersion,
+                       String signedAt, String expires, String publishedBy, String approvedBy) {
+        public String releasePath() { return "releases/" + releaseId + "/" + version + "/release.json"; }
+    }
+
+    public static Head verify(Path mappings, String stream, TrustedKeys trusted, FloorStore floors, long nowMs) {
+        if (!STREAM.matcher(stream).matches()) throw new Refusal("head-unverified", "stream", stream, "rule", "stream-id");
+        String headFile = "heads/" + stream + ".json", attFile = "head-attestations/" + stream + ".dsse.json";
+        byte[] headBytes, attBytes;
+        try { headBytes = Files.readAllBytes(mappings.resolve(headFile)); attBytes = Files.readAllBytes(mappings.resolve(attFile)); }
+        catch (java.io.IOException e) { throw new Refusal("head-unverified", "stream", stream, "rule", "missing"); }
+        String headSha = Canonical.digestOf(headBytes);
+        JsonNode head, envelope, statement, p; byte[] body; String published, approved;
+        try {
+            head = Json.read(headBytes); envelope = Json.read(attBytes);
+            if (!Dsse.IN_TOTO.equals(envelope.path("payloadType").asText(null)) || !envelope.path("payload").isTextual()) throw new IllegalArgumentException("envelope");
+            body = Base64.getDecoder().decode(envelope.path("payload").asText()); statement = Json.read(body); p = statement.path("predicate");
+            published = Json.text(p, "publishedBy"); approved = Json.text(p, "approvedBy");
+        } catch (IllegalArgumentException e) { throw new Refusal("head-unverified", "stream", stream, "rule", "envelope"); }
+        if (published.equals(approved)) throw new Refusal("head-unverified", "stream", stream, "rule", "principals", "publishedBy", published, "approvedBy", approved);
+        byte[] message = Dsse.pae(Dsse.IN_TOTO, body); List<PublicKey> used = new ArrayList<>();
+        for (String principal : List.of(published, approved)) {
+            PublicKey key = signer(envelope, message, trusted.of(principal));
+            if (key == null) throw new Refusal("head-unverified", "stream", stream, "rule", "signature", "principal", principal);
+            for (PublicKey u : used) if (Arrays.equals(u.getEncoded(), key.getEncoded())) throw new Refusal("head-unverified", "stream", stream, "rule", "same-key", "principal", principal);
+            used.add(key);
+        }
+        String releaseId, version, releaseSha; Instant signedAt, expires;
+        try {
+            releaseId = Json.text(head, "id"); version = Json.text(head, "version"); releaseSha = Json.text(head, "sha256");
+            String releasePath = "releases/" + releaseId + "/" + version + "/release.json"; JsonNode subject = statement.path("subject");
+            boolean ok = STATEMENT.equals(statement.path("_type").asText(null)) && PREDICATE.equals(statement.path("predicateType").asText(null))
+                && stream.equals(p.path("streamId").asText(null)) && head.equals(p.path("release"))
+                && p.path("headVersion").isIntegralNumber() && p.path("headVersion").bigIntegerValue().signum() > 0
+                && p.path("headVersion").bigIntegerValue().compareTo(Canonical.MAX_SAFE) <= 0 && subject.size() == 2
+                && headFile.equals(subject.get(0).path("name").asText(null)) && headSha.equals(subject.get(0).path("digest").path("sha256").asText(null))
+                && releasePath.equals(subject.get(1).path("name").asText(null)) && releaseSha.equals(subject.get(1).path("digest").path("sha256").asText(null));
+            signedAt = instant(Json.text(p, "signedAt")); expires = instant(Json.text(p, "expires"));
+            if (!ok) throw new IllegalArgumentException("subject");
+        } catch (IllegalArgumentException | DateTimeParseException e) {
+            throw new Refusal("head-unverified", "stream", stream, "rule", "subject", "expected", headSha);
+        }
+        Instant now = Instant.ofEpochMilli(nowMs);
+        if (signedAt.isAfter(now)) throw new Refusal("head-unverified", "stream", stream, "rule", "signed-in-future", "signedAt", signedAt.toString(), "now", now.toString());
+        String statementSha = Canonical.digestOf(body); long v = p.path("headVersion").asLong();
+        // Rollback is judged before expiry (Vor's order), and the floor is read, compared and raised inside one lock hold;
+        // an expired head is refused but never raises the floor.
+        boolean expired = !now.isBefore(expires);
+        FloorStore.Outcome outcome = floors.update(stream, v, statementSha, !expired);
+        if (outcome instanceof FloorStore.Outcome.Rollback r)
+            throw new Refusal("head-rollback", "stream", stream, "floor", r.floor().headVersion(), "candidate", v, "recordedStatementSha256", r.floor().statementSha256(), "candidateStatementSha256", statementSha);
+        if (expired) throw new Refusal("head-expired", "stream", stream, "expires", expires.toString(), "now", now.toString());
+        return new Head(stream, releaseId, version, releaseSha, "mappings/" + headFile, headSha, "mappings/" + attFile, Canonical.digestOf(attBytes), statementSha, v,
+                        signedAt.toString(), expires.toString(), published, approved);
+    }
+    static Instant instant(String text) { if (!INSTANT.matcher(text).matches()) throw new IllegalArgumentException(text); return Instant.parse(text); }
+    static PublicKey signer(JsonNode envelope, byte[] message, List<PublicKey> keys) {
+        for (JsonNode s : envelope.path("signatures")) {
+            if (!s.path("sig").isTextual()) continue; byte[] raw;
+            try { raw = Dsse.decode(s.path("sig").asText()); } catch (IllegalArgumentException e) { continue; }
+            for (PublicKey k : keys) if (Dsse.verify(message, raw, k)) return k;
+        }
+        return null;
+    }
+}
+```
+
+- [ ] **Step 6.8** `ReleaseReader.java`: `read(Path mappings, Head head) -> Release` with `record Release(Head head, String root, JsonNode doc, Map<String,String> files, Map<DocKey, Doc> documents, Map<String, byte[]> payload)`: `release.json` bytes digest equals `head.releaseSha256()` else `provenance-mismatch` (`rule release-digest`); `doc.id/version/streamId` equal the head's (`release-identity`); every `files[]` entry: normalised path (no `..`, no leading `/`), starts with `payload/`, unique (`release-path`), file exists and its raw digest equals `sha256` (`release-file`); the bytes are captured once at verification and served from memory afterwards (no second read of a mutable file); `payload/proposal.json` parsed and each listed `{path, kind, id, version, sha256}` has `files.get("payload/" + path).equals(sha256)` (`proposal-file`); documents indexed by `(kind, id)` with the version checked on lookup (`document(kind, ref)` -> `provenance-mismatch document-missing`); `payload(path)` only for listed, verified files (`unlisted`).
+
+- [ ] **Step 6.9** Tests. `TestKeys.java` generates Ed25519 pairs and re-signs a statement body (mirroring Vor's `helpers.py`) so tampered variants are produced from a temp copy of the fixture; fixed clock `NOW = signedAt + 60_000` read from the envelope. `HeadVerifierTest`: `verifiesTheBifrostPublishedHead` (`line2`, `line2-plc`, `line2-plc-nocheck`; `headVersion 1`; floor written at `tmp/state/head-floors/line2.json`); `verifiesRegistryUpstream` (Tyr's untouched bundle: head and release verify; the refusal comes later, in `RuleSetTest`); `verifiesRegistryNextAtVersion2AndRaisesTheFloor`; `registryAfterRegistryNextIsRollback`; `aMissingAttestationIsUnverified` (`missing`); `aWrongPayloadTypeIsUnverified` (`envelope`); `onePrincipalIsUnverified` (`principals`); `aSignatureFromAnUntrustedKeyIsUnverified` (`signature`); `aForgedKeyidDoesNotCount` (keyid says `approver`, signature by an untrusted key: `signature`); `twoSignaturesFromOneKeyAreUnverified` (`same-key`); `aChangedHeadFileIsUnverified` (`subject`); `aModifiedPayloadByteIsUnverified` (`signature`: the PAE no longer matches); `aStatementSignedInTheFutureIsUnverified`; `aLowerVersionThanTheFloorIsRollback`; `theSameVersionWithAnotherStatementIsRollback`; `anExpiredHeadIsExpired` (now = expires); `rollbackIsCheckedBeforeExpiry`. `ReleaseReaderTest`: `readsBothReleasesAndTheirPayloads` (39 and 59 payload files; one `attribution-rule`, one `impact-rule`, the two profile `evidence-artifact`s); `aChangedPayloadByteIsAMismatch` (`release-file`); `aChangedReleaseJsonIsAMismatch` (`release-digest`); `anUnlistedPayloadIsRefused`; `anEscapingPathIsRefused` (`release-path`); `aProposalEntryNotInReleaseIsAMismatch`. `BifrostSeamTest` (requires `FORSETI_BIFROST_JAR` and `FORSETI_TYR_FIXTURES`; `Assumptions.assumeTrue` otherwise, and the CI job `bifrost-seam` always sets them): runs `scripts/make_registry_fixture.py --out <tmp>` against the live jar, verifies both heads and version 2 of `registry-next` with the forseti reader at `signedAt + 60 s` and once at the real current time (`System.currentTimeMillis()`, inside the P366D window), reads both releases, and tampers one payload byte (`provenance-mismatch`). A missing jar in CI is a failure, never a skip.
+
+- [ ] **Step 6.10** `mvn -q -pl core -Dtest='HeadVerifierTest,ReleaseReaderTest' test` -> `Tests run: 23, Failures: 0`. With the jar: `FORSETI_BIFROST_JAR=../bifrost/gates/target/bifrost-gates.jar FORSETI_TYR_FIXTURES=../tyr/fixtures/attribution-rule mvn -q -pl core -Dtest=BifrostSeamTest test` -> `Tests run: 1, Failures: 0`. Two commits: `test(fixtures): Tyr's bundles untouched; registries published by Bifrost from forseti's re-pinned copies` and `feat(core): release reader at Vor's level (head, release, payload by raw-byte SHA-256)`.
+
+### Task 7: Rule set from a release: both rules, both profiles, hierarchy, member catalog, `binding.schema-mismatch`, `rulesDigest`
+
+**Files:**
+- Create: `core/src/main/java/dev/krillin/forseti/core/rules/{Hierarchy,MemberCatalog,AttributionRule,ImpactRule,OccupancyBinding,IncidentBinding,RuleSet}.java`
+- Create: `core/src/test/java/dev/krillin/forseti/core/rules/RuleSetTest.java`
+- Create: `oracle/src/forseti_oracle/rules.py`, `oracle/tests/test_rules.py`
+
+Bifrost approved the bundle, so forseti does not re-run the eleven `attribution.*` checks; it resolves what the job needs and refuses only what the spec assigns to the job: `binding.schema-mismatch` (line 192) and the incident schema supporting each `kinds[]` entry (line 224). Resolution follows spec 132: `members[].mappingSetRef + mappingId` -> mapping of the set -> `memberPath[0].memberId` in the semantic definition of the set's target instance -> `name` (= `metric`), `valueType`, `semanticId`; the set's `equipmentInstanceId` -> hierarchy path; roles by reference (activity, identity, measurement).
+
+- [ ] **Step 7.1** `Hierarchy.java`: `from(JsonNode doc)`: nodes by id, `path(id)` root-first joined by `:` (a cycle or a missing parent is `IllegalArgumentException`; Bifrost already refused it), `stationOf(List<String> stations, String path)` = the station equal to `path` or a prefix `station + ":"` (exactly one by `attribution.station-nested`; `Optional.empty()` otherwise), `isDescendantOrSelf(ancestor, path)`.
+
+- [ ] **Step 7.2** `MemberCatalog.java`:
+
+```java
+public record Resolved(String mappingId, String equipmentPath, String station, String metric, String valueType, String semanticId, Role role) {}
+public enum Role { MEASUREMENT, ACTIVITY, IDENTITY_UNIT, IDENTITY_VISIT, IDENTITY_PRESENT }
+public Map<String, Resolved> byMappingId(); public Optional<Resolved> byEquipmentAndMetric(String path, String metric);
+public Optional<Resolved> activityOf(String equipmentPath); public Set<String> equipment(); public List<Resolved> measurementsOf(String equipmentPath);
+public List<Resolved> requiredMembersOf(String station)   // every measurement member of the station and of its tools (spec 138)
+```
+
+- [ ] **Step 7.3** `AttributionRule.java` (typed accessors: `id, version, stations, outOfOrdernessMs, allowedLatenessMs, horizonMs, enterToleranceMs, leaveToleranceMs, uncertainInput, maxBadShare, expectedPeriodMs, maxMissingPeriods, mode, namespace, crossCheck, identityMembers`), `ImpactRule.java` (`incidentScope, overlap, match, onBasisRetracted, onWithdrawn, workRecordsMs`), `OccupancyBinding.java` (`topic, schemaId, schemaSha256, pattern` compiled once and matched whole-string with `matcher(unitId).matches()`, `enterBizStep, leaveBizStep, correctionReasons, sources`), `IncidentBinding.java` (`topic, schemaId, schemaSha256, kinds`). Thin views over the released `JsonNode`; node and released file digest kept for the pins.
+
+- [ ] **Step 7.4** `RuleSet.load(Release release, String attributionRuleId, String version, JsonNode definitions)`: the attribution rule; its `equipmentRef` hierarchy; the impact rule whose `attributionRuleRef` names it (exactly one, else `IllegalStateException`); both profile artifacts and data files (bytes through `release.payload`); `OccupancyBinding.schemaSha256` must equal `InputParser.schemaSha256("urn:forseti:schema:occupancy:1.0.0")` and the incident one likewise, else `new Refusal("binding.schema-mismatch", "profile", id, "expected", builtIn, "approved", declared)`; every `kinds[]` entry in `InputParser.incidentKinds()`, else `binding.schema-mismatch` (`rule kind-unsupported`); `MemberCatalog`. `pins()` = `{"rules": {"attribution": {id, version, sha256}, "impact": {...}}, "hierarchy": {id, version, sha256}, "bindings": {"occupancy": {...}, "incident": {...}}, "definitions": <devicePath -> {templateRef, version, sha256}>}` with each `sha256` the release's `files[]` digest of that document; `rulesDigest()` = `Canonical.digest(pins())` (spec 355). The envelope's `Pins` is this object plus `job`; the gate's cross-check recomputes the digest over the four pin fields only (`Pins.withoutJob()`), never over `job`, which differs per run.
+
+- [ ] **Step 7.5** `RuleSetTest`: loads `line2` and `line2-plc` from `fixtures/registry` with `definitions = {}`: stations; `byMappingId` sizes 6 and 9; roles (occupancy-join: 2 measurement, 4 activity; plc-stamped: 1 measurement, 2 activity, 6 identity); `requiredMembersOf(station1)` = `[nutrunner1-torque, nutrunner2-torque]` and `[nutrunner1-torque]`; `activityOf(station1:nutrunner1)` Boolean `nutrunner1-running`; impact rule found; bindings (`topic` `mfg.occupancy` / `quality.incidents`; pattern matches `UNIT0000000000001`, refuses `unit-1`); `rulesDigest` 64 hex, changes with `definitions`; the literal digest printed once and pinned. `loadsRule101FromRegistryNext` (`maxMissingPeriods 4`, different `rulesDigest`). `tyrsOwnBytesAreASchemaMismatch`: on `fixtures/registry-upstream` (Tyr's `bundle` published untouched by Bifrost, Task 6) the head verifies and the release reads with every digest intact, then `RuleSet.load` throws `Refusal binding.schema-mismatch` with `approved` = `...0001` and `expected` = the real digest (Q3: Tyr's bytes prove the refusal, and it is reached only after head and release verification, as at a real start-up). `loadsThePlcNocheckRule` (`line2-plc-nocheck`: `crossCheck none`, version `1.0.1`). `anUnsupportedKindIsASchemaMismatch`.
+
+- [ ] **Step 7.6** Oracle `rules.py`: `load_release(mappings, release_id, version)` (release.json and payload digests re-checked by raw bytes), `rule_set(release, attribution_rule_id, version)` with the same resolved fields, `pins(definitions)`, `rules_digest(definitions)`. `test_rules.py`: the same assertions on `fixtures/registry` and `registry-next`, plus `test_rules_digest_equals_java_pin` (the literal `RuleSetTest` pins): the first cross-language equality beyond the vector file.
+
+- [ ] **Step 7.7** `mvn -q -pl core -Dtest=RuleSetTest test` -> `Tests run: 11, Failures: 0`; `pytest -q oracle` -> `37 passed`. Commit `feat(core,oracle): rule set loaded from a verified release; binding.schema-mismatch on Tyr's bytes; rulesDigest`.
+
+### Task 8: Recording format, routing manifest, minimal builder, the committed smoke recordings
+
+**Files:**
+- Create: `cli/src/main/java/dev/krillin/forseti/cli/recording/{Recording,RoutingManifest,Murmur2,ScenarioBuilder,Telemetry}.java` (`ScenarioBuilder` in its minimal form: visits, telemetry with tails, sessions, batches with deadline brackets, digests; Task 16 adds overlays and ground truth); Modify: `Main` (`recordings build|verify`)
+- Create: `fixtures/scenarios/{smoke,smoke-plc,smoke-incident}.json` (+ `.lock.json` each), `fixtures/recordings/{smoke,smoke-plc,smoke-incident}/**` (built from those scenarios and committed; `smoke-plc` and `smoke-incident` are used by Tasks 12 and 15)
+- Create: `cli/src/test/java/dev/krillin/forseti/cli/recording/{RecordingTest,Murmur2Test}.java`
+- Create: `oracle/src/forseti_oracle/recording.py`, `oracle/tests/test_recording.py`
+
+A recording is a directory with the shape the step-5 recorder will write from Kafka, so step-3 recordings and step-5 captures are read by one `Recording.open` and the engines of steps 6-7 replay both:
+
+```
+<recording>/
+  manifest.json       recordingVersion 1; name; synthetic (bool); source {scenario, generator, seed, overlays[]}; digests {relative file -> sha256};
+                      rule {stream, releaseId, version, attributionRuleId, attributionRuleVersion}; definitions {devicePath -> {templateRef, version, sha256}};
+                      T0; scanMs; evidenceRange {devicePath -> {from, to}} (the verified telemetry range, Task 1's line 398);
+                      batches[] {cutId, throughOffsets {topic -> {partition -> offset}} (inclusive, the barrier's throughOffset; -1 while no record of that partition is included, so an empty partition such as every quality.incidents partition of smoke carries -1 in every batch), idleInputs[]};
+                      deadlines[] {kind, ref, at, cutA, cutB}; settleTargetW; tailMs
+  routing.json        partitions 6; stations {path -> partition}; devices {path -> {station, rawPartition}}; subscribed {topic -> [partitions]}; routingDigest
+  expected.json       ground truth (visits, every sampleId's expected attribution, dispositions per identity, incident units and set coverage at the last cut, transitions at the bracketing cuts)
+  ot.messages/<p>.jsonl  ot.sessions/<p>.jsonl  mfg.occupancy/<p>.jsonl  quality.incidents/<p>.jsonl
+```
+
+One record per line: `{"offset": <long>, "timestamp": null, "key": "<partition key>", "headers": {}, "value": {...}}` (offsets per partition from 0 and contiguous; `timestamp` is the broker append time in step 5; `headers` carries `forseti-generation` on output topics only). `routingDigest` = `Canonical.digest` of `routing.json` without that field. Raw device keys are placed with Kafka's default partitioner (`toPositive(murmur2(keyBytes)) % 6`; `Murmur2.java` is the 40-line reference algorithm) so the step-5 preflight finds the same placement; `quality.incidents` keeps its raw key `equipmentRef` (spec 463) and is placed by the same default partitioner (all six partitions subscribed; the harness routes each incident to its `stationRef`, the internal routed input of spec 466); only `mfg.occupancy` is written already partitioned by station through the station partitioner (sorted `stations[]`, spec 462).
+
+- [ ] **Step 8.1** `fixtures/recordings/smoke/`: one Station1 visit (`UNIT0000000000001`, enter `T0 + 600000`, leave `T0 + 660000`, nutrunner1 used), two occupancy events, one `session-up` per device, no incidents, and telemetry on all four devices every second from `T0 + 600000` to `T0 + 660000 + tailMs` = `T0 + 1411000` (the spec's tail `L + O + P` = 751,000 ms after the last business event, spec 594): 812 scans per device, 3,248 messages, 4,872 samples (station devices carry one member, nutrunners two). Without the tail the last `sourceTs` would be `T0 + 660000` and `W1` would stop at `T0 + 629999`, below the settlement deadline `leave + L = T0 + 1380000`; with it the bracketing cuts are the batch ending at the scan `T0 + 1410000` (`W1 = T0 + 1379999 < d`) and the next at `T0 + 1411000` (`W1 = T0 + 1380999 >= d`). Batches every 30 s of event time: boundaries at `T0 + 630000, 660000, ..., 1410000` (`(1410000 - 600000) / 30000 = 27` boundaries; the bracket `cutA` at scan `1410000` coincides with the 27th), plus `cutB` at the last scan `1411000`: 28 cuts. A recording this size is not typed by hand: `fixtures/scenarios/smoke.json` describes it and the minimal builder of this task (`ScenarioBuilder` without overlays and ground truth, which Task 16 adds) writes it; the files are committed with `fixtures/scenarios/smoke.lock.json` so the format is visible in review and `forseti recordings verify` proves the bytes. The first `mfg.occupancy` line (an arrival carries neither `arrivalEventId` nor `errorDeclaration`, spec 292, 294):
+
+```json
+{"offset":0,"timestamp":null,"key":"synthetic-site:line2:station1","headers":{},"value":{"eventId":"occ-1","eventTime":1794183000000,"recordTime":1794183000200,"unitId":"UNIT0000000000001","action":"OBSERVE","bizStep":"urn:epcglobal:cbv:bizstep:arriving","readPoint":"synthetic-site:line2:station1","visitSeq":1,"source":"mes-line2"}}
+```
+
+A process message line (nutrunner1, scan at `T0 + 600000`; all members one `sourceTs`; `definitionSha256` is the synthetic pin `manifest.definitions[device].sha256`; the DBIRTH is counted as having consumed `seq` 1, spec 239, so the first DDATA of a session carries `seq` 2):
+
+```json
+{"offset":0,"timestamp":null,"key":"synthetic-site:line2:station1:nutrunner1","headers":{},"value":{"edge":"edge-line2","device":"synthetic-site:line2:station1:nutrunner1","birthPublishTs":1794182400000,"bdSeq":0,"seq":2,"publishTs":1794183000050,"bridgeReceivedAt":1794183000120,"definitionSha256":"<pin>","members":[{"metric":"Torque","value":0.0,"uaStatusCode":0,"quality":192,"sourceTs":1794183000000,"serverTs":1794183000010},{"metric":"Running","value":false,"uaStatusCode":0,"quality":192,"sourceTs":1794183000000,"serverTs":1794183000010}]}}
+```
+
+- [ ] **Step 8.2** `Recording.java`: `open(Path)` (manifest, routing, `records(topic, partition) -> List<Record>`, `verifyDigests()`), `Record(long offset, Long timestamp, String key, JsonNode headers, JsonNode value)`; `RoutingManifest.java`: `stationOf(device)`, `partitionOf(station)`, `subscribed(topic)`, `routingDigest()` recomputed and compared. `RecordingTest`: opens `smoke`, 3,248 messages (812 per device) and 4,872 samples, offsets contiguous (every `offset`, `timestamp`, `cutId`, `T0`, `scanMs` and `evidenceRange` bound is read with `Json.safeLong` in `Json.NON_NEGATIVE`, every `throughOffsets` value in `Json.THROUGH`; `smoke`'s six `quality.incidents` partitions carry `throughOffsets -1` in all 28 batches and `smoke-incident`'s carry `-1` until the batch that delivers the incident at offset 0; a manifest with an offset of `9007199254740992`, or a through-offset of `-2`, is refused as malformed, the boundary cases of the recording kind), digests verified and equal to `fixtures/scenarios/smoke.lock.json`, `routingDigest` recomputed equals the file's, a wrong digest in the manifest is refused, `forseti recordings verify --scenario fixtures/scenarios/smoke.json --out fixtures/recordings/smoke` rebuilds byte-identically; incidents of `smoke-incident` sit in the partition Murmur2 gives their `equipmentRef`, not in the station's. `Murmur2Test`: three vectors pinned by running the reference algorithm once (comment: "Kafka DefaultPartitioner, 6 partitions").
+
+- [ ] **Step 8.3** Oracle `recording.py`: `open_recording(path)`, `records(topic, partition)`, routing, `verify_digests()`; `test_recording.py` opens `smoke`, asserts the same counts, recomputes `routingDigest` with the oracle's canonicalizer (equal to the file's: the second cross-language digest).
+
+- [ ] **Step 8.4** `mvn -q -pl core install -DskipTests && mvn -q -pl cli -Dtest='RecordingTest,Murmur2Test' test` -> `Tests run: 6, Failures: 0`; `pytest -q oracle` -> `41 passed`. Commit `feat(cli,oracle): recording format, routing manifest, minimal scenario builder and the committed smoke recordings`.
+
+### Task 9: `forseti gate --engine core` frame, the foundation manifest, pull request 1
+
+**Files:**
+- Create: `cli/src/main/java/dev/krillin/forseti/cli/{Main,Args}.java`, `cli/src/main/java/dev/krillin/forseti/cli/gate/{CoreGate,Assertions}.java`
+- Create: `gate/core-assertions.json`, `gate/core-negative-controls.json`
+- Create: `cli/src/test/java/dev/krillin/forseti/cli/gate/CoreGateTest.java`
+
+- [ ] **Step 9.1** `Assertions.java` (the accountant: `check(id, condition, evidence)` refuses an id not in the manifest and a duplicate id; `finish()` prints `assertions run N / expected N` and returns 1 when any expected id did not run or failed) and `CoreGate.java`: loads `gate/core-assertions.json` `{"engine": "core", "assertions": [{"id", "pr", "description"}]}`, runs every registered assertion, writes `build/gate/report.json` `{exit, scope: "core", engine, manifestSha256, assertionsExpected, assertionsRun, failed[], notRun[], intendedFailures[] (controls only), pins {jcs {java, python}, python, jdk, forseti artifactSha256}, seed, fixtureDigests {registry, registryNext, upstream, vectors, schemas, scenarios}, startedAt, finishedAt, command}`, prints the line last, exits 0 only when every manifest id ran and held and no unknown id ran; exits 1 otherwise; a crash or a missing artifact still writes a failure report and exits 1; `--negative-control <name>` not in `gate/core-negative-controls.json` exits 2 (usage) so CI's `== 1` check catches an unimplemented control. Foundation assertions (`F-*`, 18):
+
+| Id | What runs |
+|---|---|
+| `F-JCS-JAVA` | the vector file through `Canonical` (the checks of `CanonicalVectorsTest`) |
+| `F-JCS-PY` | `python -I -m pytest -q oracle/tests/test_jcs_vectors.py` exits 0 (the gate's `--python`) |
+| `F-JCS-REFUSALS` | the eight refusal vectors refused on both sides (Java in-process; `python -I -m forseti_oracle.cli canon-check vectors/jcs-vectors.json` exit 0) |
+| `F-SCHEMA-COPIES` | `schemas/*.json` bytes equal the core resources; their digests equal `fixtures/registry.lock.json` |
+| `F-UPSTREAM-UNTOUCHED` | every file of `fixtures/upstream/{bundle,plc-stamped-bundle}/**` matches `fixtures/upstream/manifest.json` (98 bundle files; the manifest itself is the 99th file of the directory and is not in its own inventory) |
+| `F-JOURNAL-REDUCERS` | the `Revisions`, `Disposition` and `JournalFold` behaviours of Task 5 on inline journals (first revision 1, unchanged body emits nothing, delete continuity, reappearance, a `conflict` revision under the same delivery key, the four fold violations detected) |
+| `F-HEAD-OK` | both fixture heads and `registry-next`'s version 2 verify at `signedAt + 60 s` with `fixtures/trusted-keys.jsonl` |
+| `F-HEAD-SIGNATURE`, `F-HEAD-SAME-KEY`, `F-HEAD-SUBJECT`, `F-HEAD-FUTURE`, `F-HEAD-ROLLBACK`, `F-HEAD-EXPIRED` | the tampered variants of `HeadVerifierTest` in a temp copy (the gate carries its own signer) |
+| `F-RELEASE-DIGEST`, `F-PAYLOAD-DIGEST` | a changed `release.json` byte and a changed payload byte are `provenance-mismatch` |
+| `F-RULES-LOAD-OJ`, `F-RULES-LOAD-PLC` | `RuleSet.load` on both releases; counts and roles as in `RuleSetTest`; `rulesDigest` equals the oracle's (`python -I -m forseti_oracle.cli rules-digest --mappings ... --release <id>@<version> --rule <id>@<version>`) |
+| `F-BINDING-SCHEMA-MISMATCH` | on `fixtures/registry-upstream` (Tyr's bundle published untouched) the head verifies and the release reads, then `RuleSet.load` is refused with `binding.schema-mismatch` (`approved` `...0001`) |
+
+`oracle/src/forseti_oracle/cli.py` is created here with `canon-check` and `rules-digest`; Task 18 adds `stage1`, `stage2`, `all`. `gate/core-negative-controls.json` is `{"controls": []}` until PR 6.
+
+- [ ] **Step 9.2** `CoreGateTest`: `everyManifestIdHasARegisteredAssertion` (both ways); `anAssertionNotRunFailsTheGate` (a manifest copy with an extra id: exit 1, `notRun` lists it, last line `assertions run 18 / expected 19`); `anUnknownAssertionFailsTheGate`; `aCrashStillWritesAFailureReport`; `theReportRecordsPinsAndDigests`.
+
+- [ ] **Step 9.3** `mvn -B -ntp -q install` -> `BUILD SUCCESS`; `java -jar cli/target/forseti.jar gate --engine core --out build/gate --python "$(command -v python)"` -> last line `assertions run 18 / expected 18`, exit 0; `python -I -c "import json;r=json.load(open('build/gate/report.json'));print(r['exit'],r['scope'])"` -> `0 core`. Commit `feat(cli): forseti gate --engine core with assertion accounting and the foundation manifest`.
+
+- [ ] **Step 9.4** Pull request 1: `git log --oneline main..` shows Tasks 2-9 (9 commits); CI green (`build` with the gate at 18/18 and an empty control loop, `bifrost-seam`, `windows`). PR body: scope, the gate line, fixture provenance (`registry.lock.json`: Bifrost and Tyr heads, schema digests; `upstream/manifest.json`), the Q3 arrangement, the action SHAs pinned. Wait for the merge; rebase PR 2.
+
+## Chunk 3: Stage-1 attribution core (PR 2)
+
+Branch: `git switch -c feat/step3-attribution-core main` after PR 1 merged.
+
+### Task 10: Stage 1 decision function (occupancy-join): state, visit claims, attribution, coverage, work record and sample bodies
+
+**Files:**
+- Create: `core/src/main/java/dev/krillin/forseti/core/NegativeControls.java` (B2: the record with `NONE`, a constructor parameter of `Stage1` from its first commit; PR 6 adds the behaviours)
+- Create: `core/src/main/java/dev/krillin/forseti/core/stage1/{Events,Stage1State,Stage1,VisitClaim,Attribution,Coverage,Sessions,WorkRecord,SampleRow,DeadlineIndex}.java`
+- Create: `core/src/test/java/dev/krillin/forseti/core/stage1/{Stage1OccupancyJoinTest,CoverageTest,DeadlineIndexTest}.java`
+
+The stage-1 rule sheet below is the two implementations' shared reading of the spec as corrected by Task 1 (the oracle implements it from the spec text in Task 18). Per station `s`; `P = expectedPeriodMs`, `L = allowedLatenessMs`, `H = horizonMs`, `O = outOfOrdernessMs`, `tolE/tolL` enter/leave tolerance.
+
+**Stage-1 rule sheet (occupancy-join).**
+
+- **S1 Routing and rejection** (harness side, before `decide`; dispositions to partition 6 through the reject collector). `ot.messages`: the device must be an equipment of the catalog, else `rejected unknown-device` (`part message`); a message whose members carry no `sourceTs` is `rejected no-source-timestamp` (`part message`) and does not advance event time (spec 261); `definitionSha256` different from `definitions[device].sha256` is `rejected definition-mismatch` for the whole message (spec 263); otherwise routed to `stationOf(device)`. `ot.sessions`: device as above. `mfg.occupancy`: schema failure `rejected schema-invalid`; `source` outside `sources[]`, `unitId` not matching `identity.pattern`, `bizStep` outside the profile's two values, `errorDeclaration.reason` outside `correction.reasons` (the schema admits both CBV reasons; the binding approves a subset, spec 213): `rejected schema-invalid` with `refs.check` (Task 1's insertion after line 450); `readPoint` not a rule station: `rejected unknown-readpoint`. `quality.incidents` is stage 2 (T1).
+- **S2 Redelivery and conflict** (spec 232-233). Occupancy identity `(source, eventId)`; every stored delivery of the identity is kept as `(business content, declaration)` where business content is the record without `recordTime`, `errorDeclaration` and (when present) `bridgeReceivedAt`. Classification of a new delivery, in this order: (a) business content different from a stored delivery's: `conflict identity-conflict` for this delivery and a new disposition revision `conflict identity-conflict` for every stored delivery of the identity; the identity's contribution is withdrawn (an arrival in conflict makes its visit `retracted input-conflict`; a departure in conflict withdraws its leave claim, spec 296); (b) business content equal and both without a declaration, or both with the same declaration: `duplicate identical-redelivery`, no state change; (c) business content equal, one side with a declaration and the other without, in either arrival order: the declaration applies to that original (S4; a declaration stored first is a tombstone the later original confirms, spec 296) and the delivery is `accepted` (`part event` for the original, `part errorDeclaration` for the declaration, spec 437); (d) business content equal and two different declarations: both `conflict correction-conflict` (S4). Process messages: delivery identity `sampleId` per member, so every disposition of a message's members carries `part member:<metric>`, a byte-identical redelivered message included (each member `duplicate identical-redelivery`); `part message` is used only for whole-message rejections (S1: `unknown-device`, `no-source-timestamp`, `definition-mismatch`, spec 437); measurement identity `(device, metric, sourceTs, value, uaStatusCode)`: two deliveries with the same measurement identity are one observation (both `accepted`, one observation in digests and aggregates); the same `(device, metric, sourceTs)` with another `value` or `uaStatusCode` is `conflict measurement-conflict` for every delivery of the triple (new revisions for earlier ones), every such sample row `state quarantined, reason measurement-conflict`, and the raw record bytes go to `forseti.quarantine` (`quarantine/<p>.jsonl` in step 3), linked from `refs`. Session events: identity `(edge, device, birthPublishTs, bdSeq, kind, atSeq)`, same rule; `conflict identity-conflict` withdraws the event.
+- **S3 Admission** (spec 491, 508). `admissionW` is the station's `W1` at its last committed progress (null before the first). A sample with `sourceTs < admissionW - H` is `replay-required beyond-horizon` (sample row `state replay-required, reason beyond-horizon`; disposition `replay-required beyond-horizon`). An occupancy input whose visit is expired is `replay-required`: an arrival when `admissionW >= eventTime + H + L`; a departure or error declaration when the visit it refers to has `admissionW >= onlineExpiresAt` (`leave + H + L` closed, `enter + H + L` open) or, when that visit is unknown, `admissionW >= eventTime + H + L`; an error declaration so refused has reason `correction-beyond-horizon`, an original `beyond-horizon` (spec 296). Online state of a visit is dropped by the `onlineExpiresAt` timer (its rows stay).
+- **S4 Visit claims.** An accepted arrival `(eventId a, eventTime e, unitId u, visitSeq q)` creates `visitRef = {mode: "occupancy-join", source, arrivalEventId: a}` with `enter = e`. An accepted departure `(arrivalEventId a, eventTime l)` is a leave claim on `a`; one distinct claimed value gives `leave = l`; two claims with different `eventId` and different leaves stay unapplied and add `correction-conflict`; a claim whose arrival is unknown is pending until the arrival arrives or S3 expires it. An error declaration on the arrival: `retraction = {reason: "error-declaration", errorReason: <CBV URN>}`; arriving before its original it is a tombstone and the later original confirms it (the visit is never `provisional`); a later copy of the original restores nothing. An error declaration on a departure cancels that leave claim; the visit is open again. Two differing declarations for one event are both `conflict correction-conflict` and the visit is `insufficient correction-conflict` until a valid cancellation resolves it. An accepted occupancy input on a visit settled at admission (`leave` valid and `admissionW >= leave + L`) is `accepted late-after-settlement` (spec 296, 629). `attributionEnd` of an open visit = the `enter` of the earliest non-retracted arrival at the read point with `enter` greater than this visit's, else null.
+- **S5 Status** (spec 343, 498). Settled: `leave` valid and `W1 >= leave + L`. Precedence: error declaration on the arrival -> `retracted error-declaration`; arrival or departure content conflict -> `retracted input-conflict`; a decided overlap (S7) -> `retracted overlap`; any insufficiency reason -> `insufficient`; closed and settled -> `complete`; else `provisional`. `insufficiencyReasons[]` (sorted by code, always listed): `missing-departure` when open and `W1 >= enter + H`; `correction-conflict`; `session-gap`, `session-ambiguous` (S8); `missing-periods`, `bad-share-exceeded`, `no-observed-periods`, `unknown-activity` (S6); `inconsistent-visit-boundary`, `missing-visit-close` (P2). When the other overlapping visit is cancelled the retraction is removed.
+- **S6 Evaluation interval, coverage, aggregates, evidence** (spec 346-353 as serialized by Task 1's line 353). `J = [enter, leave)` closed; open: `[enter, min(W1, attributionEnd, enter + H))` over the bounds that exist; coverage only when `J` is non-empty. `slot(t) = floor((t - enter) / P)`; `slotsOf(J) = ceil((end - enter) / P)` (the last partial slot counts). Coverage observations: the deduplicated, non-conflicting observations (S2) of the station's equipment with `sourceTs` in `J` whose quality-blind candidate (S9's window rule with the quality, finiteness and session steps skipped) is this visit: the Good ones are the attributed observations, the Bad and rejected-Uncertain ones are `unattributed bad-quality` rows that still count for `observedPeriods`, and only the raw Bad ones (severity bits, spec 137) count for `badSlots`, so a rejected Uncertain observation never raises the bad share; `ambiguous`, `outside-session`, `session-ambiguous`, `non-finite` and `no-source-timestamp` samples count for no visit (Task 1's line 491 insertion). Per measurement member `m` of the station or a tool under it: `observedPeriods(m)`, `missingPeriods(m) = slotsOf(J) - observedPeriods(m)`, `badSlots(m)`, `badShare(m) = badSlots / observedPeriods` (0 when 0). Required members = every measurement member of the station and its tools (spec 138). Reasons: `missing-periods` when a required member has `missingPeriods > maxMissingPeriods`; `bad-share-exceeded` when a measurement member has `badShare > maxBadShare`; `no-observed-periods` when a required member has `observedPeriods = 0`. Activity per equipment `q` with an activity member: a Good observation at `t` supports `[t, min(nextObservationTs_q, t + P))`; `true` active, `false` inactive; Bad, a rejected Uncertain value, unsupported time and an unknown session interval are unknown; clipped to `J`, adjacent intervals of one kind merged, a `true` never extended to the next `false`; `unknownActivityPeriods(q)` = slots of `J` overlapping an unknown part; `unknown-activity` when any `q` has `unknownActivityPeriods > maxMissingPeriods`. `members[]`: one entry per required member and per any other measurement member with `>= 1` coverage observation in `J`, sorted by `mappingId`: `{mappingId, metric, equipmentPath, valueType, observedPeriods, missingPeriods, badSlots, <aggregate>}` with Double `{count, min, max, last}`, Boolean `{count, trueCount, last}`, String `{count, distinctCount, last}` over accepted-quality observations only (Good, plus Uncertain when the rule's `uncertainInput` is `propagate`; Bad and rejected-Uncertain never; `count 0` gives null `min`/`max`/`last`, `trueCount`/`distinctCount` 0; a required member with no observation at all is listed with `observedPeriods 0`, which is what `no-observed-periods` reads); the activity support set is the same accepted-quality set (spec 351: "an accepted-quality true is active"); `last` by `sourceTs`, ties by `sampleId` fields in contract order. `equipmentEvidence[]` sorted by `equipmentPath`, one entry per equipment of the station with a contributing observation of any role: `{equipmentPath, memberRefs (sorted), activityIntervals [[start, end)...] (time order), inactiveIntervals, coverage {observedPeriods (min over its measurement members), missingPeriods (max), badSlots (max), unknownActivityPeriods, sessionGaps (gap intervals of its device overlapping J), status}, samplesDigest}`; an equipment with no measurement member takes its activity member's `observedPeriods` and `missingPeriods` and `badSlots` 0; `status` `unknown` when `unknownActivityPeriods > 0` or an unknown session interval overlaps `J`, else `incomplete` when `missingPeriods > maxMissingPeriods`, `sessionGaps > 0` or a measurement member's `badShare > maxBadShare`, else `complete`; `samplesDigest` = `Canonical.digest` of the distinct contributing observations `{device, metric, sourceTs, value, uaStatusCode}` sorted by `device`, `metric`, `sourceTs`, then canonical bytes. Visit-level `coverage = {expectedPeriodMs, observedPeriods (min over the equipmentEvidence[] entries' coverage), missingPeriods (max), badSlots (max), sessionGaps (sum over equipment entries)}` (equal to the extremes over the required members when measurement members exist; for a station whose only member is the activity member `Running`, like Station2 of the fixtures, the required set is empty and the values are the activity member's `observedPeriods`/`missingPeriods` and `badSlots` 0, Task 1's line-353 insertion); visit-level `samplesDigest` over every contributing observation of every equipment.
+- **S7 Overlap** (spec 139, 498). Decided only between two visits at the read point that both have a valid arrival and a valid leave claim, by `[enter, leave)` intersection; both `retracted overlap` unless a higher-precedence retraction applies; an open visit never retracts another; recomputed whenever a claim changes; never first or last.
+- **S8 Sessions** (spec 68, 271-278, 502 as extended by Task 1). Per device: `seq-gap {from, to}` gives a gap interval `[from, to)`; `session-down {from}` gives `[from, nextUp.at)` or `[from, W1)` while open; `stale-death` opens no gap; `session-ambiguous {detectedEventTime}` gives an unknown interval `[lastObservationBefore(detectedEventTime), nextUp.at or W1)`; `definition-changed` marks the session so its samples are `rejected definition-mismatch`. A gap interval of a device of the station overlapping `J` of a non-retracted visit adds `session-gap`; an unknown interval adds `session-ambiguous`. Open gaps end at `W1` and count only inside `J`.
+- **S9 Sample attribution** (spec 491 as extended by Task 1, 364-368). For an admitted sample (device `d`, member `m`, `sourceTs t`), in order: no `sourceTs` -> `unattributed no-source-timestamp`; measurement conflict -> `quarantined measurement-conflict`; a non-finite Double (`NaN`, `Infinity`, or an overflowing literal in either notation: `1e400` and `-1e400`, which Jackson's `Double.parseDouble` and Python's `json` map to a signed infinity, and an integer literal beyond the double range such as `1` followed by 400 zeros, which Jackson's `BigInteger.doubleValue()` maps to a signed infinity and the oracle maps the same way after catching Python's `OverflowError`) -> `unattributed non-finite`, the message's other members unaffected; a finite value is one value whatever its notation (`9007199254740992`, `9007199254740992.0`, `9.007199254740992e15` parse to the same double on both sides; the canonicalizer's integer-domain refusal never reaches a sample's reason); Bad, or Uncertain under `reject` -> `unattributed bad-quality`; `t` inside a `session-down` interval of `d` -> `unattributed outside-session`; `t` inside an unknown interval of `d` -> `unattributed session-ambiguous`; else candidates = visits of the station whose window `[enter - tolE, upper)` contains `t` (`upper = leave + tolL` closed; `attributionEnd` when open and known; else unbounded): two or more non-retracted candidates -> `unattributed ambiguous` (contributes to no visit, not an overlap cause); exactly one non-retracted -> `attributed`; no non-retracted candidate -> `attributed` to the retracted candidate whose actual `[enter, leave)` contains `t`, and `unattributed ambiguous` when none or several do; no candidate -> `unattributed no-occupancy`. The quality-blind candidate (the same rule evaluated before the quality, finiteness and session steps) decides which visit a Bad or rejected-Uncertain observation counts for in S6. `active` = the accepted-quality value of `d`'s activity member in the same message (Good, or Uncertain when the rule's `uncertainInput` is `propagate`), else `"unknown"`. Row body `{sourceTs, state, reason (null when attributed and no diagnostic applies), active, attributedTo}`. A change of state, reason or `attributedTo` is a new revision; an `unattributed` sample with reason `no-occupancy` or `ambiguous` and `active true` is unattributed activity (spec 368).
+- **S10 Timers and `W1`** (spec 491, 495-496, 508; Task 1's line 588). Deadlines per visit: `leave + L` (settle), `enter + H` (missing departure), `onlineExpiresAt` (expiry); the `DeadlineIndex` is ordered by `(deadline, logical key bytes, purpose)`, deduplicated, with obsolete registrations removed; a timer fires when `W1 >= deadline`, after every input of the cut, in that order, and recomputes its visit. The harness computes `W1(s) = max sourceTs of telemetry routed to s over everything delivered through the cut - O - 1`, never decreasing.
+- **S11 Emission** (Decision 6; spec 331, 412). A work record row is emitted when its `bodyDigest` changes; `revision` from 1 per key per generation; `supersedesDigest`; `cause` `{"kind": "input", "inputKind", "identity"}` or `{"kind": "timer", "deadline"}` (`replayed` in PR 5); `basisRevisions []`. No stage-1 row is ever deleted. Progress per cut after the timers: `{type: "progress", generation, station, cutId, producerEpoch: 0, W1, admissionW, barrierRefs, restartEpoch: 0, recoveryRef: null, mergedCutIds: [], initEvidence (first progress only: {declarationOffset: the offset of this generation's latest declaration in `recovery-control.jsonl` as read at initialization, endOffset: the file's record count H at that read, restore: "none"}; spec 408: the chosen declaration's real offset and H, never constants, because every `generation new` appends a declaration to the shared control log)}`; the station's ledger progress the same cut.
+
+- [ ] **Step 10.1** `core/.../core/NegativeControls.java` (created here, B2: the record of the eight boolean flags, `processingTime, dropLate, noCascade, firstWins, stationGranularity, ignoreSessionGap, wrongRulesPin, lenientOracle`, with `NegativeControls.NONE`; in this PR every flag is false and no code path reads one yet, so the record is a constructor parameter of `Stage1` from the first commit and PR 6 only adds the behaviours). `Events.java`: `sealed interface Event permits Admit, Timer, CutClose`; `Admit(InputRecord record, int kindRank)`, `Timer(long deadline, JsonNode key, String purpose)`, `CutClose(long cutId, long w1, List<JsonNode> barrierRefs)`. `Stage1.decide(Stage1State state, Event e, Long watermark) -> Result(state, List<Object> outputs)` (`watermark` = `admissionW` for `Admit`, nullable before the first progress; `W1` for `Timer` and `CutClose`); outputs are `Row`, `Disposition`, `Progress.Stage1`, `Progress.Ledger`, `QuarantineRecord`. `Stage1State`: `visits`, `pendingLeaves`, `tombstones`, `deliveries` (S2), `measurements`, `samples`, `sessions`, `deadlines: DeadlineIndex`, `revisions`, `lastW1`, `admissionW`, `progressCount`; versioned `toJson()`/`fromJson()` for the adapters' stores.
+
+- [ ] **Step 10.2** `DeadlineIndexTest`: inclusive `deadline <= W`; several purposes at one instant in key order; cancellation; every expired deadline returned after a large jump; serialized round trip. `CoverageTest`: `J = [0, 60500)`, `P 1000` -> 61 slots; observations every second -> `observedPeriods 61`; a 4-slot hole -> `missing-periods` at `maxMissingPeriods 3`; activity true 5-54 s, false elsewhere, one Bad at 30 s -> `activityIntervals [[5000, 30000), [31000, 55000)]`, `inactiveIntervals [[0, 5000), [55000, 60500)]` (the `false` observed at 60,000 supports `[60000, 61000)`, clipped to J's end 60,500), `unknownActivityPeriods 1`.
+
+- [ ] **Step 10.3** `Stage1OccupancyJoinTest` (red first; events built from the `smoke` records and inline literals through a tiny in-test driver; expected bodies typed from the sheet): `aVisitIsProvisionalThenCompleteAtSettlement`; `samplesBeforeTheirArrivalAreAttributedLater` (2b); `anIdenticalRedeliveryIsADuplicateWithNoStateChange` (5); `aResentArrivalWithAnotherUnitIsAConflict` (10d); `anErrorDeclarationRetractsTheVisit` (10) and `anErrorDeclarationBeforeItsOriginalIsATombstone` (10b: same final digest in both orders); `anErrorDeclarationOnTheDepartureReopensTheVisit` (10c); `twoDeparturesWithDifferentLeavesAreACorrectionConflict`; `aCancellationResolvesADepartureConflict`; `twoClosedOverlappingVisitsAreBothRetractedAndRecoverWhenOneIsCancelled` (4, S7); `aBadShareAboveTheRuleIsInsufficient` (3: 7 Bad of 60 observed slots in the 60 s visit, `badShare 7/60 = 0.117 > 0.1`; the Bad rows are `unattributed bad-quality` yet counted through the quality-blind candidate); `rejectedUncertainOnlyHasBadSlotsZero` (7 Uncertain torque observations under `reject`: `observedPeriods 60`, `badSlots 0`, `count 53`, no `bad-share-exceeded`; M3 of round 5); `aSeqGapOverlappingTheVisitIsInsufficientSessionGap` (8); `aStaleDeathChangesNothing` (25a); `aSessionAmbiguousIntervalMakesCoverageUnknown` (25b); `aSampleInTwoNonRetractedWindowsIsAmbiguous`; `aSampleInOnlyARetractedWindowAttributesToIt`; `aShiftedClockMovesSamplesAcrossVisitsAsTheBandsSay` (9b); `lateAfterSettlementIsAcceptedWithItsReason` (10f); `uncertainPropagateAggregatesAndSupportsActivity` (a rule copy with `uncertainInput: propagate` vs `reject`: an Uncertain `Running=true` enters the aggregate, the activity support and the sample row's `active true` under `propagate`; under `reject` the same sample is `bad-quality` with `active "unknown"`); `aRedeliveredMessageGetsOneDuplicatePerMember` (`part member:<metric>`, spec 437); `aDisallowedCorrectionReasonIsSchemaInvalid` (`refs.check correction.reasons`); `admissionBoundaries` (`sourceTs = admissionW - H`, `+1`, `-1`); `expiryDropsOnlineStateAndKeepsRows`; `smokeSamplesDigest` (pins the literal `samplesDigest` of the smoke visit; the oracle pins the same); `aStation2VisitBodyHasNoMeasurementMembers` (a Station2 visit of the baseline shape: `members []`, one `equipmentEvidence` entry `{equipmentPath station2, memberRefs [station2-running], activityIntervals [[enter, leave)], inactiveIntervals [], coverage {observedPeriods 60, missingPeriods 0, badSlots 0, unknownActivityPeriods 0, sessionGaps 0, status complete}}`, visit `coverage {expectedPeriodMs 1000, observedPeriods 60, missingPeriods 0, badSlots 0, sessionGaps 0}`, `status complete`, `insufficiencyReasons []`; the exact body and its digest are pinned, and the oracle test pins the same literal); `visitSeqAboveInt32IsPreservedInTheBody` (`visitSeq 2147483648` appears unchanged in the work record body); `decideIsDeterministicAndReadsOnlyItsArguments`.
+
+- [ ] **Step 10.4** Implement to the sheet. `mvn -q -pl core -Dtest='Stage1OccupancyJoinTest,CoverageTest,DeadlineIndexTest' test` -> `Tests run: 31, Failures: 0`. Commit `feat(core): stage-1 decision function (occupancy-join), coverage, work record and sample bodies, deadline index`.
+
+### Task 11: Reference harness for stage 1: stations, cuts, `W1`, timers, journals, ledgers, cut log, run record
+
+**Files:**
+- Create: `core/src/main/java/dev/krillin/forseti/core/generation/{Generation,GenerationStore}.java` (B2: the row record and the store interface the harness reads), `cli/src/main/java/dev/krillin/forseti/cli/generation/FileGenerationStore.java` (read side only; `append` unsupported until PR 5)
+- Create: `cli/src/main/java/dev/krillin/forseti/cli/harness/{ReferenceEngine,StationTask,RejectCollector,ContractOrder,JournalFiles,CutLog,RunRecord}.java`
+- Create: `cli/src/test/java/dev/krillin/forseti/cli/harness/ReferenceEngineTest.java`
+
+`forseti run --engine core --recording <dir> --registry <dir> --state <dir> --generation <n> --out <run dir> [--seed <n>] [--shuffle] [--subscribe <topic>=<p,p>] [--artifact-sha256 <hex>]`. The harness is the engine-independent reference adapter; it owns only Decision 12's adapter duties (partitioning, timers, state, side outputs, sinks). It never writes a generation row and never verifies a head: it runs the registered generation from its pinned snapshot (spec 553, "a replay uses the snapshot"; Task 1's line 553 insertion). This task creates the core types the harness reads (B2): `core/.../core/generation/Generation.java` (the row record of spec 540-548 with `toJson`/`fromJson`; `generation`, `headVersion`, `replayFrom` offsets and `at` written with `Json.putSafe` and read with `Json.safeLong`, `generation >= 1`) and `GenerationStore.java` (the interface: `append`, `all`, `current(scope)`, `byNumber`), plus the read side of `cli/.../cli/generation/FileGenerationStore.java` (`<stateDir>/generations.jsonl`, one transport record per line; `append` throws `UnsupportedOperationException` until PR 5 adds the locked, durable writer). Until PR 5 a test writes the one `registered` row (carrying `releaseEvidence`) by hand; PR 5 adds the CLI, the policy and the writer.
+
+- [ ] **Step 11.1** `ReferenceEngine.run(...)`: (1) loads the generation row (refuses `generation-unregistered`), reconstructs the `Head` record from `releaseEvidence` (stream, release id and version, `releaseSha256`, `statementSha256`, `headVersion`) and calls `ReleaseReader.read(mappings, head)`, which verifies `release.json` and every payload file against the pinned digests (`provenance-mismatch` otherwise) without `HeadVerifier`; loads the `RuleSet` with the recording's `definitions` and refuses when its `rulesDigest` differs from the generation's (`generation-rules-mismatch`); (2) opens the recording, verifies digests, checks `routing.json` against the rule set, applies `--subscribe` overrides; refuses a first batch without telemetry on every subscribed raw telemetry partition (spec 406); (3) per batch `k`: collects records with offsets in `(throughOffsets[k-1], throughOffsets[k]]` per subscribed partition (with `throughOffsets[0] = -1`, so the first batch starts at offset 0 and an empty partition contributes nothing while its barrier is still counted), parses (S1), routes to a `StationTask` or the `RejectCollector`, captures `admissionW` per station before applying, sorts the cut's inputs (`ContractOrder`; with `--shuffle` the records are shuffled by `--seed` first, the sort makes the order irrelevant), calls `Stage1.decide(state, Admit, admissionW)` per input, computes `W1(s)` (S10), fires `Timer` events for deadlines `<= W1` in index order, calls `CutClose`, writes rows (envelope: `evaluationGeneration`, `eventTimeAt = W1`, `trigger`, `pins`), dispositions, quarantine records, the two stage-1 progress records (`forseti.work-records` and `forseti.samples` partition `p(s)`, after the cut's rows; the first progress of every stage-1 writer, the station writers and the reject collector alike, carries `initEvidence` from one read of `<stateDir>/recovery-control.jsonl` at the writer's initialization: the offset of the latest declaration whose `generation` is this run's and the record count H at that read), the station's ledger progress, and the reject collector's partition-6 progress (its required barrier set is every subscribed raw telemetry, session and occupancy partition); (4) writes `cuts.json` (per cut `{cutId, perStation {station -> {W1, admissionW, mergedCutIds: [], onlineVisits}}, offsetRanges {topic -> {partition -> [from, to]}} (half-open, distinct from the inclusive `throughOffset`), incidentOffsets}`), `run.json` (`RunRecord`), journals under `<out>/journals/<topic>/<p>.jsonl` (`{"key": <logical key JSON>, "headers": {"forseti-generation": "<n>"}, "value": {"body", "bodyDigest", "envelope"}}` for rows, `{"value": {"delete": {...}}}` for deletes, `{"key": null, "value": {"type": "progress", ...}}` for progress) and `<out>/quarantine/<p>.jsonl`. Pins: `job = {engine: "core-harness", engineVersion: "0.1.0", artifactSha256: <sha256 of the running jar, or the --artifact-sha256 value, or "unpacked">, runId: <UUID>, timestampSource: "payload", idleness: "off", routingDigest}`.
+
+- [ ] **Step 11.2** `ReferenceEngineTest` (on `smoke`): `writesProgressAfterTheCutsRowsOnBothEvidenceTopics`; `W1FollowsThePerStationFormula`; `admissionWIsThePreviousW1`; `everyInputHasADisposition`; `theRejectCollectorWritesPartition6Progress`; `theRunRecordCarriesSeedPinsDigestsAndOffsetRanges`; `twoRunsEmitIdenticalBodiesKeysAndRevisions` (only `runId` differs); `anUnregisteredGenerationRefusesToStart`; `aDifferentRulesDigestRefusesToStart`; `aRunUsesThePinnedSnapshotNotTheCurrentHead` (the registry's head file replaced after `new`: the run still succeeds on the pinned release; a changed payload byte is `provenance-mismatch`); `aRunWritesNoGenerationRow`; `initEvidencePointsAtItsOwnDeclaration` (two generations registered in one state before either runs: generation 1's business and ledger first progresses carry `initEvidence {declarationOffset 0, endOffset 2}`, generation 2's `{1, 2}`, on every stage-1 writer including the reject collector); `aNonCanonicalizableRecordIsRejectedAndTheRunContinues` (a `mfg.occupancy` line whose value is `[9007199254740992]`: ledger row `rejected schema-invalid`, `refs.digestRule raw-bytes`, every other row unchanged); `aMixedMessageKeepsItsGoodMembers` (a nutrunner1 message with `Torque` `value 1e400`, which the parser maps to +Infinity, and `Running true`: the `Running` sample is attributed as usual and the message advances event time, the `Torque` sample row is `unattributed non-finite`, both member dispositions `accepted` with `refs.digestRule raw-bytes`, and that slot contributes to no visit: `members[nutrunner1-torque]` has `observedPeriods 59`, `missingPeriods 1`, `count 59` for the 60 s visit); `overflowingIntegerAndExponentLiteralsAreNonFinite` (`1e400`, `-1e400`, `1` followed by 400 zeros and its negative as `Torque` values beside `Running true`: `Torque` row `non-finite`, `Running` attributed, both dispositions `accepted`, the run continues); `threeNotationsAreOneMeasurement` (three deliveries of `Torque` at one `sourceTs` written `9007199254740992`, `9007199254740992.0` and `9.007199254740992e15`: one observation, no `measurement-conflict`, the same aggregate `max`, the value printed in the body as `9007199254740992`); `aFirstBatchWithoutTelemetryOnEverySubscribedPartitionIsRefused`.
+
+- [ ] **Step 11.3** `mvn -q -pl cli -Dtest=ReferenceEngineTest test` -> `Tests run: 17, Failures: 0`; before any `java -jar cli/target/forseti.jar run ...` by hand, `mvn -B -ntp -q install` so the jar carries this task's harness. Commit `feat(cli): reference harness for stage 1 (stations, cuts, W1, timers, journals, ledgers, cut log, run record)`.
+
+### Task 12: Stage 1 plc-stamped and cross-check
+
+**Files:**
+- Create: `core/src/main/java/dev/krillin/forseti/core/stage1/PlcStamped.java`; Create: `core/src/test/java/dev/krillin/forseti/core/stage1/Stage1PlcStampedTest.java`; Uses: `fixtures/recordings/smoke-plc/**` (built in Task 8 from `fixtures/scenarios/smoke-plc.json`: the smoke visit with `UnitId`, `VisitId`, `VisitPresent` stamped on `station1` and `nutrunner1`, rule `line2-plc`, the same telemetry tail)
+
+Rule sheet addition (spec 135, 261, 506; `visitRef = {mode: "plc-stamped", namespace, station, visitId}`, `readPoint` = the station path, `visitSeq` null, `unitId` from the identity members):
+- **P1 Coherence.** For an equipment `q` with an identity entry, a message is coherent when its identity (`UnitId`, `VisitId`, `VisitPresent`), activity and measurement members of `q` all carry a `sourceTs` and all are equal; otherwise every sample of that message for `q` is `unattributed incoherent-snapshot`.
+- **P2 Lifecycle per `(namespace, station, visitId)`.** On each identified equipment the visit start is the coherent `VisitPresent=true` snapshot with the earliest `sourceTs`; the end is the earliest later coherent `VisitPresent=false` snapshot with the same `VisitId` (its measurements are not attributed; it keeps the IDs). Late snapshots rebuild the lifecycle. A `true` with the same `VisitId` after the end -> `inconsistent-visit-boundary`. A `VisitId` change while `VisitPresent` stays `true` -> the earlier visit `insufficient missing-visit-close` (open; `attributionEnd` = the change snapshot's `sourceTs`). Neither a `false` nor a change -> `missing-departure` when `W1 >= enter + H`. Identified equipment of one station visit must agree on `enter` and `leave`, else `inconsistent-visit-boundary`. The same `VisitId` with a different `UnitId` is a conflict: the visit `retracted input-conflict`, the identity samples of the conflicting snapshots `conflict identity-conflict`. `Running=false` never ends a visit. Settlement at `leave + L`.
+- **P3 Attribution.** A coherent sample of `q` attributes to the visit whose `[start, end)` on `q` contains its `sourceTs` (no tolerance, no time join). With `crossCheck: occupancy`, a non-retracted occupancy visit at the station whose `[enter, leave)` contains `sourceTs` with another `unitId` marks the row `attributed` with `reason identity-mismatch`, attribution unchanged; with `crossCheck: none` the occupancy stream is not read.
+
+- [ ] **Step 12.1** `Stage1PlcStampedTest`: `aVisitIsFramedByTheEarliestTrueAndTheEarliestLaterFalse`; `theEndSnapshotIsNotAttributed`; `aLateEarlierStartRebuildsTheLifecycle`; `aTrueAfterTheEndIsInconsistent`; `anIdChangeWithoutFalseLeavesMissingVisitClose`; `equipmentMustAgreeOnBoundaries`; `aMixedSnapshotIsIncoherent` (11c); `crossCheckMarksIdentityMismatchWithoutChangingAttribution` (11); `crossCheckNoneReadsNoOccupancy`; `theSameVisitIdWithAnotherUnitIsAConflict`; `runningFalseNeverEndsAVisit`.
+
+- [ ] **Step 12.2** `mvn -q -pl core -Dtest=Stage1PlcStampedTest test` -> `Tests run: 11, Failures: 0`; `ReferenceEngineTest.runsThePlcSmokeRecording` added (1 complete visit). Commit `feat(core): plc-stamped attribution lifecycle and occupancy cross-check`.
+
+### Task 13: Stage-1 harness assertions, pull request 2
+
+**Files:**
+- Modify: `cli/.../gate/CoreGate.java`, `gate/core-assertions.json` (+6)
+
+- [ ] **Step 13.1** Assertions (`S-*`, run on the committed `smoke` and `smoke-plc` recordings and inline sequences, no oracle yet):
+
+| Id | What runs |
+|---|---|
+| `S-SMOKE-VISIT` | the harness on `smoke`: one work record `complete` at the last cut, 4,872 sample rows (3,248 messages x their members), the pinned `samplesDigest`, the transition `provisional` at the cut ending at scan `T0 + 1410000` -> `complete` at the cut ending at `T0 + 1411000` |
+| `S-SMOKE-PLC` | the harness on `smoke-plc`: one `complete` visit with `visitRef.mode plc-stamped`, `readPoint` the station path |
+| `S-REVISIONS` | every key's revisions contiguous from 1, no equal consecutive digests (the `JournalFold` violations are empty) |
+| `S-PROGRESS` | both evidence topics carry progress per cut after the cut's rows; the ledger and partition-6 progress exist per cut; `admissionW` equals the previous `W1`; `initEvidence` only on the first |
+| `S-W1` | reported `W1` equals the per-station formula at every cut |
+| `S-DETERMINISM` | two runs with different `--seed` and `--shuffle`: identical bodies, keys and revisions at every cut |
+
+- [ ] **Step 13.2** Rebuild the jar first, because the shade plugin runs only at `package` and the local gate otherwise runs the previous PR's jar: `mvn -B -ntp -q install` (core and cli, tests included), then `java -jar cli/target/forseti.jar gate --engine core --out build/gate --python "$(command -v python)"` -> `assertions run 24 / expected 24`, exit 0. Commit `feat(cli): stage-1 harness assertions in the core gate`. Pull request 2: Tasks 10-13 (5 commits); CI green. PR body: the rule sheet S1-S11 and P1-P3 as applied (pointing at the Task 1 spec lines), the gate line. Wait for the merge; rebase PR 3.
+
+## Chunk 4: Impact, progress and cascade (PR 3)
+
+Branch: `git switch -c feat/step3-impact-and-progress main` after PR 2 merged.
+
+### Task 14: `ProgressTracker` and the stage-2 decision function
+
+**Files:**
+- Create: `core/src/main/java/dev/krillin/forseti/core/stage2/{Events2,ProgressTracker,Stage2State,Stage2,Incidents,Relatedness,DecisionTable,SetCoverage,Assessment,AffectedSet}.java`
+- Create: `core/src/test/java/dev/krillin/forseti/core/stage2/{ProgressTrackerTest,Stage2Test,RelatednessTest,SetCoverageTest}.java`
+
+**Stage-2 rule sheet.** Per station `s`; inputs are the stage-1 rows of partition `p(s)` of `forseti.work-records` and `forseti.samples` (current revisions, deletes applied), their stage-1 progress records, and incidents routed to `s`.
+
+- **T1 Incident routing and dispositions** (harness side; `forseti.dispositions-stage2`, partition 6 unroutable; spec 298-315, 449). Schema failure `rejected schema-invalid`; `kind` outside `kinds[]` `rejected schema-invalid` (`refs.check kinds`); the line-308 contract of `revisionEventTime` (Task 1's vocabulary insertion): revision 1 with `revisionEventTime != detectedAt`, or a revision whose `revisionEventTime` is below that of an accepted lower revision or above that of an accepted higher revision of the same `(source, incidentId)`, judged by revision number whatever the arrival order, is `rejected schema-invalid` (`refs.check revisionEventTime`) and not applied; `equipmentRef` outside `incidentScope[]`, or `stationRef` not the ancestor-or-self station of `equipmentRef`, or not a rule station: `rejected outside-incident-scope`; routed to `stationRef`. Identity `(source, incidentId, revision)`: identical redelivery `duplicate identical-redelivery`; differing content for one revision `conflict identity-conflict` for every variant (that revision is unusable; the current revision is the highest accepted one); a revision whose `stationRef` differs from the first accepted revision `rejected station-change`; a lower revision after a higher `duplicate superseded` (its disposition, spec 315) and never current; a higher revision `accepted`, becomes current. Two things are kept apart: the *current* revision (the highest valid one, which alone is judged) and the *delivered* valid revisions (every revision that passed the schema, scope, station and `revisionEventTime` checks, whatever its disposition), whose intervals T3 accumulates for the row set; a superseded lower revision is therefore `duplicate superseded` in the ledger and still widens the row set (spec 515: "the intervals of the delivered incident revisions"), so the final key set and bodies do not depend on arrival order. (Spec 315 governs the disposition and spec 515 the row set; they do not conflict once the two are separated.)
+- **T2 Progress** (spec 511, 426-435). `ProgressTracker.observe(topic, station, Stage1Progress)`; `W2(s) = min(W1 of the last work-records progress, W1 of the last samples progress)`; `ready(s, cutId)` when both evidence topics carry progress `cutId` with equal `mergedCutIds` and the six incident barriers of the cut (and of every merged cut) were collected; processed barriers are kept and never applied twice; a missing cut without merged-cut evidence is waited for; stage-2 timers fire with `deadline <= W2(s)` after the cut's inputs, in index order; stage-2 progress `{type: "progress", generation, station, cutId, producerEpoch: 0, W2, stage1ProgressRefs [{topic, partition, cutId}], incidentOffsets [{cutId, partition, throughOffset}] (6 x (1 + mergedCutIds.size())), mergedCutIds: []}` to partition `p(s)` of `forseti.affected` and `forseti.affected-sets` after the cut's rows; the stage-2 ledger progress likewise; the stage-2 reject collector's progress on partition 6 (required barriers: the six incident partitions; it never skips). Incidents, barriers and recovery declarations never advance `W2`.
+- **T3 Bases and the row set** (spec 515). The basis of a visit is its current work record row. The row set of incident `I = (source, incidentId)` at `s` is every unit with a visit claim at `s` whose interval is `related` or `possibly-related` (T4) to the interval of *any* valid revision of `I` delivered so far, superseded lower revisions included (incident-side widening accumulates over delivered revisions, spec 515; only conflicting or rejected revisions contribute nothing). Judgement uses the current revision and the current bases. A unit whose bases are related or possibly-related to no delivered revision any longer ends with a `delete`; if it appears again it continues with the next revision. Cancelled bases stay in state for `workRecordsMs` after `leave` (or `enter` when open) and are evidence only through the retraction rows of T6.
+- **T4 Relatedness** (spec 517). `V = [enter, leave)` (`leave` null when open), `S = [suspectFrom, suspectTo)` (`suspectTo` null when open). `any-overlap`: both ends known -> `related` iff `enter < suspectTo && leave > suspectFrom`, else `unrelated`; visit closed, incident open -> `related` iff `leave > suspectFrom`; visit open -> `unrelated` if `suspectTo != null && enter >= suspectTo`, else `related` if `enter >= suspectFrom`, else `possibly-related`. `fully-within`: `related` iff both ends known and `suspectFrom <= enter && leave <= suspectTo`; `possibly-related` when a needed end is open and the known ends do not exclude it; else `unrelated`. `enter-within`: `related` iff `suspectFrom <= enter && (suspectTo == null || enter < suspectTo)`; never `possibly-related`.
+- **T5 Positive evidence** (row 2; spec 524). `equipment-evidence`: a related `complete` basis whose `equipmentEvidence[]` entry for `incident.equipmentRef` has an `activityIntervals` element intersecting the current `S` clipped to `[enter, leave)`; reason `equipment-activity`. `station-visit`: any related `complete` basis; reason `station-visit`. Incomplete evidence goes to `evidenceWarnings[]` and never removes positive evidence.
+- **T6 Decision table** (spec 519-531), per `(incident, unit)` over the unit's related and possibly-related bases at `s`, first match: (1) `withdrawn` -> `onWithdrawn`: `not-affected` -> `not-affected-within-scope incident-withdrawn`, `insufficient` -> `insufficient-evidence incident-withdrawn`; (2) T5 -> `affected-candidate equipment-activity|station-visit`; (3) no related and no possibly-related basis -> `not-affected-within-scope interval-narrowed`; (4) a related basis with `correction-conflict` -> `insufficient-evidence correction-conflict`; (5) a related or possibly-related `provisional` basis -> `insufficient-evidence basis-provisional`, an `insufficient` one -> `basis-insufficient` (both present: `basis-provisional`); (6) a related basis retracted for overlap, input conflict or `incorrect_data` -> `insufficient-evidence basis-retracted-overlap|basis-retracted-input-conflict|basis-retracted-error-declaration`; (7) a related `complete` basis whose judged interval `I = [enter, leave) ∩ S` (non-empty) for `equipmentRef` is entirely covered by that equipment's `inactiveIntervals` (spec 529: inactive support with no unknown or missing period inside `I`; support intervals exist only where accepted-quality observations are, so an uncovered part of `I` is exactly an unknown or missing period there; gaps outside `I` do not matter and the whole-visit counters are not consulted) -> `not-affected-within-scope no-equipment-activity`; (8) every remaining related basis retracted with `did_not_occur` -> `onBasisRetracted`: `by-cause` -> `not-affected-within-scope basis-retracted-error-declaration`, `always-insufficient` -> `insufficient-evidence basis-retracted-error-declaration`; (9) else `insufficient-evidence basis-insufficient`.
+- **T7 Assessment body** (spec 372-379). Key `(source, incidentId, unitId)`; `{status, reason, incident (the current revision's twelve fields), basis[] [{visitRef, bodyDigest}] (related or possibly-related bases, sorted by canonical `visitRef` bytes), evidenceWarnings[] [{visitRef, insufficiencyReasons}] (bases that are not `complete`), rulesDigest}`. A revision triggers on an incident revision or a basis digest change (spec 533); emitted only when the digest changes.
+- **T8 Affected set body** (spec 383-400 as fixed by Task 1's lines 392-398). Key `(source, incidentId)`; `{incident, units[] [{unitId, status, reason, bodyDigest}] sorted by unitId, resolution, coverage {...}}` (exactly the spec's field list; the affected set carries no `rulesDigest`, unlike the work record and the assessment). Scoped devices `[equipmentRef]` under `equipment-evidence`, `[stationRef]` under `station-visit`; range `R = [suspectFrom, suspectTo)` closed, else `[suspectFrom, lastDeliveredObservation(scoped devices) + P)`; slots of width `P` from `suspectFrom`, last partial counted; `unattributedActivityPeriods` = slots per scoped device holding a sample row of its activity member with `state unattributed`, reason `no-occupancy` or `ambiguous` (spec 368: an ambiguous sample with activity true counts as unattributed activity), and `active true`, summed; `unknownActivityPeriods` = slots per scoped device with no accepted-quality activity observation (Good, or Uncertain under `uncertainInput: propagate`; a slot with none, or only `bad-quality`, `session-ambiguous` or `outside-session` rows, is unknown), excluding slots counted as unattributed activity, summed; `provisionalUnits` = units with reason `basis-provisional`; `insufficientUnits` = `insufficient-evidence` with any other reason; `sessionGapOverlaps` = bases whose `insufficiencyReasons` contain `session-gap` or `session-ambiguous`; `open` = status `open`; `settled` = `suspectTo != null && W2(s) >= suspectTo + L` (true when withdrawn); `beyondRetention` = `suspectFrom < revisionEventTime - workRecordsMs`, once per revision; `retentionGap` = the manifest's `evidenceRange` of the scoped devices does not cover `R` (or `[suspectFrom, W2)` while open); `status` `unknown` when `unknownActivityPeriods > 0` or any basis is `session-ambiguous`, else `incomplete` when `unattributedActivityPeriods > 0 || provisionalUnits > 0 || insufficientUnits > 0 || sessionGapOverlaps > 0 || open || !settled || beyondRetention || retentionGap`, else `complete`. Withdrawn: `resolution withdrawn`, `open false`, `settled true`, never `complete`. Set coverage changes revise only the set row.
+- **T9 Timers** (spec 513). `suspectTo + L` (settlement); every cut re-evaluates coverage and open-end relatedness as `W2(s)` advances (emits only on a digest change); `leave + workRecordsMs` (or `enter + ...` open) drops the basis from stage-2 state. A narrowed or withdrawn revision is recomputed on delivery.
+- **T10 Cascade** (H-cascade). A new revision or delete of a work record re-judges, in the same cut, every unit row of every incident that cites that `visitRef` or whose row set it now enters or leaves (both the old and the new relationship); a sample row change updates the sample-derived coverage. After every completed cut, every `basis[].bodyDigest` of every live assessment equals the current digest of that `visitRef` in the folded work records (`J-BASIS-CURRENT`).
+
+- [ ] **Step 14.1** `ProgressTracker.java` (core): `observe`, `w2(station) -> OptionalLong`, `ready(station, cutId)`, `fire(station) -> List<Deadline>`. `ProgressTrackerTest`: `W2 is the minimum of the two topics`; `not ready until both topics carry the cut and the six incident barriers`; `unequal mergedCutIds is an IllegalStateException`; `a decreasing progress is refused`; `incident barriers are counted 6 x (1 + mergedCutIds)`; `a processed barrier is not applied twice`; `timers fire in order up to W2`.
+
+- [ ] **Step 14.2** `Stage2State` (bases by `visitRef`; sample activity index per device and slot; incidents by `(source, incidentId)` with accepted revisions and variants; row sets; deadlines; revisions; `lastW2`), `Events2` (`Basis(Row|Delete)`, `Sample(Row)`, `Incident(InputRecord)`, `Timer`, `CutClose(cutId, w2, stage1ProgressRefs, incidentOffsets)`), `Stage2.decide(state, event, w2) -> Result` with outputs `Row` (assessment, set), `Delete`, `Disposition`, `Progress.Stage2`, `Progress.Ledger`.
+
+- [ ] **Step 14.3** `Stage2Test` (inline work record bodies built with Task 10's body builders; red first): `anIncidentAfterCompleteRecordsMarksToolVisitsCandidates` (12, 16); `anIncidentBeforeTheRecordsStartsEmptyAndGrows` (13); `aNarrowedAndClosedIncidentMarksLaterVisitsIntervalNarrowed` (14); `aWithdrawnIncidentFollowsOnWithdrawn` (15, both values); `unattributedActivityInsideTheIntervalKeepsCoverageIncomplete` (17); `aRetractedBasisWithDidNotOccurMakesTheCandidateNotAffected` (18, `by-cause` and `always-insufficient`); `aLateAttributionAddsTheUnit` (19); `aProvisionalBasisIsInsufficientEvidence`; `aDepartureThatNarrowsAnOpenVisitDeletesTheRow`; `rowSetWidensAcrossRevisionsButJudgesTheCurrentOne`; `rowSetIsTheSameInBothArrivalOrders` (a wide revision 1 and a narrow revision 2: delivered 1 then 2, and 2 then 1 where revision 1 is `duplicate superseded`; the final key set, every assessment body and the set body are identical, the outer unit `not-affected-within-scope interval-narrowed` in both runs); the oracle has `test_row_set_is_the_same_in_both_arrival_orders` in `test_stage2.py`; `uncertainActivityUnderPropagateIsNotUnknownCoverage` (sample rows with Uncertain `active true` under `propagate` count as unattributed activity, not as `unknownActivityPeriods`; under `reject` the same slots are unknown; M1 of round 4); `noActivityIsJudgedInsideTheIntersectionOnly` (a `complete` basis with a 2-slot inactive-support gap outside `[enter, leave) ∩ S` is `no-equipment-activity`; the same gap inside it falls through to `basis-insufficient`; M10); `aStationChangeIsRejectedWithoutReplacingTheCurrentRevision`; `aLowerRevisionIsSuperseded`; `revisionEventTimeIsCheckedByRevisionNumber` (revision 1 with `revisionEventTime != detectedAt` rejected; revision 3 arriving before revision 2 with a lower `revisionEventTime` than revision 2's rejects the later-arriving revision 2, not the applied 3; `refs.check revisionEventTime`; spec 308); `aSetOnlyCoverageChangeDoesNotReviseUnits`; `eachDecisionRowInOrder` (parametrized over the nine rows). `RelatednessTest` (three modes, open ends, `enter == suspectTo` unrelated, `leave == suspectFrom` unrelated). `SetCoverageTest` (slots from `suspectFrom`, last partial slot, unattributed vs unknown exclusivity, `retentionGap` from the manifest range including a verified empty range, `beyondRetention` at the boundary and one millisecond outside, once per revision, the `status` ladder).
+
+- [ ] **Step 14.4** `mvn -q -pl core -Dtest='ProgressTrackerTest,Stage2Test,RelatednessTest,SetCoverageTest' test` -> `Tests run: 34, Failures: 0`. Commit `feat(core): ProgressTracker and stage-2 decision function (relatedness, decision table, assessment and affected-set bodies)`.
+
+### Task 15: Stage 2 in the harness, cascade and deletes, stage-2 assertions, pull request 3
+
+**Files:**
+- Modify: `ReferenceEngine` (stage-2 tasks fed from the cut's stage-1 outputs and routed incidents; stage-2 reject collector; deletes; `cuts.json` gains `W2`), `JournalFold` (deletes across topics), `gate/core-assertions.json` (+5)
+- Uses: `fixtures/recordings/smoke-incident/**` (built in Task 8 from `fixtures/scenarios/smoke-incident.json`: the smoke visit plus one closed `tool-check-failed` incident on nutrunner1 over the visit, keyed by `equipmentRef` on `quality.incidents`, `suspectFrom 600000`, `suspectTo = detectedAt = leave = 660000` (spec 170: for `tool-check-failed` the producer closes the interval with `suspectTo = detectedAt`; the builder refuses a closed `tool-check-failed` revision 1 whose `suspectTo != detectedAt` or whose `revisionEventTime != detectedAt`), revision 1 `revisionEventTime 660000`, delivered at `1,400,000`, after the visit's settlement bracket; its settlement `suspectTo + L = 1,380,000` equals the visit's. Under the one rule for the telemetry end (Task 8: `lastBusinessEvent` is the latest of every occupancy `eventTime`, every incident `detectedAt` and `revisionEventTime`, every session event time, every overlay `deliverAt` and `declarationTime`, and every listed horizon deadline), `lastBusinessEvent = 1,400,000` (the delivery), `E = 1,400,000 + 751,000 = 2,151,000`: `(2,151,000 - 600,000) / 1000 + 1 = 1,552` scans per device, 6,208 messages, 9,312 samples; cuts: 30 s boundaries `630,000 ... 2,130,000` = 51, plus the bracket `cutB` at `1,411,000` (`cutA` is the boundary `1,410,000`), plus the final batch ending at the last scan `2,151,000` = 53 cuts, pinned by `smoke-incident.lock.json`); Create: `cli/src/test/java/dev/krillin/forseti/cli/harness/CascadeTest.java`
+
+- [ ] **Step 15.1** Harness: after stage 1 of cut `k`, each station's `Stage2` receives the cut's stage-1 rows and deletes of `p(s)`, the two stage-1 progress records (through `ProgressTracker`), the incidents routed to `s` (T1; rejections to the stage-2 collector), fires timers `<= W2(s)`, writes rows, deletes, dispositions, stage-2 progress, ledger progress, partition-6 progress. `cuts.json` records `W2` per station (equal to `W1` by construction, spec 588).
+
+- [ ] **Step 15.2** `CascadeTest` (in-process, `smoke-incident` plus inline late inputs): `aStage1RetractionReJudgesTheCitingRowInTheSameCut`; `noLiveAssessmentCitesAStaleDigest`; `aNarrowedOpenVisitEndsWithADeleteAndContinuesRevisions`; `aUnitWithTwoVisitsKeepsPositiveEvidenceWhenOneIsCancelled`; `progressFollowsEveryBusinessDeleteAndDispositionRow`; `aCutWithNoIncidentThenTheFirstIncidentAtOffsetZero` (on `smoke-incident`, back to back: a cut before 1,400,000 completes with six incident barriers whose `throughOffset` is `-1`, stage-2 progress written with `incidentOffsets` of six `-1` entries and no incident applied; the cut that delivers the incident has `throughOffset 0` on its Murmur2 partition and `-1` on the other five, the incident is applied once, and the next cut's barrier for that partition is again `0` with nothing applied twice). `mvn -q -pl cli -Dtest=CascadeTest test` -> `Tests run: 6, Failures: 0`.
+
+- [ ] **Step 15.3** Assertions (`T-*`):
+
+| Id | What runs |
+|---|---|
+| `T-PROGRESS-TRACKER` | on `smoke-incident`: stage-2 progress per cut after both stage-1 progresses and six incident barriers; `incidentOffsets` count 6; `W2 == W1` per station per cut |
+| `T-SMOKE-INCIDENT` | one assessment `affected-candidate equipment-activity`, one set with `units` of one, `settled true` at the last cut, `coverage.status complete` (the smoke incident is closed, inside the evidence range, no gaps) |
+| `T-CASCADE` | an error declaration appended to the recording's last batch (a `smoke-incident-cascade` variant written by the test): the assessment becomes `not-affected-within-scope basis-retracted-error-declaration` in the same cut; `J-BASIS-CURRENT`'s check holds at every cut |
+| `T-DELETE` | a `smoke-incident-narrow` variant (open visit, late departure before `suspectFrom`): the unit row ends with a `delete`, revision continuity across it |
+| `T-LEDGER-2` | stage-2 dispositions per incident delivery; partition-6 progress per cut; `outside-incident-scope` for an incident on `station2` (variant) |
+
+- [ ] **Step 15.4** `mvn -B -ntp -q install` (rebuilds the jar with this PR's core and cli), then the gate -> `assertions run 29 / expected 29`, exit 0. Commit `feat(cli): stage 2 in the reference harness, cascade, deletes and the stage-2 assertions`. Pull request 3: Tasks 14-15 (3 commits); CI green. PR body: the rule sheet T1-T10, the gate line. Wait for the merge; rebase PR 4.
+
+## Chunk 5: Recordings and the independent oracle (PR 4)
+
+Branch: `git switch -c feat/step3-recordings-and-oracle main` after PR 3 merged.
+
+### Task 16: Scenario builder, ground truth, injection overlays, the hand-made scenarios
+
+**Files:**
+- Create: `cli/src/main/java/dev/krillin/forseti/cli/recording/{ScenarioBuilder,Overlays,GroundTruth,Telemetry}.java`; Modify: `Main` (`recordings build|verify`)
+- Create: `fixtures/scenarios/{baseline,held-back-10min,redelivery,overlap,bad-quality,clock-plus-30,clock-plus-90,corrections,corrections-10b-before,corrections-10b-after,corrections-10c,session,quiet-occupancy,quiet-occupancy-control,plc-stamped,plc-nocheck,plc-held-back,stage2,stage2-early,cascade}.json` (+ `.lock.json` each)
+- Create: `cli/src/test/java/dev/krillin/forseti/cli/recording/ScenarioBuilderTest.java`
+
+Hand-made recordings are authored as scenario files, built deterministically by the builder and **committed** under `fixtures/recordings/<name>/` with their locks (DECISIONS-P3: hand-made recordings are committed; only the synthesized horizon recordings are generated at gate time); the lock pins every file's digest, the message, sample and occupancy counts, `firstBatchTelemetryPartitions` and the cut count; the gate verifies the committed files against the lock before every run, and `ScenarioBuilderTest` proves each committed recording byte-identical to a fresh build of its scenario. Size: about 330 bytes per message line, so a 12,608-message recording is about 4.5 MB and the twenty hand-made recordings about 90 MB in the working tree (JSONL packs roughly tenfold in git objects); `fixtures/** -text` keeps the bytes fixed. Sizes (spec 607): two stations (the fixtures' rule), 4 devices, 12 visits (8 at Station1 in the four tool patterns, 4 at Station2), and, by the builder's rule "telemetry from `telemetryFrom` to `E = max(telemetryTo, lastBusinessEvent) + tailMs`, where `lastBusinessEvent` is the latest of every occupancy `eventTime`, every incident `detectedAt` and `revisionEventTime`, every session event time, every overlay `deliverAt` and `declarationTime`, and every listed horizon deadline (one rule for every scenario, hand-made and synthesized, spec 594), every 1,000 ms, both ends included, so `scans = (E - telemetryFrom) / 1000 + 1`": `baseline` `E = 2,400,000 + 751,000 = 3,151,000` -> 3,152 scans per device, 12,608 messages, 18,912 samples (6 members per scan); `stage2` (last business event `inc-3` revision 2 at 2,600,000) `E = 3,351,000` -> 3,352 scans, 13,408 messages, 20,112 samples; `cascade` (last at 2,700,000) `E = 3,451,000` -> 3,452 scans, 13,808 messages, 20,712 samples; every other hand-made scenario's count follows the same rule from its last business event and is pinned by its lock (Open point 4 covers the two-station shape against the three-station sim of step 4).
+
+- [ ] **Step 16.1** `fixtures/scenarios/baseline.json`:
+
+```json
+{
+  "scenarioVersion": 1,
+  "name": "baseline",
+  "rule": {"stream": "line2", "releaseId": "line2-rules", "version": "1.0.0", "attributionRuleId": "line2-attribution", "attributionRuleVersion": "1.0.0"},
+  "mode": "occupancy-join",
+  "T0": 1794182400000,
+  "seed": 20261109,
+  "scanMs": 1000,
+  "edge": "edge-line2",
+  "devices": {
+    "synthetic-site:line2:station1": {"members": {"Running": "Boolean"}},
+    "synthetic-site:line2:station2": {"members": {"Running": "Boolean"}},
+    "synthetic-site:line2:station1:nutrunner1": {"members": {"Torque": "Double", "Running": "Boolean"}},
+    "synthetic-site:line2:station1:nutrunner2": {"members": {"Torque": "Double", "Running": "Boolean"}}
+  },
+  "telemetryFrom": 0,
+  "telemetryTo": 2400000,
+  "visits": [
+    {"unit": "UNIT0000000000001", "station": "synthetic-site:line2:station1", "enter": 600000,  "leave": 660000,  "tools": ["nutrunner1"], "visitSeq": 1},
+    {"unit": "UNIT0000000000002", "station": "synthetic-site:line2:station1", "enter": 780000,  "leave": 840000,  "tools": ["nutrunner2"], "visitSeq": 2},
+    {"unit": "UNIT0000000000003", "station": "synthetic-site:line2:station1", "enter": 960000,  "leave": 1020000, "tools": ["nutrunner1", "nutrunner2"], "visitSeq": 3},
+    {"unit": "UNIT0000000000004", "station": "synthetic-site:line2:station1", "enter": 1140000, "leave": 1200000, "tools": [], "visitSeq": 4},
+    {"unit": "UNIT0000000000005", "station": "synthetic-site:line2:station1", "enter": 1320000, "leave": 1380000, "tools": ["nutrunner1"], "visitSeq": 5},
+    {"unit": "UNIT0000000000006", "station": "synthetic-site:line2:station1", "enter": 1500000, "leave": 1560000, "tools": ["nutrunner2"], "visitSeq": 6},
+    {"unit": "UNIT0000000000007", "station": "synthetic-site:line2:station1", "enter": 1680000, "leave": 1740000, "tools": ["nutrunner1", "nutrunner2"], "visitSeq": 7},
+    {"unit": "UNIT0000000000008", "station": "synthetic-site:line2:station1", "enter": 1860000, "leave": 1920000, "tools": [], "visitSeq": 8},
+    {"unit": "UNIT0000000000001", "station": "synthetic-site:line2:station2", "enter": 690000,  "leave": 750000,  "tools": [], "visitSeq": 1},
+    {"unit": "UNIT0000000000002", "station": "synthetic-site:line2:station2", "enter": 870000,  "leave": 930000,  "tools": [], "visitSeq": 2},
+    {"unit": "UNIT0000000000003", "station": "synthetic-site:line2:station2", "enter": 1050000, "leave": 1110000, "tools": [], "visitSeq": 3},
+    {"unit": "UNIT0000000000004", "station": "synthetic-site:line2:station2", "enter": 1230000, "leave": 1290000, "tools": [], "visitSeq": 4}
+  ],
+  "toolActivity": {"startAfterEnter": 5000, "endBeforeLeave": 1000, "torque": {"min": 10.0, "max": 45.0}},
+  "incidents": [],
+  "batchMs": 60000,
+  "tailMs": 751000,
+  "injections": []
+}
+```
+
+Times are offsets from `T0`. Visits 60 s long and 120 s apart (spec 598), the last tool measurement 1 s before `leave`, a tool not used reports `Running=false` throughout (spec 607), a station `Running=true` while a unit is present; `tailMs` = `L + O + P` = 751,000 (spec 594); telemetry on every device from `telemetryFrom` to `max(last business event) + tailMs`, every `scanMs`, every member of a device stamped with one `sourceTs` per scan; torque while running `min + (max - min) * seeded uniform`, two decimals (`Telemetry.torque(seed, device, scanIndex)`), idle `0.0`.
+
+- [ ] **Step 16.2** `ScenarioBuilder.build(scenario, registry, out)`: loads the rule set (station partitioner, catalog, `temporal`), one `session-up` at `T0` per device (`bdSeq 0`, `birthPublishTs T0`, `seq` from 2), writes the four topics (raw telemetry and sessions keyed by `device`, incidents keyed by `equipmentRef`, all placed by Murmur2; occupancy by the station partitioner), applies `Overlays`, plans batches: a boundary every `batchMs` plus, for every ground-truth deadline (`leave + L` of each visit; `enter + H` where asked), a boundary after the last scan with `sourceTs <= d + O` and the next at the following scan (spec 592); `deadlines[] {kind, ref, at, cutA, cutB}`; `throughOffsets` per topic partition (records assigned to batches by event time, or by `deliverAt` when an overlay moved them); `settleTargetW` = the latest ground-truth deadline; `definitions` = `{devicePath -> {templateRef: "<model>", version: "1.0.0", sha256: sha256(devicePath + ":" + model)}}` (synthetic; step 5 records real NBIRTH digests); `evidenceRange` per device; `expected.json`; `manifest.digests`; refuses a scenario whose overlays leave a deadline without bracketing cuts, whose tail is shorter than `tailMs`, or whose first batch carries no telemetry on some subscribed raw telemetry partition (the harness would refuse such a recording, spec 406); the lock records `firstBatchTelemetryPartitions` and `recordings verify` re-checks it.
+
+- [ ] **Step 16.3** `GroundTruth` -> `expected.json`: `visits[] {visitRef, unitId, station, enter, leave, toolsUsed, finalStatus, insufficiencyReasons, retraction}`; `samples {<canonical sampleId> -> {attributedTo, state, reason}}` (every sampleId, spec 605); `dispositions {<canonical identity> -> {disposition, reason}}` final per identity; `incidents {(source, incidentId) -> {units {unitId -> {status, reason}}, coverage}}` at the last cut; `transitions[] {assertion, station, visitRef, cutA, cutB, atA, atB}`; `settleTargetW`, `settledCut`. Expected values are derived by the generator from the scenario it wrote (never by running the Java core); the gate asserts them on both the core's and the oracle's output.
+
+- [ ] **Step 16.4** `Overlays` (parameters in milliseconds from `T0`; each records itself in `manifest.source.overlays[]` and adjusts the ground truth):
+
+| `type` | Parameters | Effect on delivered records | Ground truth | Used by |
+|---|---|---|---|---|
+| `hold-back` | `topic, devices[], from, to, delayMs` | records with event time in `[from, to)` get `deliverAt = eventTime + delayMs` (moved to that batch; offsets renumbered in delivery order) | none (bodies at the settled cut equal the on-time run) | 1, 11b |
+| `redeliver` | `topic, identity, deliverAt` | the record appended again, byte-identical except `recordTime`/`bridgeReceivedAt` | the second delivery `duplicate identical-redelivery` | 5 |
+| `shift-source-ts` | `devices[], deltaMs` | every member `sourceTs` `+ deltaMs` (publish times unchanged) | per-sample attribution recomputed against the unshifted visits (9: all stay; 9b: 0-14 s stay, 15-44 s `no-occupancy`, 45-59 s next visit) | 9, 9b |
+| `bad-status` | `device, metric, from, to, code` | members in the window carry `uaStatusCode = code` (`0x80000000`), `quality 0` | those samples `unattributed bad-quality`; `badSlots`; `insufficient bad-share-exceeded` when share > `maxBadShare` | 3 |
+| `overlap-visit` | `unit, station, enter, leave, visitSeq` | an extra visit whose `[enter, leave)` intersects another | both `retracted overlap`; samples in the intersection `ambiguous` | 4 |
+| `delay-occupancy` | `eventId, deliverAt` | the event delivered later | 2: `provisional` until the departure, `complete` at the next bracketing cut; 2b: samples `no-occupancy` then `attributed`; 19: the unit joins an existing set when its visit appears | 2, 2b, 19 |
+| `late-correction` | `departureEventId, declarationTime, newDepartureEventId, newLeave, deliverAt` | after the visit is settled (`deliverAt` past `leave + L + O`): an `incorrect_data` error declaration on the departure, then a corrective departure with a new `eventId` and a later `leave` | both inputs `accepted late-after-settlement`; the `complete` visit gets a new revision (`provisional`, then `complete` again with the new `leave` once `W1 >= newLeave + L`): spec 296, 629 | 10f |
+| `error-declaration` | `eventId, reason, declarationTime, deliverAt` | the original re-sent with `errorDeclaration` | 10: `retracted error-declaration`; 10b (before the original): same settled body; 10c (on a departure): `provisional` again, `insufficient missing-departure` past the horizon (Task 17) | 10, 10b, 10c, 10e |
+| `resend-different` | `eventId, field, value, deliverAt` | the original re-sent with one business field changed | both deliveries `conflict identity-conflict`; visit `retracted input-conflict` | 10d |
+| `activity-without-visit` | `device, from, to` | `Running=true` and torque in a window with no visit | samples `unattributed no-occupancy` with `active true`; counted by set coverage | 7, 17 |
+| `session-gap` | `device, fromSeq, toSeq` | messages with `seq` in `(fromSeq, toSeq)` removed; a `seq-gap {from, to, missing}` event | overlapping visits `insufficient session-gap`; `sessionGaps 1` | 8 |
+| `session-down` | `device, at, upAt` | messages in `[at, upAt)` removed; `session-down {from: lastObs, to: null}` then `session-up {at: upAt, rebirth: false}` with a new `birthPublishTs` and `bdSeq + 1` | as above | 8 |
+| `stale-death` | `device, detectedEventTime, rawPublishTs, bdSeq` | a `stale-death` event | nothing changes | 25 (a) |
+| `session-ambiguous` | `device, detectedEventTime, rawPublishTs, bdSeq, upAt` | a `session-ambiguous` event; messages removed from the last observation before `detectedEventTime` to `upAt`; then `session-up` | overlapping visits `insufficient session-ambiguous`; equipment coverage `unknown` | 25 (b) |
+| `plc-identity` | `station, equipment[], visitId, unit, present {from, to}` | `UnitId`, `VisitId`, `VisitPresent` stamped per scan | plc visits | 11, 11b, 11c, 11d, 11e |
+| `plc-cross-check-mismatch` | `station, from, to, otherUnit` | the occupancy stream names `otherUnit` at the station in the window | samples `attributed` with `reason identity-mismatch` | 11 |
+| `mixed-snapshot` | `device, at` | one message whose identity members carry the previous scan's `sourceTs` | its samples `incoherent-snapshot` | 11c |
+| `id-change-without-false` | `station, at, newVisitId, newUnit` | `VisitId`/`UnitId` change while `VisitPresent` stays true | the earlier visit `insufficient missing-visit-close` | 11d |
+| `no-visit-end` | `station, visitId` | the `VisitPresent=false` snapshot never comes | `insufficient missing-departure` at `W1 >= enter + H` (Task 17) | 11e |
+| `no-departure` | `eventId` | the departing event removed | `insufficient missing-departure` at `enter + H`; later visits unaffected (Task 17) | 6 |
+| `planned-late-samples` | `device, metric` | Task 17 | 23 | 23 |
+| `incident` | `incidentId, revisions[] {revision, deliverAt, fields}` | incident records | stage-2 expectations | 12-19 |
+
+- [ ] **Step 16.5** Scenario files (`baseline` plus overlays): `held-back-10min` (`hold-back` all telemetry in `[600000, 1200000)` by 600,000; `settleTargetW = 1920000 + 720000`); `redelivery` (`redeliver` `occ-3` and one nutrunner1 message); `overlap` (`overlap-visit` `UNIT0000000000009` at station1 `[1000000, 1060000)` crossing visit 3's `[960000, 1020000)`, both retracted; plus two valid station2 visits `UNIT0000000000010` `[1500000, 1560000)` and `UNIT0000000000011` `[1602000, 1662000)`, a gap of 42 s so their tolerance windows `[1455000, 1605000)` and `[1557000, 1707000)` overlap on `[1557000, 1605000)` while the actual intervals do not: the ambiguity case of spec 368 without a retraction, and with `45000 - 42000 = 3000` ms = 3 ambiguous slots inside each visit, within `maxMissingPeriods 3`, so both visits stay `complete`; station2's baseline visits end at 1,290,000); `bad-quality` (`bad-status` nutrunner1 `Torque` for 7 scans in visit 1); `clock-plus-30`, `clock-plus-90`; `corrections` (`delay-occupancy` of visit 2's departure to after its samples (2), of visit 5's arrival by 120,000 (2b); `late-correction` on visit 6's departure delivered at 2,400,000 (after `leave + L + O = 2,310,000`), new leave 1,565,000 (10f); `error-declaration did_not_occur` on visit 4's arrival (10); `resend-different` on visit 1's arrival `unitId` (10d)); `corrections-10b-before` and `corrections-10b-after` (10b, on visit 8's arrival alone: `did_not_occur` delivered before the original in the first, after it in the second; nothing else differs, so the settled bodies must be equal); `corrections-10c` (10c online part, on visit 8's departure alone; visit 8 `[1860000, 1920000)` is the last Station1 visit, so the reopened visit has no later arrival, `attributionEnd` null, and no later tolerance window makes its tail samples `ambiguous` (a reopened visit 7 would lose `[1815000, 1860000)` to visit 8's window and be `insufficient missing-periods` at once); the departure is cancelled only after the visit is settled: settlement `1920000 + 720000 = 2,640,000`, the builder brackets it, `cutB` ends at the first scan `T` with `T - O - 1 >= 2,640,000`, `T = 2,671,000` (`W1 = 2,640,999`), and the `incorrect_data` declaration is delivered in the next batch at `2,672,000`, so the visit is `complete` when the declaration arrives (`accepted late-after-settlement`) and becomes `provisional` with `insufficiencyReasons []`; `E = 2,672,000 + 751,000 = 3,423,000`, 3,424 scans, 13,696 messages); for 10f in `corrections` the same cut rule holds: visit 6 settles at `1560000 + 720000 = 2,280,000`, the 60 s boundary at `2,340,000` reports `W1 = 2,309,999 >= 2,280,000`, and the `late-correction` inputs at `2,400,000` fall in a later batch; `session` (`session-gap` nutrunner1 in visit 3 (8); `stale-death` station2 during visit 2 (25a); `session-ambiguous` nutrunner2 in visit 6 (25b); `activity-without-visit` nutrunner1 `[2100000, 2160000)` (7)); `quiet-occupancy` (a 7-minute visit with no occupancy record for 5 minutes) and `quiet-occupancy-control` (one station2 arrival inside the window; 26); `plc-stamped` (rule `line2-plc`, `plc-identity` on `station1` and `nutrunner1` for the eight Station1 visits with `visitId V<n>`, occupancy for the cross-check; `plc-cross-check-mismatch` on visit 3 (11), `mixed-snapshot` visit 5's 10th scan (11c), `id-change-without-false` at visit 7 (11d)); `plc-nocheck` (the same stamped visits on the rule of stream `line2-plc-nocheck`, `crossCheck: none`, no cross-check overlay, occupancy subscribed but never read by the rule) and `plc-held-back` (the same rule and visits with `hold-back` of the telemetry in `[600000, 1200000)` by 600,000 ms and `subscribed {"mfg.occupancy": []}`: the scans of `[0, 600000)` stay on time, so the first batch carries telemetry on every subscribed raw partition as spec 406 requires and the harness never refuses it (a hold-back of all telemetry would leave the first `batchMs` batch empty); the delayed interval covers visits `V1`-`V3` and is pinned in the scenario (`heldBack {from: 600000, to: 1200000, delayMs: 600000}`) and in the lock (`firstBatchTelemetryPartitions` = every subscribed raw partition); counts are unchanged by a hold-back; 11b compares these two runs of one pinned `crossCheck: none` rule at the settled cut, spec 631); `stage2` (`inc-1` `tool-check-failed` on `nutrunner1`, `stationRef station1`, revision 1 `closed`, `suspectFrom 600000`, `suspectTo = detectedAt = 1590000`, `revisionEventTime 1590000`, delivered at 2,400,000 (12, 16); `inc-2` `gauge-drift` on `nutrunner1`, revision 1 `open` `suspectFrom 900000` `detectedAt 1200000` delivered at 1,250,000, revision 2 `closed` `suspectTo 1400000` `revisionEventTime 2500000` delivered at 2,500,000 (14); `inc-3` `tool-check-failed` on `nutrunner2` over `[600000, 1590000)` with `suspectTo = detectedAt = revisionEventTime = 1590000` delivered at 2,400,000, revision 2 `withdrawn` at 2,600,000 (15); `activity-without-visit` nutrunner1 `[1246000, 1274000)` (17; the window sits between visit 4's tolerance window end `1200000 + 45000 = 1245000` and visit 5's window start `1320000 - 45000 = 1275000`, so none of its 28 scans is a candidate of any visit; a window reaching `1275000` would attribute its samples to visit 5); tail to `W2 >= 1590000 + L`); `stage2-early` (`inc-1` delivered at 300,000, without the `activity-without-visit` overlay of `stage2` (13: the injection's purpose is a set that starts empty and not settled, grows as records arrive, and settles; a scenario that can reach `complete` shows the whole ladder `unknown` -> `incomplete` -> `complete`, while injection 17's unattributed activity is asserted on `stage2` itself)); `cascade` (`stage2`'s `inc-1` delivered at 2,400,000 and `error-declaration did_not_occur` on visit 1's arrival at 2,700,000 (18); `stage2`'s `inc-2` revision 1 only, open `gauge-drift` on nutrunner1 from 900,000, delivered at 1,250,000, and `delay-occupancy` of visit 5's arrival to 1,440,000, after that incident exists and before the visit's settlement at 2,100,000, so the late attribution adds unit 5 to an existing set as `basis-provisional` first and `affected-candidate` after settlement (19); the departure at 1,380,000 arrives first and waits as a pending leave claim, S4; tail to `2,700,000 + tailMs`).
+
+- [ ] **Step 16.6** `ScenarioBuilderTest`: the baseline builds deterministically (two builds, identical bytes); 12,608 messages; every device has a tail `>= tailMs`; every deadline has `cutA`/`cutB` with `W1_A < d <= W1_B` under the per-station formula; `expected.json` names every sampleId once; each overlay type produces its documented effect on one small case; a scenario without bracketing cuts is refused; `forseti recordings verify` fails on a changed lock digest. `mvn -q -pl cli -Dtest=ScenarioBuilderTest test` -> `Tests run: 9, Failures: 0`. Then `mvn -B -ntp -q install` (the jar must carry this task's builder and overlays; without it `java -jar cli/target/forseti.jar` is the previous PR's jar). Build, lock and commit every hand-made scenario into `fixtures/recordings/<name>/` (the lock files sit beside the scenarios and are skipped; `--out` is the fixture directory itself): `for s in fixtures/scenarios/*.json; do case "$s" in *.lock.json) continue;; esac; java -jar cli/target/forseti.jar recordings build --scenario "$s" --registry fixtures/registry --out "fixtures/recordings/$(basename "$s" .json)" --lock; done` (the recording directories and the scenario locks are committed together in the same commit; `build/` is git-ignored and holds only the horizon recordings and run output). Commit `feat(cli): scenario builder with ground truth, deadline-bracketing batches, injection overlays and the hand-made scenarios`.
+
+### Task 17: Synthesizer and the horizon scenarios
+
+**Files:**
+- Create: `cli/src/main/java/dev/krillin/forseti/cli/recording/Synthesizer.java`; Modify: `ScenarioBuilder` (`"synthetic": true` delegates telemetry to the synthesizer), `Main` (`recordings synth`)
+- Create: `fixtures/scenarios/{horizon-no-departure,horizon-reopened,horizon-correction-beyond,plc-horizon-no-end,horizon-planned-late}.json` (+ locks)
+- Create: `cli/src/test/java/dev/krillin/forseti/cli/recording/SynthesizerTest.java`
+
+Horizon scenarios (spec 594) need continuous telemetry on every subscribed device from `T0` (`telemetryFrom 0`) to the scenario's end `E`, every 1,000 ms, both ends included: `scans = E / 1000 + 1` per device, `messages = 4 x scans`, samples = scans x members per scan (6 for the occupancy-join devices: 1 + 1 + 2 + 2; 12 for the plc devices: 4 + 1 + 5 + 2). Per scenario: `horizon-no-departure` `E = leave(visit 9) + tailMs = 88,560,000 + 751,000 = 89,311,000` (visit 9 is the later same-station visit of injection 6, below; its settlement `88,560,000 + 720,000 = 89,280,000` is bracketed inside that tail: `cutB` at scan `89,311,000`, `W1 = 89,280,999`) -> 89,312 scans, 357,248 messages, 535,872 samples; `horizon-reopened` `E = enter(visit 8) + H + tailMs = 1,860,000 + 86,400,000 + 751,000 = 89,011,000` -> 89,012 scans, 356,048 messages, 534,072 samples; `horizon-correction-beyond` `E = deliverAt + tailMs = 87,992,000 + 751,000 = 88,743,000` -> 88,744 scans, 354,976 messages, 532,464 samples; `plc-horizon-no-end` `E = enter(V3) + H + tailMs = 960,000 + 86,400,000 + 751,000 = 88,111,000` -> 88,112 scans, 352,448 messages, 1,057,344 samples; `horizon-planned-late` `E = T + tailMs = 87,410,000 + 751,000 = 88,161,000` -> 88,162 scans, a base of 352,648 messages and 528,972 samples; after the overlay the delivered counts are 352,651 messages (the three late samples are three DDATA records, one `Torque` member each, with `seq` continuing the session) and 528,974 samples (528,972 - 1 removed `Torque` observation at `holeAt`, whose message keeps its `Running` member, + 3 late samples); the locks pin the delivered counts; they are built at gate time to `build/recordings/<name>` and verified against the lock; never committed. Synthetic tails are ordinary data (`Running=false`, idle torque, Good quality) and follow every rule, so a horizon run produces one sample row per sample and one disposition per member; the volume is the requirement (Decision 8).
+
+- [ ] **Step 17.1** `Synthesizer`: streams records to the JSONL writers batch by batch (never the whole recording in memory); the same seeded `Telemetry.torque`; `batchMs` 3,600,000 for horizon scenarios plus the mandatory brackets and a cut every 60 s inside the first 40 minutes (about 70 cuts); `manifest.synthetic true`, `source {scenario, generator: "forseti recordings synth 0.1.0", seed}`.
+
+- [ ] **Step 17.2** Scenarios: `horizon-no-departure` (6 and the after-horizon cuts: `no-departure` on visit 8's departure, `horizonDeadlines ["visit-8"]`; visit 8 `[1860000, 1920000)` is the last Station1 visit, so the open visit has `attributionEnd` null and `J = [enter, min(W1, enter + H))`; its tail telemetry (`Running=false`, idle torque, every second) keeps `missingPeriods 0`, so the visit is really `provisional` at `cutA` and `insufficient missing-departure` only at `cutB` of `enter + H`; with visit 4 the open window up to visit 5's `enter` 1,320,000 would overlap visit 5's tolerance window from `1320000 - 45000 = 1,275,000`, 45 ambiguous slots > `maxMissingPeriods 3`, `insufficient missing-periods` long before the horizon, and `lenient-oracle` would have nothing to fail at `cutA`; spec 619 also asks that later visits at that station are not retracted, so a visit 9 `UNIT0000000000012` `[88500000, 88560000)` with `nutrunner1` follows the horizon bracket: the bracket of `enter(visit 8) + H = 88,260,000` has `cutB` at the first scan `T` with `T - O - 1 >= 88,260,000`, `T = 88,291,000`, and visit 9's window `[88455000, 88605000)` begins after it, so visit 8's `J = [1860000, min(W1, 88500000, 88260000))` ends at the horizon untouched by visit 9 (the samples in `[88455000, 88500000)` are `ambiguous`, inside both windows, outside both `J`s); visit 8 is open, so S7 never pairs it with visit 9 (overlap is decided only between two closed visits), visit 9 settles at `89,280,000` and is `complete`); `horizon-reopened` (10c's horizon half: the `corrections-10c` declaration on visit 8's departure delivered at 2,672,000 after the settlement bracket, `horizonDeadlines ["visit-8"]`: `complete` -> `provisional` -> `insufficient missing-departure` at `enter(visit 8) + H`); `horizon-correction-beyond` (10e: `error-declaration did_not_occur` on visit 2's arrival; visit 2 `[780000, 840000)` has `onlineExpiresAt = leave + H + L = 840,000 + 86,400,000 + 720,000 = 87,960,000`; a declaration delivered at that very time would still be admitted, because admission uses the previous cut's `admissionW` and a cut's inputs apply before its timers (spec 410, 508); so the builder lists `onlineExpiresAt` as a deadline, brackets it (`cutB` ends at the first scan `T` with `T - O - 1 >= 87,960,000`, `T = 87,991,000`, `W1 = 87,960,999`), and delivers the declaration in the batch after `cutB`, `deliverAt = 87,992,000`, where `admissionW = 87,960,999 >= onlineExpiresAt`); `plc-horizon-no-end` (11e, spec 634: "neither `VisitPresent=false` nor an ID change": the plc scenario reduced to the stamped visits `V1`-`V3` at Station1; `no-visit-end` on `V3` keeps `VisitPresent=true` with `V3`'s `UnitId`/`VisitId` on `station1` and `nutrunner1` for every scan to the end of the recording, no later stamped visit follows, so no ID change occurs (a later `V4` would make it `missing-visit-close`, injection 11d); telemetry to `enter(V3) + H + tailMs`; expected `insufficient missing-departure` at the bracketing cut of `enter(V3) + H`); `horizon-planned-late` (23: `planned-late-samples` on nutrunner1 `Torque`: the hole is chosen first, inside visit 3's evaluation interval, `holeAt = enter(visit 3) + 20000` (the 20th scan, `T0 + 980000`); the planned `A` follows from it, `A = holeAt + H - 1`, and the batch boundary `T = A + O + 1 = holeAt + H + O` (`T0 + 980000 + 86,400,000 + 30,000 = T0 + 87,410,000`), which lies on the scan grid, so every subscribed raw telemetry partition has the same largest `sourceTs` `T` at that boundary (asserted by the builder) and the per-station formula gives exactly `W1 = T - O - 1 = A`; the builder ends a batch at `T`, removes the on-time scan at `holeAt` from nutrunner1's `Torque`, and puts three late samples with `sourceTs = A - H + 1 = holeAt`, `A - H = holeAt - 1` and `A - H - 1 = holeAt - 2` and `seq` continuing the session into the next batch (new `sampleId`s, no `seq-gap`, no measurement conflict). Admission at that batch is against `admissionW = A`: `holeAt >= A - H` and `holeAt - 1 >= A - H` are admitted, `holeAt - 2 < A - H` is `replay-required beyond-horizon`; visit 3 is still online (`onlineExpiresAt = leave + H + L > A`). Expected: the first fills visit 3's hole (`missingPeriods` 1 -> 0), the second is a second observation of slot 19 (already observed by the scan at `enter + 19000`), the third `replay-required`; `transitions[]` carry `A` and the cut whose reported `W1` must equal it; telemetry runs to `T + tailMs`; delivered counts 352,651 messages, 528,974 samples).
+
+- [ ] **Step 17.3** `SynthesizerTest`: `horizon-no-departure` builds in under 60 s with 357,248 messages and 535,872 samples (the arithmetic above); two builds byte-identical; the lock verifies; the planned-late manifest has `W1 == A` at the planned cut under the formula; the hole is absent on time and present as the first late sample. `mvn -q -pl cli -Dtest=SynthesizerTest test` -> `Tests run: 5, Failures: 0`. `mvn -B -ntp -q install` (the jar gains the synthesizer), then build and lock the five with `java -jar cli/target/forseti.jar recordings build --scenario fixtures/scenarios/<name>.json --registry fixtures/registry --out build/recordings/<name> --lock`. Commit `feat(cli): recording synthesizer for 24 h horizon scenarios with pinned locks`.
+
+### Task 18: The independent Python oracle (stages 1 and 2)
+
+**Files:**
+- Create: `oracle/src/forseti_oracle/{cuts,stage1,stage2,fold}.py`; Modify: `cli.py` (`stage1`, `stage2`, `all`)
+- Create: `oracle/tests/{test_stage1,test_stage2,test_fold,test_independence}.py`
+
+`forseti-oracle all --recording <dir> --cuts <run>/cuts.json --mappings <registry>/mappings --release <id>@<version> --rule <id>@<version> --definitions <manifest> --out <dir> [--lenient] [--subscribe mfg.occupancy=]`. For each completed cut `k` of the cut log the oracle recomputes from scratch the live row set of every station from the inputs delivered through `k`, admitted against the `admissionW` the cut log records for the cut each input was delivered in (admission history is remembered across cuts: rebuilding without it would admit beyond-horizon inputs), with timers evaluated up to the recorded `W1` and `W2 = W1`. It writes `<out>/cut-<k>/<topic>.json` (`{logicalKey JSON -> {body, bodyDigest}}` for the four journals), `<out>/cut-<k>/dispositions-stage{1,2}.json` (`{identity JSON -> {disposition, reason}}` final per identity), `oracle-run.json` (pins, `rfc8785` version, Python version, recording digests, offset ranges). It shares nothing with the Java side; it implements the rule sheets from the spec text; it computes `rulesDigest` from the released bytes it hashed itself; it never reads the harness's journals (the gate compares).
+
+- [ ] **Step 18.1** `stage1.py`: `classify(deliveries, admission_w_by_cut, rule, catalog)` (S1-S3 as a sweep in delivery order per identity), `visits_of(station, accepted_occupancy, w1)` (S4, S5, S7), `sessions_of(device, accepted_sessions, w1)` (S8), `attribute(samples_sorted, visits, sessions, rule)` (S9, one sweep over samples sorted by `sourceTs` against visits sorted by `enter`), `coverage(visit, observations, activity, rule)` (S6), `work_record_body`, `sample_row_body`, `plc_visits_of` (P1-P3). `stage2.py`: stands on the oracle's own stage-1 rows for `k` (a stage-1 disagreement surfaces once, at stage 1); incidents delivered through `k` classified per T1; row set per T3 by a sweep over visits sorted by `enter` against the interval of every delivered valid revision (superseded lower revisions included, spec 515), judgement by the highest valid revision; T4-T8 bodies; deletes as absent keys. `fold.py`: the oracle's own fold and integrity checks of a harness run (`--check-journals`: revision gaps, equal consecutive digests, a row after its progress, missing dispositions, a stale `basis[]` digest). `cuts.py`: reads `cuts.json` and refuses a history inconsistent with the manifest's batches; through-offsets are inclusive with `-1` for "nothing included" (the oracle's `safe_int` ranges mirror the Java ones: record offsets and times `0 ..`, through-offsets `-1 ..`, computed times the full JCS domain), and `test_cuts.py` has `test_through_offset_minus_one_means_an_empty_partition` (a cut with all six incident through-offsets at `-1` selects no incident; the next cut with `0` on one partition selects exactly the first record).
+
+- [ ] **Step 18.2** Tests: `test_stage1.py` and `test_stage2.py` mirror the cases of `Stage1OccupancyJoinTest`, `Stage1PlcStampedTest` and `Stage2Test` with inline inputs typed from the rule sheets (no Java output copied), including `test_uncertain_propagate_aggregates_and_supports_activity` (a rule copy with `uncertainInput: propagate`: Uncertain values enter `count`/`min`/`max`/`last`, the activity support, the sample row's `active`, and are not `unknownActivityPeriods` in the affected set; under `reject` the same inputs are `bad-quality`, `active "unknown"` and unknown coverage), `test_declaration_before_original_in_both_orders`, `test_rejected_uncertain_only_has_bad_slots_zero`, `test_revision_event_time_checked_by_revision_number`, `test_non_canonicalizable_input_has_a_raw_bytes_disposition` (the oracle's classification keeps a `schema-invalid` row with `refs.digestRule raw-bytes` for `[9007199254740992]` delivered on `mfg.occupancy`), `test_no_activity_judged_inside_the_intersection_only` (a `complete` basis with a 2-slot gap outside `[enter, leave) ∩ S` is `no-equipment-activity`; the same gap inside it is `basis-insufficient`), and `test_disallowed_correction_reason_is_schema_invalid`; the `samplesDigest` of the smoke visit equals the literal the Java test pins; `test_station2_visit_body_without_measurement_members` pins the same Station2 body and digest as the Java test; `test_visit_seq_above_int32_is_preserved_in_the_body`; every supported rule option is exercised (`fully-within`, `enter-within`, `station-visit`, `always-insufficient`, `onWithdrawn insufficient`), not only the fixtures' choices. `test_fold.py`: the five violations each detected on inline journals. `test_independence.py`: the oracle package imports nothing from outside `forseti_oracle`, `rfc8785`, `jsonschema` and the standard library; no module launches a subprocess; the shared files are data.
+
+- [ ] **Step 18.3** `pytest -q oracle` -> `+78 passed` (about 119 total). By hand on the smoke run: `python -I -m forseti_oracle.cli all --recording fixtures/recordings/smoke-incident --cuts build/runs/smoke-incident/cuts.json --mappings fixtures/registry/mappings --release line2-rules@1.0.0 --rule line2-attribution@1.0.0 --definitions fixtures/recordings/smoke-incident/manifest.json --out build/oracle/smoke-incident` -> `cuts 53, rows N`; the one visit's `bodyDigest` equals the folded harness journal's. Commit `feat(oracle): independent stage-1 and stage-2 oracle, fold and cut-log reader`.
+
+### Task 19: Comparison, integrity, injection assertions, determinism, item 2 reference values, pull request 4
+
+**Files:**
+- Create: `cli/src/main/java/dev/krillin/forseti/cli/gate/{Comparison,Integrity,Injections}.java`; Modify: `CoreGate`, `gate/core-assertions.json` (+43 = 72)
+- Create: `cli/src/test/java/dev/krillin/forseti/cli/gate/{ComparisonTest,IntegrityTest}.java`
+
+- [ ] **Step 19.1** `Comparison`: for every completed cut `k` of a run, fold the harness journals through progress `k` per partition (`JournalFold`), load the oracle's `cut-<k>` files, compare key sets and recomputed `bodyDigest` per key for the four journals (a reported digest alone is not trusted: the gate recomputes `Canonical.digest(body)` on both sides); on a difference write `build/gate/diffs/<scenario>/cut-<k>/<topic>/<n>.json` {generation, cut, key, JSON path of the first difference, expected, actual, input offset ranges} (CI artifact, spec 671) and fail; compare dispositions by identity (`disposition` and `reason`; which delivery is `duplicate` is not compared, spec 452); apply the comparable-cut predicate (spec 590) for direct run-to-run comparisons (1, 11b, 26, determinism) and fail when a scenario that needs a settled cut has none. `Integrity`: revisions contiguous from 1 per key; no equal consecutive digests; progress `cutId` increasing and `eventTimeAt` non-decreasing per partition; no business row of cut `k` after its progress; every delivery (with its parts) has a disposition; `W1` equals the formula; `admissionW` equals the previous `W1`; stage-2 `W2 == W1`; `incidentOffsets` count 6; every `basis[].bodyDigest` current; pins cross-check: for every row, `Canonical.digest(envelope.pins.withoutJob())` (the four fields `rules`, `hierarchy`, `bindings`, `definitions`; never `job`, which differs per run) equals the generation row's `rulesDigest`, and for the two bodies that carry `rulesDigest` (work record, spec 355; impact assessment, spec 379; the sample journal and the affected set carry none, spec 362-366, 385-398) the body value equals it too, all recomputed by the gate (the hook `wrong-rules-pin` fails in PR 6). `Injections`: one assertion per id below; each verifies the committed recording against its lock (hand-made scenarios) or builds the recording and verifies it against its lock (the five horizon scenarios, never committed), registers a generation in a temp state (the PR 1-4 stub store; PR 5 switches to the CLI), runs the harness, runs the oracle (`--python`), compares every completed cut, checks integrity, asserts `expected.json` at the last cut and `transitions[]` at the bracketing cuts.
+
+| Assertion id | Scenario | Asserted beyond oracle equality and integrity |
+|---|---|---|
+| `I-1` | `held-back-10min` vs `baseline` | bodies equal at the settled cut (every work record and sample row digest) |
+| `I-2` | `corrections` (visit 2) | `provisional` at `cutA`, `complete` at `cutB` of `leave + L` |
+| `I-2b` | `corrections` (visit 5) | sample rows `unattributed no-occupancy` then `attributed`; `members[]` include them |
+| `I-3` | `bad-quality` | 7 rows `unattributed bad-quality`; they count for visit 1 through the quality-blind candidate: `members[nutrunner1-torque]` has `observedPeriods 60`, `badSlots 7`, `count 53`; `badShare 7/60 = 0.117 > 0.1`; visit 1 `insufficient` with `bad-share-exceeded` |
+| `I-4` | `overlap` | visit 3 (`[960000, 1020000)`) and the extra visit (`[1000000, 1060000)`) `retracted overlap`; samples inside exactly one actual interval are `attributed` to that retracted visit; samples in the actual intersection `[1000000, 1020000)` are `unattributed ambiguous`; at station2 the two valid visits (`[1500000, 1560000)`, `[1602000, 1662000)`) are both `complete`: actual intervals disjoint, so no overlap retraction; their windows overlap on `[1557000, 1605000)` (48 slots of station2 `Running` samples, all `unattributed ambiguous`, two non-retracted candidates, spec 368), of which 3 slots lie inside the first visit (`[1557000, 1560000)`) and 3 inside the second (`[1602000, 1605000)`); station2 has no measurement member, so only activity support is lost: `equipmentEvidence[station2].coverage.unknownActivityPeriods 3`, equal to `maxMissingPeriods 3` and therefore not `unknown-activity`; the 42 ambiguous slots between the visits are outside both `J` |
+| `I-5` | `redelivery` | the second deliveries `duplicate identical-redelivery`; row counts equal `baseline`'s |
+| `I-6` | `horizon-no-departure` | visit 8 `provisional` at `cutA` (`missingPeriods 0`, `insufficiencyReasons []`) and `insufficient missing-departure` at `cutB` of `enter + H = 88,260,000`; visits 1-7 unchanged against `baseline`; the later same-station visit 9 (`[88500000, 88560000)`, spec 619) is `provisional` on arrival and `complete` at its settlement bracket of `89,280,000`, never `retracted`, and visit 8 keeps `insufficient missing-departure` with no `overlap`; `lenient-oracle` fails here because the oracle reports `complete` at `cutA` |
+| `I-7` | `session` | 120 nutrunner1 sample rows (60 scans x `Torque` and `Running`) `unattributed no-occupancy` with `active true`; no `complete` visit for that window |
+| `I-8` | `session` | visit 3 `insufficient session-gap`; `equipmentEvidence[nutrunner1].coverage.sessionGaps 1` |
+| `I-9` | `clock-plus-30` | every sample whose original `sourceTs` lies inside a visit's `[enter, leave)` is attributed to the same visit as in `baseline` (the 45 s tolerance absorbs +30 s, spec 622); the complete per-sample expectation is `expected.json` recomputed on the shifted timestamps (a sample at original 550,000, unattributed in `baseline`, becomes attributed at 580,000 inside visit 1's window `[555000, 705000)`) |
+| `I-9b` | `clock-plus-90` | per-sample attribution equals `expected.json` (three bands) |
+| `I-10` | `corrections` (visit 4) | `retracted error-declaration`, `errorReason did_not_occur` |
+| `I-10b` | `corrections-10b-before` vs `corrections-10b-after` | the same settled body digest for visit 8 (`retracted error-declaration`, `errorReason did_not_occur`) in both delivery orders; in `-before` the declaration's disposition is `accepted` (`part errorDeclaration`) and the later original `accepted` (`part event`), S2 (c) |
+| `I-10c` | `corrections-10c` + `horizon-reopened` (visit 8) | `complete` at the cut ending at scan `2,671,000` (`W1 = 2,640,999`); the declaration at `2,672,000` is `accepted late-after-settlement`; the visit becomes `provisional` with `insufficiencyReasons []` (no later window, no ambiguity); in `horizon-reopened` it is `insufficient missing-departure` at `enter + H`; sample rows keep `attributedTo` |
+| `I-10d` | `corrections` (visit 1) | both deliveries `conflict identity-conflict`; visit `retracted input-conflict` |
+| `I-10e` | `horizon-correction-beyond` | the cut before the declaration's batch reports `W1 = 87,960,999 >= onlineExpiresAt`; the declaration `replay-required correction-beyond-horizon`; visit 2's body unchanged (`complete`) |
+| `I-10f` | `corrections` (visit 6) | the declaration and the corrective departure are both `accepted late-after-settlement`; the visit, already `complete`, gets a new revision (`provisional`), then `complete` with `leave 1565000` once `W1 >= 1565000 + L` |
+| `I-11` | `plc-stamped` | visit 3's samples `attributed` with `reason identity-mismatch`; `attributedTo` unchanged |
+| `I-11b` | `plc-held-back` vs `plc-nocheck` (both on the pinned `crossCheck: none` rule of stream `line2-plc-nocheck`) | bodies equal at the settled cut; at least one `complete` visit |
+| `I-11c` | `plc-stamped` | the mixed snapshot's samples `incoherent-snapshot` |
+| `I-11d` | `plc-stamped` | visit 7 `insufficient missing-visit-close` |
+| `I-11e` | `plc-horizon-no-end` | `V3` `insufficient missing-departure` once `W1 >= enter + H` |
+| `I-12` | `stage2` (`inc-1`) | units 1, 3, 5 `affected-candidate equipment-activity`; set `settled true` at the last cut |
+| `I-13` | `stage2-early` | first set row (the cut that delivers the incident at 300,000): `units []`, `settled false`, `coverage.status unknown` with `unknownActivityPeriods 990` (no activity observation yet in `[600000, 1590000)`, 990 one-second slots, T8); as telemetry arrives `unknownActivityPeriods` falls cut by cut and the status stays `unknown` until it reaches 0; `units[]` grows by one unit per completed visit (`basis-provisional` first, then the T6 outcome); `settled true` once `W2 >= 1,590,000 + 720,000 = 2,310,000`; at the last cut `coverage.status complete` (`stage2-early` carries no `activity-without-visit` overlay, so `unattributedActivityPeriods 0`; nothing unknown, nothing provisional or insufficient, evidence range covers the interval) |
+| `I-14` | `stage2` (`inc-2`) | while open: T1 visits after 900000 `affected-candidate`, T2-only and no-tool `no-equipment-activity`; after revision 2: visits 6, 7, 8 `not-affected-within-scope interval-narrowed` whatever their tools, visits 3 and 5 `affected-candidate`; `open false` |
+| `I-15` | `stage2` (`inc-3`) | every unit `not-affected-within-scope incident-withdrawn`; `resolution withdrawn`, `open false`, `settled true`, never `complete` |
+| `I-16` | `stage2` (`inc-1`) | T2-only visit 2 `no-equipment-activity`; both-tool visit 3 `affected-candidate`; no-tool visit 4 `no-equipment-activity` |
+| `I-17` | `stage2` (`inc-1`) | `coverage.unattributedActivityPeriods 28` (the 28 one-second slots of `[1246000, 1274000)`, aligned to the slot grid from `suspectFrom 600000`), `coverage.status incomplete`; the 56 sample rows (28 scans x `Torque`, `Running`) are `unattributed no-occupancy` with `active true` |
+| `I-18` | `cascade` | unit 1 `affected-candidate` then `not-affected-within-scope basis-retracted-error-declaration`, in the same cut as the retraction |
+| `I-19` | `cascade` | `inc-2` (open `gauge-drift` on nutrunner1 from `suspectFrom 900000`, delivered at 1,250,000) has a set without unit 5 (no visit claim yet); visit 5's arrival is delivered at 1,440,000, before its settlement at `leave + L = 1380000 + 720000 = 2100000`: the pending departure applies, the samples move `no-occupancy` -> `attributed`, the visit is `provisional` (`W1` at that cut is about 1,409,999 < 2,100,000) and unit 5 enters the set as `insufficient-evidence basis-provisional`; at the bracketing cut of 2,100,000 it becomes `affected-candidate equipment-activity` (T1 active inside the open interval); each step is a set revision (spec 642) |
+| `I-25` | `session` | `stale-death`: station2's visit 2 unchanged vs `baseline`; `session-ambiguous`: visit 6 `insufficient session-ambiguous`, `equipmentEvidence[nutrunner2].coverage.status unknown` |
+| `I-26` | `quiet-occupancy` vs `quiet-occupancy-control` | direct body equality at every comparable cut for Station1 only (the station whose occupancy stream is silent; every Station1 work record and sample row digest equal between the two runs); Station2, which receives the control's extra arrival, is compared with the oracle in each run, as every scenario is |
+| `J-DISPOSITION-COVERAGE`, `J-REVISION-CONTINUITY`, `J-NO-EQUAL-CONSECUTIVE`, `J-PROGRESS-ORDER`, `J-W1-FORMULA`, `J-W2-EQUALS-W1`, `J-BASIS-CURRENT` | all scenarios | the integrity checks above, aggregated over every run of the gate |
+| `J-AFTER-HORIZON-CUTS` | the five horizon scenarios | cuts exist with `W1 >= enter + H + L` of the open visits; `onlineVisits` drops after expiry while the rows remain in the fold |
+| `C-6-STAGE1`, `C-6-STAGE2` | `baseline`, `stage2` x 3 seeds (`--shuffle`) | identical bodies at every cut; revision counts in `report.json` |
+| `C-2-REFERENCE` | `held-back-10min`, `horizon-planned-late` (its generation-1 run only; `I-23` is PR 5) | `report.json` records `longestLatenessCorrectedOnlineMs` (600000 from 1; `H` from 23's second late sample), journal row counts per topic per scenario, `inputsWithoutDisposition 0` |
+
+(43 new ids: 32 injections, 8 `J-*`, 3 `C-*`; the manifest now has 72.)
+
+- [ ] **Step 19.2** `ComparisonTest` (agreeing outputs pass; a body changed in the oracle output fails with a diff file; a reported digest that does not match its body fails) and `IntegrityTest` (a revision gap, equal consecutive digests, a row after its progress, a missing disposition, a stale basis digest, a wrong pins digest: each caught). `mvn -q -pl cli -Dtest='ComparisonTest,IntegrityTest' test` -> `Tests run: 9, Failures: 0`.
+
+- [ ] **Step 19.3** `mvn -B -ntp -q install` (the jar gains `Comparison`, `Integrity` and `Injections`), then the gate -> every scenario built or verified, every run compared, last line `assertions run 72 / expected 72`, exit 0; `build/gate/diffs` absent. Expected wall time 10-18 minutes (the five horizon recordings dominate; Open point 2). Commit `feat(cli): core gate folds, compares with the oracle, checks integrity and asserts the engine-independent injections`. Pull request 4: Tasks 16-19 (5 commits); CI green; PR body records the gate's wall time, the scenario sizes, the diff-artifact path.
+
+## Chunk 6: Generation control (PR 5)
+
+Branch: `git switch -c feat/step3-generation-cli main` after PR 4 merged.
+
+### Task 20: Generation rows, transition policy, the locked durable file store, the CLI verbs
+
+**Files:**
+- Create: `core/src/main/java/dev/krillin/forseti/core/generation/GenerationPolicy.java`, `core/src/test/java/dev/krillin/forseti/core/generation/GenerationPolicyTest.java`; Modify: `core/.../generation/{Generation,GenerationStore}.java` (created in Task 11; `Generation` gains nothing, `GenerationStore` gains `latestStatus(n)`)
+- Create: `cli/src/main/java/dev/krillin/forseti/cli/generation/GenerationCli.java`, `cli/src/test/java/dev/krillin/forseti/cli/generation/{GenerationCliTest,FileGenerationStoreTest}.java`; Modify: `cli/.../generation/FileGenerationStore.java` (the locked, durable `append` replaces Task 11's read-only stub), `ReferenceEngine` (reads the real store; writes nothing to it)
+
+Decision 11, spec 540-553 as extended by Task 1's line 553. `GenerationStore` is the transport boundary; `FileGenerationStore` is the step-3 implementation: `<stateDir>/generations.jsonl`, one transport record per line `{"topic": "forseti.generations", "key": "<scope>", "headers": {"forseti-generation": "<n>"}, "value": <the generation row>}` (the payload is the spec's row, the wrapping stays outside it), appended under the two-level lock of Task 6 (`LockedFile`: an in-JVM `ReentrantLock` per canonical path of `<stateDir>/generations.lock`, then the `FileLock`; one JVM's threads would otherwise meet `OverlappingFileLockException`), each append `force(true)`d, a partial last line (no trailing newline, or invalid JSON) fails closed with `control-log-corrupt` and is never discarded silently; `<stateDir>/recovery-control.jsonl` holds the generation's initial declaration `{generation, injectionId: null, stage: 1, epochBefore: null, targetEpoch: 0, lastWrittenCutId: 0, routingDigest}` (spec 408). `GenerationPolicy` (core, pure): `next(number)`, the allowed transitions `registered -> replaying -> verified -> current -> retired` (and `registered|replaying|verified -> retired`), "one current per scope", numbers unique across scopes (`next()` reads the highest number of the whole store), `promoteRequires(report)`. The scope of a generation is the `streamId` of the release holding its attribution rule (the key of `forseti.generations`, spec 474); `run`, `promote` and `retire` address a generation by its store-wide unique number and need no scope argument.
+
+- [ ] **Step 20.1** `Generation` and `GenerationStore` exist since Task 11 (`GenerationStore` gains `latestStatus(n)` here); `GenerationPolicy` (+ `GenerationPolicyTest`: every allowed and refused transition; one current per scope; numbers increase across scopes), `GenerationStore` (`append`, `all`, `current(scope)`, `byNumber`, `latestStatus(n)`), `FileGenerationStore` (+ `FileGenerationStoreTest`: append and read back; two writers under the lock allocate distinct numbers; two scopes share one number sequence (`line2` -> 1, `line2-plc` -> 2, `line2` -> 3); a truncated last line fails closed; `force` called (a spy on the channel); the header and key are present).
+
+- [ ] **Step 20.2** `GenerationCli` (one JSON object on stdout; exit 0 ok, 1 refusal, 2 usage):
+
+```
+forseti generation new     --state <dir> --mappings <dir> --trusted-keys <file> --stream <s> [--stream <s2>] --rule <id>@<version> [--recording <dir>] [--definitions <file>]
+forseti generation promote --state <dir> --mappings <dir> --trusted-keys <file> --generation <n> --run <run.json> --gate-report <file> [--accept-scope core]
+forseti generation retire  --state <dir> --generation <n>
+forseti generation list    --state <dir>
+```
+
+Only these verbs write `forseti.generations` (spec 72, 474: jobs never write it; the harness and the gate are held to the same rule). `promote` writes the three progress rows in one locked operation (Task 21).
+
+`new` (injectable `Clock`; the CLI uses `Clock.systemUTC()`): for every `--stream`, `HeadVerifier.verify(mappings, stream, trusted, new FloorStore(state), clock.millis())` (spec 553: the floor survives generation changes), `ReleaseReader.read`, `RuleSet.load` (a `Refusal` prints `{"refusal", ...evidence}`, exit 1); pins `rulesDigest`, `inputReleases [{stream, releaseId, version, releaseSha256, headVersion, statementSha256}]`, `replayFrom` (offset 0 of every subscribed partition of the recording, `{}` without one), `headVersion`, `releaseEvidence` (the verified `Head` summary, the `release.json` digest, the `pins` object), `gateReportSha256 null`, `at`; appends `registered` and the initial recovery declaration. `forseti run` reads the row and its `releaseEvidence` (Task 11) and appends nothing; the gate appends nothing. `retire` appends `retired`. `list` prints every row.
+
+- [ ] **Step 20.3** `GenerationCliTest` (fixed clock = fixture `signedAt + 60 s`): `newRegistersAGenerationWithPins` (row fields; `head-floors/line2.json`; `recovery-control.jsonl`); `newRefusesAnExpiredHead` (exit 1 `head-expired`); `newRefusesTyrsBytes` (`binding.schema-mismatch` on the untouched-bundle registry of Task 7); `newFromRegistryNextRaisesTheFloor`; `anUnregisteredGenerationRefusesTheHarness`; `runAndGateAppendNoRow`; `retireAppendsARetiredRow`; `generationNumbersIncrease`; `twoScopesInARowAreAddressedByNumber` (`new` on `line2` -> generation 1, `new` on `line2-plc` -> generation 2; `run`, `promote --accept-scope core` and `retire` on each by number; `current(line2)` and `current(line2-plc)` are both set at once and neither row is ambiguous; `byNumber(1)` and `byNumber(2)` return one row sequence each); `aCorruptControlLogFailsClosed`.
+
+- [ ] **Step 20.4** `mvn -q -pl core -Dtest=GenerationPolicyTest test && mvn -q -pl core install -DskipTests && mvn -q -pl cli -Dtest='GenerationCliTest,FileGenerationStoreTest' test` -> `Tests run: 6` and `Tests run: 14`, 0 failures. Commit `feat(core,cli): generation rows and policy; locked durable file control log; generation new|retire|list`.
+
+### Task 21: Promotion bound to verified gate evidence; injections 20 and 23; pull request 5
+
+**Files:**
+- Create: `cli/src/main/java/dev/krillin/forseti/cli/generation/GateReportReader.java`, `cli/src/test/java/dev/krillin/forseti/cli/generation/GateReportReaderTest.java`; Modify: `GenerationCli` (`promote`), `ReferenceEngine` (`--replay event-time`, cause `replayed`), `CoreGate` (`--state`, `generations[]` and `runs[]` in the report; the real store), `Stage1`/`Stage2` (cause kind), `Injections` (+ `I-20`, `I-23`), `gate/core-assertions.json` (+7 = 79)
+
+- [ ] **Step 21.1** `GateReportReader`: reads a `report.json`, verifies its raw SHA-256 (the digest `promote` records), `exit == 0`, loads the committed `gate/core-assertions.json` itself and requires `assertionsExpected == N` and `assertionsRun == N` where N is that manifest's entry count (a report's own counts are never trusted against each other: a `0/0` or a reduced `k/k` report is refused, spec 671), `failed` and `notRun` empty, `manifestSha256` equals the committed manifest's, `generations[]` names the generation with its `rulesDigest` and `runs[]` names the run record given by `--run` (`runId`, recording digests, offset ranges), and `scope`. `promote --generation n --run <run.json> --gate-report <report>` refuses a report whose scope is `core` unless `--accept-scope core` is given explicitly (a core report never impersonates the semantic gate; the default policy requires scope `semantic`, steps 6-7; Open point 3), verifies the head again now (approval evidence valid now), and appends in one locked operation `replaying` (citing the run), `verified` (citing the report digest), `current`, and `retired` for the previous current of the scope. The gate gains `--state <dir>`: with it the generations it registers for its runs live in that store (and `report.json.generations[]`/`runs[]` describe them, each with `state: shared`); without it a temp state is used and discarded. Two assertions never touch the shared state, because a verified head of version 2 would raise that state's `line2` floor and every later version-1 registration and the final `promote --mappings fixtures/registry/mappings` would be `head-rollback` (spec 84, 553; the floor is not weakened): `F-GEN-FLOOR` and the generation-2 half of `I-20` run in their own temporary state directories and appear in the report as `state: isolated`, which `promote` refuses as a target (`gate-report-generation-isolated`); every shared-state generation reads `fixtures/registry` (head version 1), so the floor of the shared state stays at 1 and the Verification promote stays valid whatever the assertion order. Isolation was chosen over ordering because the floor belongs to the state directory, so the version-raise evidence and the operational state must not share one directory, and because the manifest order is not a contract.
+
+- [ ] **Step 21.2** `--replay event-time` (Decision 11, spec 72, 646; Task 1's line 553): the harness first materializes the replay as its own recording under `<out>/replay-recording/` (every record of the original re-ordered by event time, new contiguous offsets per partition, batches planned by the same `batchMs` and deadline brackets, its own `manifest.json` with `source.replayOf = <original manifest digest>`, `routing.json` and digests), then runs on it like any recording; the oracle is given that recording and that run's `cuts.json`, so the input set of every cut is an offset range of the recording it reads (spec 406, 588); every row's `cause` is `{"kind": "replayed", "inputKind", "identity"}`; the generation's `replayFrom` is offset 0 of every partition of the original (the retained input), and `run.json` records both digests.
+
+- [ ] **Step 21.3** Assertions:
+
+| Id | What runs |
+|---|---|
+| `F-GEN-NEW` | `generation new` in a temp state with the fixed clock: the row, the floor, the recovery declaration |
+| `F-GEN-LIFECYCLE` | in a temp state: `new` -> one `registered` row; `run` on `smoke` -> still one row; the assertion itself writes a gate report in the report format (scope `core`, exit 0, the committed manifest's digest, `generations[]` and `runs[]` naming this generation and run) and calls `promote --run --gate-report --accept-scope core` -> `replaying`, `verified`, `current` appended; `retire` -> `retired`; a report naming another generation or run is refused; a refused transition is refused. No gate is launched inside the gate (B4): the real gate-then-promote integration is a separate command, Verification step 7 |
+| `F-GEN-PROMOTE-REQUIRES-REPORT` | no report or no run: exit 2; a report with `exit 1`, a wrong digest, a wrong generation, a wrong `rulesDigest`, a run not listed in the report, a `notRun` entry, counts `0/0`, equal but reduced counts (`40/40` against a manifest of 82), a count above the manifest's, or scope `core` without `--accept-scope`: exit 1 with the reason; a valid report with `--accept-scope core`: the three rows and `current` |
+| `F-GEN-REFUSES-UNREGISTERED` | the harness refuses generation 7 |
+| `F-GEN-FLOOR` | in an isolated temporary state (never the gate's `--state`): `new` on `registry` (floor 1), then on `registry-next` (floor 2), then on `registry` again: `head-rollback`; the shared state's floor is unaffected |
+| `I-20` | `baseline` under generation 1 (`registry`, rule 1.0.0, in the gate's state) and generation 2 (`registry-next`, rule 1.0.1, in an isolated temporary state whose floor rises to 2, so the shared state's floor stays at 1): every row of generation 2 carries the new `rulesDigest` and `pins.rules.attribution.version 1.0.1`; the fold of each generation holds only its digest; the oracle agrees for both; the report lists generation 2 with `state: isolated` |
+| `I-23` | `horizon-planned-late` generation 1, then generation 2 `--replay event-time`: at the planned cut the reported `W1` equals `A` (else `error`, never a moved hole); the three boundaries hold at one millisecond (`holeAt` and `holeAt - 1` admitted, `holeAt - 2` `replay-required beyond-horizon`); visit 3's `missingPeriods` 1 before the late batch and 0 after; in generation 2 (run and oracled on the materialized replay recording) the third sample is `attributed` with `cause.kind replayed`; generation 1's rows remain in the journals |
+
+- [ ] **Step 21.4** `GateReportReaderTest` (each refusal above, the `0/0` and `40/40` reports among them, with the manifest size read from the committed file). `mvn -B -ntp -q install` (the jar gains the generation CLI, `--state` and the event-time replay), then the gate -> `assertions run 79 / expected 79`, exit 0; `--negative-control` list still empty. Commit `feat(cli): promotion bound to verified gate evidence; event-time replay generation; injections 20 and 23`. Pull request 5: Tasks 20-21 (3 commits); CI green. PR body: the lifecycle, the promotion policy (Open point 3), the gate line.
+
+## Chunk 7: Negative controls, CI, documentation, the step-3 gate (PR 6)
+
+Branch: `git switch -c test/step3-core-gate main` after PR 5 merged.
+
+### Task 22: The eight negative controls and the gate self-tests
+
+**Files:**
+- Modify: `core/src/main/java/dev/krillin/forseti/core/NegativeControls.java` (created in Task 10 with `NONE`; unchanged shape, now read by the code paths below), `Stage1`, `Stage2`, `ReferenceEngine` (composes the record from `--negative-control`), `CoreGate`, `oracle/src/forseti_oracle/stage1.py` (`--lenient`), `gate/core-negative-controls.json` (8), `gate/core-assertions.json` (+2 = 81)
+- Create: `cli/src/test/java/dev/krillin/forseti/cli/gate/NegativeControlsTest.java`
+
+The controls are flags the harness passes to the core (the core's `NegativeControls` record, `NONE` in production; `Stage1` and `Stage2` are constructed with it; core never references cli) or to the oracle. They prove the gate's assertions can fail (spec 655-667). A control run uses the same manifest and must exit 1 with its intended assertion in `failed`; `report.json.intendedFailures` lists the ids and CI checks the subset.
+
+| Control | Mutation | Intended failure |
+|---|---|---|
+| `processing-time` | the harness replaces every sample `sourceTs` and occupancy `eventTime` by the delivery sequence number before `decide` | `I-1` |
+| `drop-late` | the harness drops a beyond-horizon input without its `replay-required` disposition | `J-DISPOSITION-COVERAGE` (on `horizon-planned-late`, spec 660) |
+| `no-cascade` | stage 2 ignores basis revisions after a row exists | `I-18`, `J-BASIS-CURRENT` |
+| `lenient-oracle` | the oracle (`--lenient`) reports `provisional` visits as `complete` | `I-2`, `I-6` at the mandatory cuts |
+| `first-wins` | S7 keeps the visit with the earlier arrival delivery and retracts only the later one | `I-4` |
+| `station-granularity` | T5 uses the station's activity as the tool's | `I-16` |
+| `ignore-session-gap` | S8 adds no `session-gap` | `I-8` |
+| `wrong-rules-pin` | the harness writes `pins.rules.attribution.sha256` from another release while the body `rulesDigest` stays correct | the pins cross-check inside every `I-*` |
+
+- [ ] **Step 22.1** Implement the eight; `NegativeControlsTest`: each control through `CoreGate` in-process exits 1 and `failed` contains the intended id(s); an unlisted name exits 2; `drop-late` fails even though the remaining bodies match. Gate self-tests as assertions `G-SELF-OMITTED` (a manifest copy with one id removed from the registry -> exit 1 with `notRun`) and `G-SELF-MISSING-REPORT` (the report directory made read-only -> exit 1, a failure report written to stderr); both run inside the normal gate on a temp copy.
+
+- [ ] **Step 22.2** Locally, after `mvn -B -ntp -q install` (the jar gains the control code paths): `for c in processing-time drop-late no-cascade lenient-oracle first-wins station-granularity ignore-session-gap wrong-rules-pin; do java -jar cli/target/forseti.jar gate --engine core --negative-control $c --out build/gate-$c --python "$(command -v python)" >/dev/null; echo "$c -> $?"; done` -> each `-> 1`. Commit `feat(cli,oracle): the eight engine-independent negative controls and the gate self-tests`.
+
+### Task 23: Item 1 aggregate, CI, README and documentation, pull request 6
+
+**Files:**
+- Modify: `CoreGate` (`C-1`), `gate/core-assertions.json` (+1 = 82), `.github/workflows/ci.yml` (already loops the controls; add the step "Gate on a shared state, then promote through the CLI (end to end)" running `bash scripts/gate-then-promote.sh build/state-e2e build/gate-e2e "$(command -v python)"` right after the "Core gate" step, and the artifact of oracle diffs on failure; the step is added only now because the script, the generation CLI and `gate --state` exist from PR 5 on, so the workflows of PRs 1-4 never call anything built later: their steps are the ASCII and closure scripts of Task 2, the Maven build, the oracle tests, the gate of the manifest at that PR, the control loop over the controls file as it stands, and the seam test of Task 6), `README.md`; Create: `docs/CORE-GATE.md`, `docs/superpowers/plans/2026-11-09-forseti-step3-core-and-oracle.md` (this plan)
+
+- [ ] **Step 23.1** `C-1`: aggregate over every scenario of the gate: every compared cut matched the oracle (item 1, spec 562); `report.json` lists scenarios, cuts compared, rows compared, dispositions reconciled.
+
+- [ ] **Step 23.2** `README.md`: what forseti is (the spec's purpose in two sentences); the three regimes of Decision 16 as text (a), (b), (c) (spec 93); the module layout; how to run the core gate and the controls; the fixture provenance (`registry.lock.json`, `upstream/manifest.json`); the step-3 completion gate statement with `assertions run 82 / expected 82`; the pins; what the core scope does not establish (native event time, recovery, exactly-once, broker retention, transaction visibility, isolation, bridge classification, engine eligibility: steps 5-8). `docs/CORE-GATE.md`: the assertion ids with their spec rows (the table of this plan), the scenario list with sizes, the recording, journal and cut-log formats, the controls, the deferred obligations table. `bash scripts/check-ascii-names.sh` -> `product names: ASCII only`.
+
+- [ ] **Step 23.3** `scripts/gate-then-promote.sh <state> <out> <python>` (created in Task 21 with the `--state` flag; wired into CI here): registers nothing by hand, runs `forseti gate --engine core --state <state>`, selects the `horizon-planned-late` non-replay generation and its run record from the report (`state: shared`), runs `promote` without `--accept-scope` (must exit 1, `gate-report-scope`), then with `--accept-scope core` (must print `current`), then `generation list` must show `registered, replaying, verified, current` for that generation and the state's `head-floors/line2.json` must still read `headVersion 1`; any other outcome exits 1. This task adds the CI step that runs it after the normal gate (`.github/workflows/ci.yml`, step "Gate on a shared state, then promote through the CLI (end to end)"); Task 2's workflow does not contain it, so the CI of PRs 1-4 runs only what exists at each PR. Full run: `mvn -B -ntp install`; `python -m pytest -q oracle`; gate -> `assertions run 82 / expected 82`; eight controls -> exit 1 each with their intended failures; `bash scripts/check-dependency-closure.sh` -> clean. Commit `docs: README, core gate documentation and the step-3 plan; item 1 aggregate`.
+
+- [ ] **Step 23.4** Pull request 6: Tasks 22-23 (3 commits); CI green (`build`: tests, oracle, gate 82/82, eight controls; `bifrost-seam`; `windows`). PR body: the step-3 completion gate statement (spec row 3), the gate line, the engine-independent injection list and the deferred obligations with their steps, the remaining Open points, the gate wall time, the fixture provenance. After the merge the controller runs the Verification commands from `main` and retains the logs (spec 703).
+
+## Follow-up (after PR 6 merges; other repositories)
+
+1. **Tyr re-author PR** (Q3): both profile records of `fixtures/attribution-rule/{workspace,plc-stamped-workspace}.json` re-authored with `format.schemaSha256` = the digests in forseti's `fixtures/registry.lock.json` (`occupancySchemaSha256`, `incidentSchemaSha256`) and the incident `topic` `quality.incidents`; bundles rebuilt by `publication.build` and re-pinned; the Tyr plan's Open point 5 names this follow-up. Forseti's `fixtures/upstream` is then refreshed to the new Tyr bytes and `F-BINDING-SCHEMA-MISMATCH` switches its refusal fixture to a copy with the placeholder re-inserted (the refusal stays proven).
+2. **Bifrost copy PR**: `core/src/test/resources/mapping-fixtures/{tyr-attribution-impact,tyr-attribution-plc-stamped}` refreshed from the re-authored Tyr bundles (`MappingTyrAttributionRuleTest` unchanged), then forseti's `make_registry_fixture.py` re-run so `fixtures/registry*` derive from bytes identical to Tyr's and Bifrost's (the `repin` step becomes a no-op for the profiles and stays for `registry-next`'s rule bump).
+
+## Open points
+
+Everything the owner decided on 2026-11-09 (the split and PR order, Kafka Streams 4.2.2, the fixture arrangement of Q3, the interpretations written into the spec by Task 1, `forseti gate --engine core`, pytest, file-backed generation store and recovery control, horizon recordings built at gate time) is applied above and not repeated here. Four points remain; each carries a recommendation and its reason.
+
+1. **The rule change of `registry-next` (injection 20).** The plan bumps `line2-attribution` to `1.0.1` with `coverage.maxMissingPeriods` 3 -> 4 (and the impact rule to `1.0.1`). Recommendation: confirm this change. Reason: any observable change would do; this one changes no body of the baseline, so `I-20` tests the pins and the generation isolation, not a behaviour difference, which is what spec line 643 asks ("every row of that generation carries the new `rulesDigest`, no generation mixes rules"). If the owner prefers a behaviour-visible change (for example `maxBadShare`), `I-20` gains a body difference to assert and the script's `bump_rules` changes one line.
+2. **Gate runtime and CI layout.** Five horizon recordings of about 355k messages each are built, run and oracled per gate; 10-18 minutes are expected in CI. Recommendation: accept; if the measured time exceeds 15 minutes, split the `build` job into `gate-hand-made` and `gate-horizon` with the same jar and the manifest filtered by `pr`/scenario, both required. Reason: Decision 8 (line 60) forbids shortening the horizon; parallel jobs keep the requirement and the PR feedback time.
+3. **Promotion scope policy.** `promote` accepts a `core`-scope report only with the explicit flag `--accept-scope core`; the default requires scope `semantic` (steps 6-7). Recommendation: confirm the flag name and that step 3's Verification promotes one generation this way as evidence of the lifecycle. Reason: Decision 11 (line 72) requires the gate report digest without naming the gate; a core report must never impersonate the semantic gate of line 671, and an explicit flag keeps the local test environment's policy out of the business rows.
+4. **Two-station scenario shape against the three-station sim of step 4.** The scenarios use the fixtures' two stations and two nutrunners under Station1 (spec 714 names three stations for the sim). Recommendation: keep two stations in step 3 and extend the scenarios in step 5 when the sim exists, with names consistent with `Line2`. Reason: the fixtures prove the semantics on the governed rule that exists; a third station today would be an unverified guess at the sim, and the Tyr plan's Open point 7 already records the same choice for the contract fixtures.
+
+## Verification
+
+Run from the forseti repository root on `main` after the PR 6 merge (or on `test/step3-core-gate` before it), with Temurin 17, Maven, Python 3.13 and the sibling checkouts `../bifrost` (jar built) and `../tyr` at the refs of `fixtures/registry.lock.json`; every command must end as stated. The controller retains the console logs (spec 703).
+
+```bash
+git status --short                                        # empty
+git log --oneline 384933d..                               # Tasks 1-23 (about 31 commits over seven PRs)
+git diff --check 384933d...HEAD                           # nothing
+bash scripts/check-ascii-names.sh                         # product names: ASCII only
+bash scripts/check-dependency-closure.sh                  # dependency closure: clean
+file fixtures/registry/mappings/heads/line2.json schemas/*.json vectors/jcs-vectors.json | grep -c CRLF   # 0
+
+# 0. pins
+grep -n "jcs.version\|erdtman" pom.xml                    # io.github.erdtman / <jcs.version>1.1</jcs.version>
+grep -n "rfc8785\|pytest" oracle/pyproject.toml           # rfc8785==0.1.4, pytest==8.3.5
+java -version 2>&1 | head -1                              # 17.x (Temurin)
+python --version                                          # Python 3.13.x
+
+# 1. Java modules
+mvn -B -ntp install                                       # BUILD SUCCESS; core and cli: Failures: 0, Errors: 0, Skipped: 0 (BifrostSeamTest skipped only when the two env vars are unset)
+FORSETI_BIFROST_JAR=../bifrost/gates/target/bifrost-gates.jar FORSETI_TYR_FIXTURES=../tyr/fixtures/attribution-rule \
+  mvn -q -pl core -Dtest=BifrostSeamTest test             # Tests run: 1, Failures: 0 (a head Bifrost publishes now verifies with forseti's reader, at the fixed clock and at the real time)
+
+# 2. Oracle
+python -m pip install -e "oracle[dev]"
+python -m pytest -q oracle                                # all passed (about 119)
+
+# 3. The shared vector file on both sides, by hand
+python -I -c "import json;v=json.load(open('vectors/jcs-vectors.json'));print(len(v['vectors']),len(v['refusals']))"   # 9 8
+mvn -q -pl core -Dtest=CanonicalVectorsTest test          # Tests run: 4, Failures: 0
+
+# 4. Fixture provenance (Q3): Tyr's bytes untouched, forseti's registries derived
+python -I - <<'PY'
+import json,hashlib,pathlib
+up=json.load(open('fixtures/upstream/manifest.json'));root=pathlib.Path('fixtures/upstream')
+print('upstream files',len(up['files']),'mismatches',sum(hashlib.sha256((root/p).read_bytes()).hexdigest()!=h for p,h in up['files'].items()),'tyr',up['tyr'][:7])
+lock=json.load(open('fixtures/registry.lock.json'));root=pathlib.Path('fixtures/registry');nxt=pathlib.Path('fixtures/registry-next')
+print('registry files',len(lock['files']),'mismatches',sum(hashlib.sha256((root/p).read_bytes()).hexdigest()!=h for p,h in lock['files'].items()))
+print('registry-next files',len(lock['next']),'mismatches',sum(hashlib.sha256((nxt/p).read_bytes()).hexdigest()!=h for p,h in lock['next'].items()))
+print('occupancy schema', hashlib.sha256(open('schemas/occupancy-1.0.0.schema.json','rb').read()).hexdigest()==lock['occupancySchemaSha256'])
+print('tyr profile untouched', json.load(open('fixtures/upstream/bundle/data/incident-binding-0.json'))['topic']=='mfg.incidents')
+PY
+#   -> upstream files 98 mismatches 0 tyr <hash>; registry files 177 mismatches 0; registry-next files 219 mismatches 0; occupancy schema True; tyr profile untouched True
+python -I -c "import json,hashlib,pathlib;lock=json.load(open('fixtures/registry.lock.json'));r=pathlib.Path('fixtures/registry-upstream');print('registry-upstream files',len(lock['upstreamRegistry']),'mismatches',sum(hashlib.sha256((r/p).read_bytes()).hexdigest()!=h for p,h in lock['upstreamRegistry'].items()))"
+#   -> registry-upstream files 47 mismatches 0
+diff -r fixtures/upstream/bundle ../tyr/fixtures/attribution-rule/bundle && echo IDENTICAL   # IDENTICAL (at the pinned Tyr ref)
+
+# 5. The step-3 completion gate: without an engine, core equals the oracle on every engine-independent injection
+java -jar cli/target/forseti.jar gate --engine core --out build/gate --python "$(command -v python)"
+#   ... last line: assertions run 82 / expected 82        exit 0
+python -I -c "import json;r=json.load(open('build/gate/report.json'));print(r['exit'],r['scope'],r['assertionsRun'],r['assertionsExpected'],len(r['failed']),len(r['notRun']),r['pins']['jcs'])"
+#   -> 0 core 82 82 0 0 {'java': 'io.github.erdtman:java-json-canonicalization:1.1', 'python': 'rfc8785==0.1.4'}
+ls build/gate/diffs 2>/dev/null | wc -l                   # 0
+
+# 6. Every engine-independent negative control exits 1 for its intended assertion (theta non-transactional-output is steps 6-7)
+for c in processing-time drop-late no-cascade lenient-oracle first-wins station-granularity ignore-session-gap wrong-rules-pin; do
+  java -jar cli/target/forseti.jar gate --engine core --negative-control "$c" --out "build/gate-$c" --python "$(command -v python)" >/dev/null; rc=$?
+  python -I -c "import json;r=json.load(open('build/gate-$c/report.json'));print('$c ->',$rc,sorted(r['intendedFailures']),set(r['intendedFailures'])<=set(r['failed']))"
+done
+#   -> each line: <control> -> 1 [<ids>] True   (processing-time I-1; drop-late J-DISPOSITION-COVERAGE; no-cascade I-18,J-BASIS-CURRENT; lenient-oracle I-2,I-6;
+#      first-wins I-4; station-granularity I-16; ignore-session-gap I-8; wrong-rules-pin every I-*)
+java -jar cli/target/forseti.jar gate --engine core --negative-control no-such-control --out build/gate-x; echo "-> $?"   # -> 2 (usage), so the CI loop fails it
+
+# 7. The generation lifecycle and injection 23 by hand, outside the gate
+java -jar cli/target/forseti.jar recordings build --scenario fixtures/scenarios/horizon-planned-late.json --registry fixtures/registry --out build/recordings/horizon-planned-late
+java -jar cli/target/forseti.jar recordings verify --scenario fixtures/scenarios/horizon-planned-late.json --out build/recordings/horizon-planned-late   # lock matches, exit 0
+rm -rf build/state && java -jar cli/target/forseti.jar generation new --state build/state --mappings fixtures/registry/mappings --trusted-keys fixtures/trusted-keys.jsonl \
+  --stream line2 --rule line2-attribution@1.0.0 --recording build/recordings/horizon-planned-late
+#   -> {"generation":1,"status":"registered","rulesDigest":"<64 hex>",...}; build/state/head-floors/line2.json exists; build/state/recovery-control.jsonl has one declaration
+java -jar cli/target/forseti.jar run --engine core --recording build/recordings/horizon-planned-late --registry fixtures/registry \
+  --state build/state --generation 1 --out build/runs/planned-late-g1                      # runs from the pinned releaseEvidence; appends no generation row
+python -I -m forseti_oracle.cli all --recording build/recordings/horizon-planned-late --cuts build/runs/planned-late-g1/cuts.json --mappings fixtures/registry/mappings \
+  --release line2-rules@1.0.0 --rule line2-attribution@1.0.0 --definitions build/recordings/horizon-planned-late/manifest.json --out build/oracle/planned-late-g1
+python -I - <<'PY'
+import json
+cuts=json.load(open('build/runs/planned-late-g1/cuts.json'));last=cuts['cuts'][-1]['cutId']
+rows=json.load(open(f'build/oracle/planned-late-g1/cut-{last}/forseti.samples.json'))
+from collections import Counter
+print(Counter(f"{v['body']['state']}/{v['body']['reason']}" for v in rows.values() if v['body']['state']!='unattributed' or v['body']['reason']!='no-occupancy'))
+PY
+#   -> Counter({'attributed/None': <n>, 'replay-required/beyond-horizon': 1})
+java -jar cli/target/forseti.jar generation new --state build/state --mappings fixtures/registry/mappings --trusted-keys fixtures/trusted-keys.jsonl \
+  --stream line2 --rule line2-attribution@1.0.0 --recording build/recordings/horizon-planned-late      # generation 2
+java -jar cli/target/forseti.jar run --engine core --replay event-time --recording build/recordings/horizon-planned-late --registry fixtures/registry \
+  --state build/state --generation 2 --out build/runs/planned-late-g2
+ls build/runs/planned-late-g2/replay-recording/manifest.json                        # the materialized replay recording (source.replayOf = the original manifest digest)
+grep -c '"replayed"' build/runs/planned-late-g2/journals/forseti.samples/0.jsonl    # > 0
+grep -c 'beyond-horizon' build/runs/planned-late-g2/journals/forseti.samples/0.jsonl   # 0
+
+# the lifecycle through the CLI only: a gate run on this state (its report lists the state's generations and runs), then promote.
+# scripts/gate-then-promote.sh <state> <out> <python> (added in Task 21, run by CI as the end-to-end regression) performs exactly these lines
+# and exits 1 if any step refuses; the hand run below shows them one by one. The shared state's line2 floor stays at 1 throughout, because
+# F-GEN-FLOOR and I-20's registry-next generation run in isolated temporary states (Task 21.1).
+java -jar cli/target/forseti.jar gate --engine core --state build/state --out build/gate-state --python "$(command -v python)"   # assertions run 82 / expected 82; exit 0
+G=$(python -I -c "import json;r=json.load(open('build/gate-state/report.json'));print([g['generation'] for g in r['generations'] if g['scenario']=='horizon-planned-late' and not g.get('replay')][0])")
+R=$(python -I -c "import json;r=json.load(open('build/gate-state/report.json'));print([x['runRecord'] for x in r['runs'] if x['generation']==$G][0])")
+java -jar cli/target/forseti.jar generation promote --state build/state --mappings fixtures/registry/mappings --trusted-keys fixtures/trusted-keys.jsonl \
+  --generation "$G" --run "$R" --gate-report build/gate-state/report.json; echo "-> $?"   # -> 1 {"refusal":"gate-report-scope",...}  (a core report needs --accept-scope core)
+java -jar cli/target/forseti.jar generation promote --state build/state --mappings fixtures/registry/mappings --trusted-keys fixtures/trusted-keys.jsonl \
+  --generation "$G" --run "$R" --gate-report build/gate-state/report.json --accept-scope core   # {"generation":<G>,"status":"current","gateReportSha256":"<sha256 of report.json>",...}
+java -jar cli/target/forseti.jar generation list --state build/state | python -I -c "import json,sys;rows=[json.loads(l)['value'] for l in sys.stdin];print([(r['generation'],r['status']) for r in rows if r['generation']==$G])"
+#   -> [(<G>,'registered'),(<G>,'replaying'),(<G>,'verified'),(<G>,'current')]   (the hand-run generations 1 and 2 above stay registered: no row was written by run or by the gate)
+
+# 8. On GitHub: the seven PRs merged (docs, PR 1-6); main CI green (build with gate 82/82 and eight controls, bifrost-seam at the pinned refs, windows); the gate artifact `core-gate` attached to the last run
+```
+
+(On Windows under Git Bash, pass the jar, registry, recording and key paths through `cygpath -m` if `java` cannot open them, as Bifrost's gate scripts do; the controller machine's JDK 25 runs the jar too, but the recorded run should use Temurin 17 to match CI.)
+
+### Assertion coverage
+
+| Spec row | Assertion id(s) | PR |
+|---|---|---|
+| Decision 7, line 56 (as extended); line 596 (vector file in both suites) | `F-JCS-JAVA`, `F-JCS-PY`, `F-JCS-REFUSALS` | 1 |
+| Decision 4, lines 42-44, 192, 204 (`binding.schema-mismatch` on Tyr's bytes, Q3) | `F-SCHEMA-COPIES`, `F-UPSTREAM-UNTOUCHED`, `F-BINDING-SCHEMA-MISMATCH` | 1 |
+| Decision 14, line 84 (as extended); line 725 (a Bifrost-published head) | `F-HEAD-*`, `F-RELEASE-DIGEST`, `F-PAYLOAD-DIGEST`, `BifrostSeamTest` | 1 |
+| Decision 6 (line 52), lines 331, 412-452 (revisions, deletes, progress, ledgers) | `F-JOURNAL-REDUCERS`, `S-REVISIONS`, `S-PROGRESS`, `T-PROGRESS-TRACKER`, `T-DELETE`, `T-LEDGER-2`, `J-REVISION-CONTINUITY`, `J-NO-EQUAL-CONSECUTIVE`, `J-PROGRESS-ORDER` | 2, 3, 4 |
+| Decision 12 (line 76): pure decisions, `ProgressTracker` | `S-DETERMINISM`, `T-PROGRESS-TRACKER`, `J-W2-EQUALS-W1` | 2, 3, 4 |
+| Decision 11, lines 72, 540-553 (as extended) | `F-GEN-*`, `I-20`, `I-23` | 5 |
+| Injections 1-5, 7-11d, 25, 26 (lines 613-650) | `I-1` ... `I-26` as listed | 4 |
+| Injections 6, 10e, 11e; horizon scenarios (lines 592-594) | `I-6`, `I-10e`, `I-11e`, `J-AFTER-HORIZON-CUTS` | 4 |
+| Injection 23 (line 646) and the event-time replay | `I-23`, `C-2-REFERENCE` | 4, 5 |
+| Injections 12-19 (lines 635-642), H-cascade, H-tool | `T-SMOKE-INCIDENT`, `T-CASCADE`, `I-12` ... `I-19`, `J-BASIS-CURRENT` | 3, 4 |
+| H-gap (line 21), dispositions (lines 437-452) | `J-DISPOSITION-COVERAGE`, `I-17`, `I-25` | 4 |
+| H-pin (line 22), item 1 (line 562) | `C-1`, the pins cross-check in `Integrity`, `wrong-rules-pin` control | 4, 6 |
+| H-order (line 19), item 6 (line 567) | `I-1`, `I-11b`, `C-6-STAGE1`, `C-6-STAGE2`, `S-DETERMINISM` | 2, 4 |
+| H-need (line 26) | `I-11b` | 4 |
+| Item 2 (line 563) reference values | `C-2-REFERENCE` | 4 |
+| Step-3 `W1` formula (Task 1's line 588) | `S-W1`, `J-W1-FORMULA` | 2, 4 |
+| Negative controls alpha-iota except theta (lines 657-667) | the eight controls exit 1 with their intended failures | 6 |
+| Proving the gates run (line 671) | `assertions run N / expected N`, `G-SELF-OMITTED`, `G-SELF-MISSING-REPORT`, the CI control loop | 1, 6 |
