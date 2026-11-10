@@ -1,0 +1,6 @@
+# LF everywhere a text file is written; digested bytes are never normalised.
+* text=auto eol=lf
+fixtures/** -text
+vectors/** -text
+schemas/** -text
+core/src/main/resources/forseti/** -text
