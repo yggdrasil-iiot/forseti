@@ -14,11 +14,14 @@ import java.util.stream.Stream;
 import yggdrasil.forseti.core.Json;
 import yggdrasil.forseti.core.canon.Canonical;
 
-/** Scenario JSON -> recording directory, in its minimal form (Task 8): visits, continuous telemetry with the tail, one
- *  {@code session-up} per device, incidents, the {@code plc-identity} stamping, batches with deadline brackets, digests and the lock.
- *  Overlays other than {@code plc-identity} and the full ground truth are Task 16's. Times in a scenario are milliseconds from
- *  {@code T0}; everything written is epoch milliseconds. Nothing reads a clock, a random source, the environment or a platform path,
- *  so a rebuild writes the same bytes on every OS. */
+/** Scenario JSON -> recording directory: visits, continuous telemetry with the tail, sessions, occupancy, incidents, the injection
+ *  overlays ({@link Overlays}), batches with deadline brackets, digests, the ground truth ({@link GroundTruth}) and the lock.
+ *
+ *  <p>Two scenario forms. A scenario that carries its own {@code temporal} block is a Task 8 smoke scenario: it is built without a
+ *  registry and its {@code expected.json} keeps the minimal scope (the scenario's facts), so the committed smoke recordings stay byte for
+ *  byte what they are. Every other scenario reads its rule from the registry's release payload ({@code --registry}) and gets the full
+ *  ground truth. Times in a scenario are milliseconds from {@code T0}; everything written is epoch milliseconds. Nothing reads a clock,
+ *  a random source, the environment or a platform path, so a rebuild writes the same bytes on every OS. */
 public final class ScenarioBuilder {
     public static final String GENERATOR = "forseti recordings build 0.1.0";
     public static final int PARTITIONS = 6;
@@ -26,14 +29,16 @@ public final class ScenarioBuilder {
     static final long SERVER_DELAY_MS = 10, PUBLISH_DELAY_MS = 50, BRIDGE_DELAY_MS = 120, RECORD_DELAY_MS = 200;
     static final String OCCUPANCY_SOURCE = "mes-line2";
     static final String ARRIVING = "urn:epcglobal:cbv:bizstep:arriving", DEPARTING = "urn:epcglobal:cbv:bizstep:departing";
-    static final List<String> SUPPORTED_INJECTIONS = List.of("plc-identity");
+    static final Set<String> IDENTITY_METRICS = Set.of("UnitId", "VisitId", "VisitPresent");
 
     /** What a build produced: the counts the lock pins, and the lock itself. */
     public record Built(long messages, long samples, long sessions, long occupancy, long incidents, long cuts, ObjectNode lock) {}
 
     private record Visit(int index, String unit, String station, long enter, long leave, List<String> tools, long visitSeq) {}
-    private record Stamp(String station, List<String> equipment, String visitId, String unit, long from, long to) {}
+    private record Stamp(String station, List<String> equipment, String visitId, String unit, long from, long to, boolean closes) {}
     private record Item(String topic, int partition, String key, int batch, ObjectNode value) {}
+    private record Occ(ObjectNode value, long deliverAt, int order) {}
+    private record Due(String kind, String ref, String station, long at) {}
 
     private ScenarioBuilder() {}
 
@@ -44,13 +49,17 @@ public final class ScenarioBuilder {
         return scenario.resolveSibling(n.substring(0, n.length() - ".json".length()) + ".lock.json");
     }
 
-    public static Built build(Path scenarioFile, Path out) {
+    public static Built build(Path scenarioFile, Path out) { return build(scenarioFile, null, out); }
+
+    public static Built build(Path scenarioFile, Path registry, Path out) {
         byte[] raw;
         try { raw = Files.readAllBytes(scenarioFile); } catch (IOException e) { throw new UncheckedIOException(e); }
-        return build(Json.read(raw), Canonical.digestOf(raw), out);
+        return build(Json.read(raw), Canonical.digestOf(raw), registry, out);
     }
 
-    public static Built build(JsonNode s, String scenarioSha256, Path out) {
+    public static Built build(JsonNode s, String scenarioSha256, Path out) { return build(s, scenarioSha256, null, out); }
+
+    public static Built build(JsonNode s, String scenarioSha256, Path registry, Path out) {
         if (Json.safeLong(s.get("scenarioVersion"), "scenarioVersion", 1, 1) != 1) throw refuse("scenarioVersion");
         String name = Json.text(s, "name");
         String mode = Json.text(s, "mode");
@@ -63,9 +72,25 @@ public final class ScenarioBuilder {
         long from = Json.safeLong(s.get("telemetryFrom"), "telemetryFrom", Json.NON_NEGATIVE);
         long to = Json.safeLong(s.get("telemetryTo"), "telemetryTo", Json.NON_NEGATIVE);
         String edge = Json.text(s, "edge");
-        JsonNode temporal = s.path("temporal");
-        long oooMs = Json.safeLong(temporal.get("outOfOrdernessMs"), "temporal.outOfOrdernessMs", Json.NON_NEGATIVE);
-        long latenessMs = Json.safeLong(temporal.get("allowedLatenessMs"), "temporal.allowedLatenessMs", Json.NON_NEGATIVE);
+
+        // The rule's parameters: inline (Task 8 smoke form, minimal ground truth) or from the registry (full ground truth).
+        boolean full = !s.has("temporal");
+        GroundTruth.Rule rule = null;
+        long oooMs, latenessMs;
+        if (full) {
+            if (registry == null) throw refuse("scenario " + name + " reads its rule from the registry: pass --registry");
+            rule = GroundTruth.load(registry, s.path("rule"));
+            if (!rule.mode().equals(mode)) throw refuse("scenario mode " + mode + " differs from the rule's " + rule.mode());
+            oooMs = rule.ooo(); latenessMs = rule.lateness();
+        } else {
+            JsonNode temporal = s.path("temporal");
+            oooMs = Json.safeLong(temporal.get("outOfOrdernessMs"), "temporal.outOfOrdernessMs", Json.NON_NEGATIVE);
+            latenessMs = Json.safeLong(temporal.get("allowedLatenessMs"), "temporal.allowedLatenessMs", Json.NON_NEGATIVE);
+            if (registry != null) {
+                GroundTruth.Rule r = GroundTruth.load(registry, s.path("rule"));
+                if (r.ooo() != oooMs || r.lateness() != latenessMs) throw refuse("the scenario's temporal block differs from the pinned rule's");
+            }
+        }
         JsonNode timing = s.path("messageTiming");
         long serverDelay = optional(timing, "serverDelayMs", SERVER_DELAY_MS), publishDelay = optional(timing, "publishDelayMs", PUBLISH_DELAY_MS),
              bridgeDelay = optional(timing, "bridgeDelayMs", BRIDGE_DELAY_MS);
@@ -85,6 +110,7 @@ public final class ScenarioBuilder {
             if (parent == null) stations.add(d);
             stationOf.put(d, parent == null ? d : parent);
         }
+        if (full && !new TreeSet<>(rule.stations()).equals(new TreeSet<>(stations))) throw refuse("declared stations " + stations + " differ from the rule's " + rule.stations());
         ObjectNode routingNode = RoutingManifest.build(PARTITIONS, stations, stationOf);
         RoutingManifest routing = RoutingManifest.read(routingNode);
 
@@ -95,9 +121,13 @@ public final class ScenarioBuilder {
         BigDecimal tMax = decimal(toolActivity.path("torque").get("max"), "toolActivity.torque.max");
         if (tMin.compareTo(tMax) > 0) throw refuse("toolActivity.torque min > max");
 
+        Overlays ov = new Overlays(s.path("injections"), devices.keySet());
         List<Visit> visits = new ArrayList<>();
         int vi = 0;
-        for (JsonNode v : s.path("visits")) {
+        List<JsonNode> visitNodes = new ArrayList<>();
+        s.path("visits").forEach(visitNodes::add);
+        visitNodes.addAll(ov.overlapVisits);
+        for (JsonNode v : visitNodes) {
             vi++;
             String station = Json.text(v, "station");
             if (!stations.contains(station)) throw refuse("visit " + vi + " at an undeclared station " + station);
@@ -113,27 +143,37 @@ public final class ScenarioBuilder {
         }
 
         List<Stamp> stamps = new ArrayList<>();
-        ArrayNode overlays = Json.JSON.createArrayNode();
-        for (JsonNode inj : s.path("injections")) {
-            String type = Json.text(inj, "type");
-            if (!SUPPORTED_INJECTIONS.contains(type)) throw refuse("injection type " + type + " is not supported by the minimal builder");
+        for (JsonNode inj : ov.plcIdentity) {
             String station = Json.text(inj, "station");
             List<String> equipment = new ArrayList<>();
             inj.path("equipment").forEach(e -> equipment.add(e.asText()));
             for (String e : equipment) {
                 if (!devices.containsKey(e) || !stationOf.get(e).equals(station)) throw refuse("plc-identity equipment " + e);
-                for (String m : List.of("UnitId", "VisitId", "VisitPresent"))
+                for (String m : IDENTITY_METRICS)
                     if (!devices.get(e).path("members").has(m)) throw refuse("plc-identity equipment " + e + " declares no member " + m);
             }
             long pf = Json.safeLong(inj.path("present").get("from"), "present.from", Json.NON_NEGATIVE), pt = Json.safeLong(inj.path("present").get("to"), "present.to", Json.NON_NEGATIVE);
             if (pt <= pf) throw refuse("plc-identity present.to <= present.from");
-            stamps.add(new Stamp(station, List.copyOf(equipment), Json.text(inj, "visitId"), Json.text(inj, "unit"), pf, pt));
-            overlays.add(inj.deepCopy());
+            stamps.add(new Stamp(station, List.copyOf(equipment), Json.text(inj, "visitId"), Json.text(inj, "unit"), pf, pt, true));
+        }
+        for (Overlays.IdChange c : ov.idChanges) {
+            int i = indexOfStamp(stamps, c.station(), c.at());
+            Stamp st = stamps.get(i);
+            stamps.set(i, new Stamp(st.station(), st.equipment(), st.visitId(), st.unit(), st.from(), c.at(), false));
+            stamps.add(i + 1, new Stamp(st.station(), st.equipment(), c.newVisitId(), c.newUnit(), c.at(), st.to(), st.closes()));
+        }
+        for (Overlays.NoVisitEnd n : ov.noVisitEnds) {
+            int i = -1;
+            for (int j = 0; j < stamps.size(); j++) if (stamps.get(j).station().equals(n.station()) && stamps.get(j).visitId().equals(n.visitId())) i = j;
+            if (i < 0) throw refuse("no-visit-end names no stamped visit " + n.visitId());
+            Stamp st = stamps.get(i);
+            stamps.set(i, new Stamp(st.station(), st.equipment(), st.visitId(), st.unit(), st.from(), Long.MAX_VALUE, false));
         }
         if (mode.equals("plc-stamped") && stamps.isEmpty()) throw refuse("a plc-stamped scenario without plc-identity");
+        if (!mode.equals("plc-stamped") && (!ov.idChanges.isEmpty() || !ov.noVisitEnds.isEmpty() || !ov.mixed.isEmpty())) throw refuse("plc overlays on an occupancy-join scenario");
 
         // Incidents: revisions with their fields; closed tool-check-failed revision 1 must have suspectTo = detectedAt = revisionEventTime.
-        record Revision(String incidentId, long revision, long deliverAt, ObjectNode value, String equipmentRef, Long suspectTo) {}
+        record Revision(String incidentId, long revision, long deliverAt, ObjectNode value, String equipmentRef, String stationRef, Long suspectTo) {}
         List<Revision> revisions = new ArrayList<>();
         for (JsonNode inc : s.path("incidents")) {
             String id = Json.text(inc, "incidentId");
@@ -163,42 +203,82 @@ public final class ScenarioBuilder {
                 v.put("status", status);
                 v.put("evidenceRef", Json.text(f, "evidenceRef"));
                 v.put("source", Json.text(f, "source"));
-                revisions.add(new Revision(id, rev, deliverAt, v, equipmentRef, suspectTo));
+                revisions.add(new Revision(id, rev, deliverAt, v, equipmentRef, stationRef, suspectTo));
             }
         }
 
+        // Occupancy deliveries: the two events of every visit, then the overlays' re-sends, delays, removals and corrections.
+        List<Occ> occList = new ArrayList<>();
+        Map<String, Visit> visitOfEvent = new HashMap<>();
+        for (Visit v : visits) {
+            String a = "occ-" + (2 * v.index() - 1), d = "occ-" + (2 * v.index());
+            String unit = v.unit();
+            for (Overlays.CrossCheckMismatch m : ov.mismatches) if (m.station().equals(v.station()) && v.enter() < m.to() && m.from() < v.leave()) unit = m.otherUnit();
+            occList.add(new Occ(occupancyEvent(a, t0 + v.enter(), recordDelay, v, unit, ARRIVING, null, occSource), v.enter(), occList.size()));
+            occList.add(new Occ(occupancyEvent(d, t0 + v.leave(), recordDelay, v, unit, DEPARTING, a, occSource), v.leave(), occList.size()));
+            visitOfEvent.put(a, v); visitOfEvent.put(d, v);
+        }
+        applyOccupancyOverlays(ov, occList, visitOfEvent, t0, recordDelay);
+        occList.sort(Comparator.comparingLong(Occ::deliverAt).thenComparingLong(o -> o.value().get("eventTime").longValue())
+            .thenComparing(o -> o.value().get("eventId").textValue()).thenComparingInt(Occ::order));
+
         // The telemetry end: E = max(telemetryTo, lastBusinessEvent) + tailMs (one rule for every scenario, plan Task 16).
         long lastBusiness = 0;   // the session-up at T0
+        for (Occ o : occList) lastBusiness = Math.max(lastBusiness, Math.max(o.value().get("eventTime").longValue() - t0, o.deliverAt()));
         for (Visit v : visits) lastBusiness = Math.max(lastBusiness, v.leave());
-        for (Stamp st : stamps) lastBusiness = Math.max(lastBusiness, st.to());
+        for (Stamp st : stamps) lastBusiness = Math.max(lastBusiness, st.to() == Long.MAX_VALUE ? st.from() : st.to());
         for (Revision r : revisions) {
             lastBusiness = Math.max(lastBusiness, r.deliverAt());
             lastBusiness = Math.max(lastBusiness, r.value().get("detectedAt").longValue() - t0);
             lastBusiness = Math.max(lastBusiness, r.value().get("revisionEventTime").longValue() - t0);
         }
+        lastBusiness = Math.max(lastBusiness, ov.lastBusiness());
+        for (Overlays.HoldBack h : ov.holdBacks)   // the delivery of the last held scan
+            if (h.to() > from) lastBusiness = Math.max(lastBusiness, from + Math.floorDiv(h.to() - 1 - from, scanMs) * scanMs + h.delayMs());
+        List<String> horizonRefs = new ArrayList<>();
+        s.path("horizonDeadlines").forEach(h -> horizonRefs.add(h.asText()));
+        if (!full && !horizonRefs.isEmpty()) throw refuse("horizonDeadlines need the registry's horizonMs");
+        for (String ref : horizonRefs) lastBusiness = Math.max(lastBusiness, enterOf(ref, visits, stamps) + rule.horizon());
         long end = Math.max(to, lastBusiness) + tailMs;
         if (end < from || (end - from) % scanMs != 0) throw refuse("telemetry end " + end + " is not on the scan grid from " + from);
         long scans = (end - from) / scanMs + 1;
 
-        // Deadlines: settlement of every visit the rule evaluates (leave + L) and of every closed incident (suspectTo + L).
-        record Due(String kind, String ref, long at) {}
+        // Deadlines: settlement of every visit the rule evaluates (leave + L), every listed horizon (enter + H), and of every closed
+        // incident (suspectTo + L).
         List<Due> dues = new ArrayList<>();
-        if (mode.equals("occupancy-join")) for (Visit v : visits) dues.add(new Due("visit-settlement", "visit-" + v.index(), v.leave() + latenessMs));
-        else for (Stamp st : stamps) dues.add(new Due("visit-settlement", st.visitId(), st.to() + latenessMs));
+        if (mode.equals("occupancy-join")) {
+            if (!full) for (Visit v : visits) dues.add(new Due("visit-settlement", "visit-" + v.index(), v.station(), v.leave() + latenessMs));
+            else {
+                TreeMap<Integer, TreeSet<Long>> leaves = new TreeMap<>();
+                for (Occ o : occList) {
+                    ObjectNode x = o.value();
+                    if (!DEPARTING.equals(x.get("bizStep").asText()) || x.has("errorDeclaration")) continue;
+                    Visit v = visitOfEvent.get(x.get("arrivalEventId").asText());
+                    leaves.computeIfAbsent(v.index(), k -> new TreeSet<>()).add(x.get("eventTime").longValue() - t0);
+                }
+                leaves.forEach((i, ls) -> { for (long l : ls) dues.add(new Due("visit-settlement", "visit-" + i, visits.get(i - 1).station(), l + latenessMs)); });
+            }
+        } else for (Stamp st : stamps) if (st.closes()) dues.add(new Due("visit-settlement", st.visitId(), st.station(), st.to() + latenessMs));
+        for (String ref : horizonRefs) dues.add(new Due("visit-horizon", ref, stationOfRef(ref, visits, stamps), enterOf(ref, visits, stamps) + rule.horizon()));
         Map<String, Long> latestSuspectTo = new TreeMap<>();
         Map<String, Long> latestRevision = new TreeMap<>();
+        Map<String, String> incidentStation = new TreeMap<>();
         for (Revision r : revisions) if (r.revision() >= latestRevision.getOrDefault(r.incidentId(), 0L)) {
             latestRevision.put(r.incidentId(), r.revision());
+            incidentStation.put(r.incidentId(), r.stationRef());
             if (r.suspectTo() == null) latestSuspectTo.remove(r.incidentId()); else latestSuspectTo.put(r.incidentId(), r.suspectTo());
         }
-        latestSuspectTo.forEach((id, st) -> dues.add(new Due("incident-settlement", id, st + latenessMs)));
+        latestSuspectTo.forEach((id, st) -> dues.add(new Due("incident-settlement", id, incidentStation.get(id), st + latenessMs)));
 
-        // Batch boundaries (scan times): every batchMs, the two brackets of every deadline, the last scan.
+        // Batch boundaries (scan times): every batchMs, the two brackets of every deadline, the last scan. A shifted source clock moves
+        // the scan whose sourceTs reaches d + O.
         TreeSet<Long> bounds = new TreeSet<>();
         for (long b = from + batchMs; b <= end; b += batchMs) bounds.add(b);
         Map<Due, long[]> bracket = new LinkedHashMap<>();
         for (Due d : dues) {
-            long limit = d.at() + oooMs;
+            long shift = Long.MIN_VALUE;
+            for (String dev : devices.keySet()) if (stationOf.get(dev).equals(d.station())) shift = Math.max(shift, ov.shiftOf(dev));
+            long limit = d.at() + oooMs - (shift == Long.MIN_VALUE ? 0 : shift);
             if (limit < from) throw refuse("deadline " + d.ref() + " before the telemetry starts");
             long a = from + Math.floorDiv(Math.min(limit, end) - from, scanMs) * scanMs;
             long b = a + scanMs;
@@ -209,7 +289,7 @@ public final class ScenarioBuilder {
         bounds.add(end);
         List<Long> boundaries = new ArrayList<>(bounds);
 
-        // Records, in generation order per topic; each assigned to the batch of its event time (incidents: deliverAt).
+        // Records, in generation order per topic; each assigned to the batch of its delivery time.
         List<Item> items = new ArrayList<>();
         Map<String, String> definitionSha = new TreeMap<>();
         ObjectNode definitions = Json.object();
@@ -219,54 +299,86 @@ public final class ScenarioBuilder {
             definitionSha.put(d.getKey(), sha);
             definitions.putObject(d.getKey()).put("templateRef", model).put("version", "1.0.0").put("sha256", sha);
         }
-        for (String d : devices.keySet()) {
-            ObjectNode v = Json.object();
-            v.put("edge", edge);
-            v.put("device", d);
-            Json.putSafe(v, "birthPublishTs", t0);
-            Json.putSafe(v, "bdSeq", 0);
-            v.put("kind", "session-up");
-            Json.putSafe(v, "atSeq", 1);   // the DBIRTH, counted as having consumed seq 1 (spec Process messages)
-            ObjectNode p = v.putObject("payload");
-            Json.putSafe(p, "at", t0);
-            p.put("rebirth", false);
-            items.add(new Item("ot.sessions", routing.rawPartitionOf(d), d, batchOf(boundaries, 0, "session-up " + d), v));
+        for (String d : devices.keySet())
+            items.add(new Item("ot.sessions", routing.rawPartitionOf(d), d, batchOf(boundaries, 0, "session-up " + d), sessionEvent(edge, d, t0, 0, "session-up", 1, upPayload(t0))));
+        for (Occ o : occList) {
+            String rp = o.value().get("readPoint").textValue();
+            items.add(new Item("mfg.occupancy", routing.partitionOf(rp), rp, batchOf(boundaries, o.deliverAt(), o.value().get("eventId").textValue()), o.value()));
         }
-        List<ObjectNode> occupancy = new ArrayList<>();
-        for (Visit v : visits) {
-            occupancy.add(occupancyEvent("occ-" + (2 * v.index() - 1), t0 + v.enter(), recordDelay, v, ARRIVING, null, occSource));
-            occupancy.add(occupancyEvent("occ-" + (2 * v.index()), t0 + v.leave(), recordDelay, v, DEPARTING, "occ-" + (2 * v.index() - 1), occSource));
-        }
-        occupancy.sort(Comparator.comparingLong((ObjectNode o) -> o.get("eventTime").longValue()).thenComparing(o -> o.get("eventId").textValue()));
-        for (ObjectNode o : occupancy) {
-            String rp = o.get("readPoint").textValue();
-            items.add(new Item("mfg.occupancy", routing.partitionOf(rp), rp, batchOf(boundaries, o.get("eventTime").longValue() - t0, o.get("eventId").textValue()), o));
-        }
-        Map<String, Long> seq = new HashMap<>();
+
+        // Telemetry with its sessions: one session per device from T0, replaced where an overlay ends it.
+        final class Session { long birth = t0, bdSeq = 0, seq = 1, lastSeq = 1; Long lastTs; }
+        Map<String, Session> session = new HashMap<>();
+        devices.keySet().forEach(d -> session.put(d, new Session()));
+        List<Item> sessionItems = new ArrayList<>();
+        List<GroundTruth.Sample> gtSamples = new ArrayList<>();
+        Map<String, Integer> duplicates = new TreeMap<>();
+        Map<String, Long> seqTime = new HashMap<>();
+        Map<String, Long> maxTs = new TreeMap<>();
         long samples = 0;
         for (long i = 0; i < scans; i++) {
             long t = from + i * scanMs;
-            int batch = batchOf(boundaries, t, "scan " + t);
             for (Map.Entry<String, JsonNode> d : devices.entrySet()) {
                 String dev = d.getKey();
+                Session ss = session.get(dev);
+                // Session overlays in force at this scan.
+                boolean removed = false;
+                for (Overlays.SessionDown x : ov.downs) if (x.device().equals(dev)) {
+                    if (t == x.at()) sessionItems.add(new Item("ot.sessions", routing.rawPartitionOf(dev), dev, batchOf(boundaries, t, "session-down"),
+                        sessionEvent(edge, dev, ss.birth, ss.bdSeq, "session-down", ss.lastSeq, Json.putSafe(Json.object(), "from", t0 + (ss.lastTs == null ? t : ss.lastTs)).putNull("to"))));
+                    if (x.at() <= t && t < x.upAt()) removed = true;
+                    if (t == x.upAt()) { ss.birth = t0 + t; ss.bdSeq++; ss.seq = 1; addUp(sessionItems, routing, boundaries, edge, dev, ss.birth, ss.bdSeq, t, t0 + t); }
+                }
+                for (Overlays.SessionAmbiguous x : ov.ambiguous) if (x.device().equals(dev)) {
+                    if (t == x.detectedEventTime()) {
+                        ObjectNode p = Json.object();
+                        Json.putSafe(p, "detectedEventTime", t0 + x.detectedEventTime()); Json.putSafe(p, "rawPublishTs", t0 + x.rawPublishTs()); Json.putSafe(p, "bdSeq", x.bdSeq());
+                        p.put("payloadDigest", Canonical.digestOf(("ndeath:" + edge + ":" + dev + ":" + x.bdSeq()).getBytes(StandardCharsets.UTF_8)));
+                        sessionItems.add(new Item("ot.sessions", routing.rawPartitionOf(dev), dev, batchOf(boundaries, t, "session-ambiguous"),
+                            sessionEvent(edge, dev, ss.birth, ss.bdSeq, "session-ambiguous", ss.lastSeq, p)));
+                    }
+                    if (x.detectedEventTime() <= t && t < x.upAt()) removed = true;
+                    if (t == x.upAt()) { ss.birth = t0 + t; ss.bdSeq = x.bdSeq() + 1; ss.seq = 1; addUp(sessionItems, routing, boundaries, edge, dev, ss.birth, ss.bdSeq, t, t0 + t); }
+                }
+                for (Overlays.StaleDeath x : ov.staleDeaths) if (x.device().equals(dev) && t == x.detectedEventTime()) {
+                    ObjectNode p = Json.object();
+                    Json.putSafe(p, "detectedEventTime", t0 + x.detectedEventTime()); Json.putSafe(p, "rawPublishTs", t0 + x.rawPublishTs()); Json.putSafe(p, "bdSeq", x.bdSeq());
+                    p.put("payloadDigest", Canonical.digestOf(("ndeath:" + edge + ":" + dev + ":" + x.bdSeq()).getBytes(StandardCharsets.UTF_8)));
+                    sessionItems.add(new Item("ot.sessions", routing.rawPartitionOf(dev), dev, batchOf(boundaries, t, "stale-death"),
+                        sessionEvent(edge, dev, ss.birth, ss.bdSeq, "stale-death", ss.lastSeq, p)));
+                }
+                if (removed) continue;
+                long sq = ++ss.seq;   // first DDATA of a session carries seq 2
+                boolean gap = false;
+                for (Overlays.SessionGap g : ov.gaps) if (g.device().equals(dev) && ss.bdSeq == 0 && g.fromSeq() < sq && sq < g.toSeq()) gap = true;
+                if (gap) continue;
+                for (Overlays.SessionGap g : ov.gaps) if (g.device().equals(dev) && ss.bdSeq == 0 && sq == g.toSeq()) {
+                    ObjectNode p = Json.object();
+                    Json.putSafe(p, "from", seqTime.get(dev + "|" + g.fromSeq())); Json.putSafe(p, "to", t0 + t + ov.shiftOf(dev)); Json.putSafe(p, "missing", g.toSeq() - g.fromSeq() - 1);
+                    sessionItems.add(new Item("ot.sessions", routing.rawPartitionOf(dev), dev, batchOf(boundaries, t, "seq-gap"), sessionEvent(edge, dev, ss.birth, ss.bdSeq, "seq-gap", sq, p)));
+                }
                 boolean isStation = stationOf.get(dev).equals(dev);
-                long sq = seq.merge(dev, 1L, Long::sum) + 1;   // first DDATA of the session carries seq 2
+                long sourceTs = t0 + t + ov.shiftOf(dev);
+                seqTime.put(dev + "|" + sq, sourceTs);
                 ObjectNode v = Json.object();
                 v.put("edge", edge);
                 v.put("device", dev);
-                Json.putSafe(v, "birthPublishTs", t0);
-                Json.putSafe(v, "bdSeq", 0);
+                Json.putSafe(v, "birthPublishTs", ss.birth);
+                Json.putSafe(v, "bdSeq", ss.bdSeq);
                 Json.putSafe(v, "seq", sq);
                 Json.putSafe(v, "publishTs", t0 + t + publishDelay);
                 Json.putSafe(v, "bridgeReceivedAt", t0 + t + bridgeDelay);
                 v.put("definitionSha256", definitionSha.get(dev));
                 ArrayNode members = v.putArray("members");
-                boolean running = isStation ? stationOccupied(visits, dev, t) : toolRunning(visits, dev, t, startAfter, endBefore);
+                boolean running = isStation ? stationOccupied(visits, dev, t) : toolRunning(visits, dev, t, startAfter, endBefore) || ov.forcedActive(dev, t);
                 Stamp stamp = null, lastStamp = null;
                 for (Stamp st : stamps) if (st.equipment().contains(dev)) {
                     if (st.from() <= t && t < st.to()) stamp = st;
                     if (st.from() <= t && (lastStamp == null || st.from() > lastStamp.from())) lastStamp = st;
                 }
+                boolean mixed = ov.mixedSnapshot(dev, t);
+                int batch = batchOf(boundaries, ov.telemetryDeliverAt(dev, t), "scan " + t);
+                List<Object[]> memberFacts = new ArrayList<>();
                 Iterator<Map.Entry<String, JsonNode>> it = d.getValue().path("members").fields();
                 while (it.hasNext()) {
                     Map.Entry<String, JsonNode> m = it.next();
@@ -284,18 +396,43 @@ public final class ScenarioBuilder {
                         case "VisitPresent:Boolean" -> mo.put("value", stamp != null);
                         default -> throw refuse("device " + dev + " member " + metric + " " + type + " is not generated by the builder");
                     }
-                    Json.putSafe(mo, "uaStatusCode", 0);
-                    Json.putSafe(mo, "quality", 192);
-                    Json.putSafe(mo, "sourceTs", t0 + t);
+                    Long badCode = ov.badCode(dev, metric, t);
+                    Json.putSafe(mo, "uaStatusCode", badCode == null ? 0 : badCode);
+                    Json.putSafe(mo, "quality", badCode == null ? 192 : 0);
+                    long ts = mixed && IDENTITY_METRICS.contains(metric) ? sourceTs - scanMs : sourceTs;
+                    Json.putSafe(mo, "sourceTs", ts);
                     Json.putSafe(mo, "serverTs", t0 + t + serverDelay);
+                    memberFacts.add(new Object[] {metric, ts, badCode == null ? 0L : badCode, mo.get("value")});
                     samples++;
                 }
-                items.add(new Item("ot.messages", routing.rawPartitionOf(dev), dev, batch, v));
+                ss.lastSeq = sq;
+                ss.lastTs = t;
+                Item item = new Item("ot.messages", routing.rawPartitionOf(dev), dev, batch, v);
+                items.add(item);
+                maxTs.merge(dev, sourceTs, Math::max);
+                for (Object[] f : memberFacts) {
+                    String key = sampleKey(edge, dev, ss.birth, (String) f[0], ss.bdSeq, sq, t0 + t + publishDelay);
+                    gtSamples.add(new GroundTruth.Sample(key, dev, (String) f[0], (Long) f[1], (Long) f[2], (JsonNode) f[3], batch, !mixed,
+                        lastStamp == null ? "" : lastStamp.visitId(), lastStamp == null ? "" : lastStamp.unit(), stamp != null));
+                }
+                for (Overlays.Redeliver r : ov.redelivers) if ("ot.messages".equals(r.topic()) && r.device().equals(dev) && r.at() == t) {
+                    ObjectNode copy = v.deepCopy();
+                    Json.putSafe(copy, "bridgeReceivedAt", t0 + r.deliverAt() + bridgeDelay);
+                    items.add(new Item("ot.messages", routing.rawPartitionOf(dev), dev, batchOf(boundaries, r.deliverAt(), "redelivery"), copy));
+                    samples += members.size();
+                    for (Object[] f : memberFacts) duplicates.merge(sampleKey(edge, dev, ss.birth, (String) f[0], ss.bdSeq, sq, t0 + t + publishDelay), 1, Integer::sum);
+                }
             }
         }
+        for (Overlays.Redeliver r : ov.redelivers) if ("ot.messages".equals(r.topic()) && duplicates.isEmpty()) throw refuse("redeliver names no delivered message");
+        items.addAll(sessionItems);
         revisions.sort(Comparator.comparingLong(Revision::deliverAt).thenComparing(Revision::incidentId).thenComparingLong(Revision::revision));
         for (Revision r : revisions)
             items.add(new Item("quality.incidents", Murmur2.partition(r.equipmentRef(), PARTITIONS), r.equipmentRef(), batchOf(boundaries, r.deliverAt(), r.incidentId()), r.value()));
+
+        // The tail: every device's last delivered sourceTs at least tailMs after the last business event.
+        for (Map.Entry<String, Long> e : maxTs.entrySet())
+            if (e.getValue() - (t0 + lastBusiness) < tailMs) throw refuse("the tail of " + e.getKey() + " is shorter than tailMs " + tailMs);
 
         // Offsets per partition in batch order (stable: generation order inside a batch).
         Map<String, List<Item>> byPartition = new TreeMap<>();
@@ -311,6 +448,17 @@ public final class ScenarioBuilder {
         for (int p : routing.subscribed("ot.messages")) if (!byPartition.get("ot.messages/" + p).isEmpty() && byPartition.get("ot.messages/" + p).get(0).batch() == 0) firstPartitions.add(p);
         if (!firstPartitions.equals(new TreeSet<>(routing.subscribed("ot.messages"))))
             throw refuse("the first batch carries no telemetry on some subscribed raw partition (spec 406): " + firstPartitions);
+
+        // W1 per station after every batch (the reference harness's formula): largest delivered sourceTs routed to it - O - 1.
+        Map<String, long[]> w1 = new TreeMap<>();
+        for (String st : stations) { long[] a = new long[boundaries.size()]; Arrays.fill(a, Long.MIN_VALUE); w1.put(st, a); }
+        Set<String> routed = new TreeSet<>(devices.keySet());   // S1: only equipment of the rule's catalog is routed and advances W1
+        if (full) { routed.clear(); for (GroundTruth.Member m : rule.members()) routed.add(m.equipment()); }
+        for (Item it : items) if (it.topic().equals("ot.messages") && routed.contains(it.key())) {
+            long[] a = w1.get(stationOf.get(it.key()));
+            for (JsonNode m : it.value().path("members")) a[it.batch()] = Math.max(a[it.batch()], m.get("sourceTs").longValue() - oooMs - 1);
+        }
+        for (long[] a : w1.values()) for (int k = 1; k < a.length; k++) a[k] = Math.max(a[k], a[k - 1]);
 
         // Batches and deadlines.
         ArrayNode batches = Json.JSON.createArrayNode();
@@ -331,20 +479,23 @@ public final class ScenarioBuilder {
             b.putArray("idleInputs");
         }
         ArrayNode deadlines = Json.JSON.createArrayNode();
+        List<GroundTruth.Deadline> gtDeadlines = new ArrayList<>();
         long settleTarget = Long.MIN_VALUE;
         for (Map.Entry<Due, long[]> e : bracket.entrySet()) {
             Due d = e.getKey();
             int a = boundaries.indexOf(e.getValue()[0]), b = boundaries.indexOf(e.getValue()[1]);
-            // Every device reports every scan, so W1 at a cut is the cut's last scan - O - 1 at every station.
-            long w1a = boundaries.get(a) - oooMs - 1, w1b = boundaries.get(b) - oooMs - 1;
-            if (!(w1a < d.at() && d.at() <= w1b) || b != a + 1) throw new IllegalStateException("bracket of " + d.ref() + " does not hold");
+            long at = t0 + d.at();
+            long w1a = w1.get(d.station())[a], w1b = w1.get(d.station())[b];
+            if (!(w1a < at && at <= w1b) || b != a + 1)
+                throw refuse("the overlays leave deadline " + d.kind() + " " + d.ref() + " (" + at + ") without bracketing cuts: W1 " + w1a + ", " + w1b);
             ObjectNode o = deadlines.addObject();
             o.put("kind", d.kind());
             o.put("ref", d.ref());
-            Json.putSafe(o, "at", t0 + d.at());
+            Json.putSafe(o, "at", at);
             Json.putSafe(o, "cutA", a + 1);
             Json.putSafe(o, "cutB", b + 1);
-            settleTarget = Math.max(settleTarget, t0 + d.at());
+            gtDeadlines.add(new GroundTruth.Deadline(d.kind(), d.ref(), d.station(), at, a, b));
+            settleTarget = Math.max(settleTarget, at);
         }
         if (settleTarget == Long.MIN_VALUE) settleTarget = t0 + end - oooMs - 1;
 
@@ -365,7 +516,32 @@ public final class ScenarioBuilder {
             files.put(e.getKey() + ".jsonl", sb.toString().getBytes(StandardCharsets.UTF_8));
         }
         files.put(Recording.ROUTING, Json.pretty(routingNode));
-        files.put(Recording.EXPECTED, Json.pretty(expected(t0, visits, stamps, revisions.stream().map(Revision::incidentId).distinct().sorted().toList(), settleTarget)));
+        ObjectNode range = Json.object();
+        Map<String, long[]> evidence = new TreeMap<>();
+        for (String d : devices.keySet()) { ObjectNode r = range.putObject(d); Json.putSafe(r, "from", t0 + from); Json.putSafe(r, "to", t0 + end); evidence.put(d, new long[] {t0 + from, t0 + end}); }
+        ObjectNode expected;
+        if (!full) expected = expected(t0, visits, stamps, revisions.stream().map(Revision::incidentId).distinct().sorted().toList(), settleTarget);
+        else {
+            Map<String, GroundTruth.VisitFacts> facts = new HashMap<>();
+            if (mode.equals("occupancy-join")) for (Visit v : visits) facts.put("occ-" + (2 * v.index() - 1), new GroundTruth.VisitFacts("visit-" + v.index(), "occ-" + (2 * v.index() - 1), v.tools()));
+            else for (Stamp st : stamps) {
+                List<String> tools = List.of();
+                for (Visit v : visits) if (v.station().equals(st.station()) && v.enter() <= st.from() && st.from() < v.leave()) tools = v.tools();
+                facts.put(st.visitId(), new GroundTruth.VisitFacts(st.visitId(), null, tools));
+            }
+            List<GroundTruth.Delivery> occD = new ArrayList<>(), sesD = new ArrayList<>(), incD = new ArrayList<>();
+            for (Map.Entry<String, List<Item>> e : byPartition.entrySet()) for (Item it : e.getValue()) switch (it.topic()) {
+                case "mfg.occupancy" -> occD.add(new GroundTruth.Delivery(it.topic(), it.value(), it.batch()));
+                case "ot.sessions" -> sesD.add(new GroundTruth.Delivery(it.topic(), it.value(), it.batch()));
+                case "quality.incidents" -> incD.add(new GroundTruth.Delivery(it.topic(), it.value(), it.batch()));
+                default -> { }
+            }
+            Comparator<GroundTruth.Delivery> byBatch = Comparator.comparingInt(GroundTruth.Delivery::batch);
+            occD.sort(byBatch); sesD.sort(byBatch); incD.sort(byBatch);
+            expected = new GroundTruth(rule, occSource, stationOf, gtSamples, occD, sesD, incD, w1, boundaries.size(), facts, evidence, duplicates)
+                .expected(t0, gtDeadlines, settleTarget, null);
+        }
+        files.put(Recording.EXPECTED, Json.pretty(expected));
 
         ObjectNode manifest = Json.object();
         Json.putSafe(manifest, "recordingVersion", 1);
@@ -376,17 +552,18 @@ public final class ScenarioBuilder {
         source.put("scenarioSha256", scenarioSha256);
         source.put("generator", GENERATOR);
         Json.putSafe(source, "seed", seed);
-        source.set("overlays", overlays);
+        ArrayNode overlays = source.putArray("overlays");
+        ov.all.forEach(overlays::add);
         manifest.set("rule", s.path("rule").deepCopy());
         manifest.set("definitions", definitions);
         Json.putSafe(manifest, "T0", t0);
         Json.putSafe(manifest, "scanMs", scanMs);
-        ObjectNode range = manifest.putObject("evidenceRange");
-        for (String d : devices.keySet()) { ObjectNode r = range.putObject(d); Json.putSafe(r, "from", t0 + from); Json.putSafe(r, "to", t0 + end); }
+        manifest.set("evidenceRange", range);
         manifest.set("batches", batches);
         manifest.set("deadlines", deadlines);
         Json.putSafe(manifest, "settleTargetW", settleTarget);
         Json.putSafe(manifest, "tailMs", tailMs);
+        if (s.has("subscribed")) manifest.set("subscribe", s.get("subscribed").deepCopy());
         ObjectNode digests = manifest.putObject("digests");
         files.forEach((f, b) -> digests.put(f, Canonical.digestOf(b)));
         byte[] manifestBytes = Json.pretty(manifest);
@@ -411,6 +588,11 @@ public final class ScenarioBuilder {
         Json.putSafe(counts, "cuts", boundaries.size());
         ArrayNode fb = lock.putArray("firstBatchTelemetryPartitions");
         firstPartitions.forEach(fb::add);
+        if (!ov.holdBacks.isEmpty()) {
+            ArrayNode hb = lock.putArray("heldBack");
+            for (Overlays.HoldBack h : ov.holdBacks) { ObjectNode o = hb.addObject(); Json.putSafe(o, "from", h.from()); Json.putSafe(o, "to", h.to()); Json.putSafe(o, "delayMs", h.delayMs()); }
+        }
+        if (s.has("subscribed")) lock.set("subscribe", s.get("subscribed").deepCopy());
         ObjectNode lf = lock.putObject("files");
         TreeMap<String, String> all = new TreeMap<>();
         files.forEach((f, b) -> all.put(f, Canonical.digestOf(b)));
@@ -419,10 +601,113 @@ public final class ScenarioBuilder {
         return new Built(messages, samples, sessions, occCount, incidents, boundaries.size(), lock);
     }
 
+    private static void applyOccupancyOverlays(Overlays ov, List<Occ> occ, Map<String, Visit> visitOf, long t0, long recordDelay) {
+        Map<String, Occ> byId = new HashMap<>();
+        for (Occ o : occ) byId.put(o.value().get("eventId").textValue(), o);
+        java.util.function.Function<String, Occ> original = id -> {
+            Occ o = byId.get(id);
+            if (o == null) throw refuse("overlay names no occupancy event " + id);
+            return o;
+        };
+        for (Overlays.DelayOccupancy d : ov.delays) {
+            Occ o = original.apply(d.eventId());
+            Occ moved = new Occ(o.value(), d.deliverAt(), o.order());
+            occ.set(occ.indexOf(o), moved);
+            byId.put(d.eventId(), moved);
+        }
+        for (Overlays.Redeliver r : ov.redelivers) if ("mfg.occupancy".equals(r.topic())) {
+            ObjectNode v = original.apply(r.eventId()).value().deepCopy();
+            Json.putSafe(v, "recordTime", t0 + r.deliverAt() + recordDelay);
+            occ.add(new Occ(v, r.deliverAt(), occ.size()));
+        }
+        for (Overlays.ErrorDeclaration e : ov.declarations) {
+            ObjectNode v = original.apply(e.eventId()).value().deepCopy();
+            Json.putSafe(v, "recordTime", t0 + e.deliverAt() + recordDelay);
+            ObjectNode ed = v.putObject("errorDeclaration");
+            Json.putSafe(ed, "declarationTime", t0 + e.declarationTime());
+            ed.put("reason", e.reason());
+            ed.putArray("correctiveEventIDs");
+            occ.add(new Occ(v, e.deliverAt(), occ.size()));
+        }
+        for (Overlays.ResendDifferent r : ov.resends) {
+            ObjectNode v = Overlays.withField(original.apply(r.eventId()).value(), r.field(), r.value());
+            Json.putSafe(v, "recordTime", t0 + r.deliverAt() + recordDelay);
+            occ.add(new Occ(v, r.deliverAt(), occ.size()));
+        }
+        for (Overlays.LateCorrection l : ov.lateCorrections) {
+            ObjectNode dep = original.apply(l.departureEventId()).value();
+            if (!DEPARTING.equals(dep.get("bizStep").asText())) throw refuse("late-correction on an arrival " + l.departureEventId());
+            if (byId.containsKey(l.newDepartureEventId())) throw refuse("late-correction reuses the eventId " + l.newDepartureEventId());
+            ObjectNode decl = dep.deepCopy();
+            Json.putSafe(decl, "recordTime", t0 + l.deliverAt() + recordDelay);
+            ObjectNode ed = decl.putObject("errorDeclaration");
+            Json.putSafe(ed, "declarationTime", t0 + l.declarationTime());
+            ed.put("reason", Overlays.INCORRECT_DATA);
+            ed.putArray("correctiveEventIDs").add(l.newDepartureEventId());
+            occ.add(new Occ(decl, l.deliverAt(), occ.size()));
+            ObjectNode corr = dep.deepCopy();
+            corr.put("eventId", l.newDepartureEventId());
+            Json.putSafe(corr, "eventTime", t0 + l.newLeave());
+            Json.putSafe(corr, "recordTime", t0 + l.deliverAt() + recordDelay);
+            occ.add(new Occ(corr, l.deliverAt(), occ.size()));
+            visitOf.put(l.newDepartureEventId(), visitOf.get(l.departureEventId()));
+        }
+        for (String id : ov.noDeparture) {
+            Occ o = original.apply(id);
+            if (!DEPARTING.equals(o.value().get("bizStep").asText())) throw refuse("no-departure on an arrival " + id);
+            occ.removeIf(x -> x.value().get("eventId").textValue().equals(id));
+        }
+    }
+
+    private static int indexOfStamp(List<Stamp> stamps, String station, long at) {
+        for (int i = 0; i < stamps.size(); i++) if (stamps.get(i).station().equals(station) && stamps.get(i).from() < at && at < stamps.get(i).to()) return i;
+        throw refuse("id-change-without-false at " + at + " falls in no stamped visit");
+    }
+
+    private static long enterOf(String ref, List<Visit> visits, List<Stamp> stamps) {
+        for (Visit v : visits) if (("visit-" + v.index()).equals(ref)) return v.enter();
+        for (Stamp st : stamps) if (st.visitId().equals(ref)) return st.from();
+        throw refuse("horizonDeadlines names no visit " + ref);
+    }
+    private static String stationOfRef(String ref, List<Visit> visits, List<Stamp> stamps) {
+        for (Visit v : visits) if (("visit-" + v.index()).equals(ref)) return v.station();
+        for (Stamp st : stamps) if (st.visitId().equals(ref)) return st.station();
+        throw refuse("horizonDeadlines names no visit " + ref);
+    }
+
+    private static ObjectNode sessionEvent(String edge, String device, long birth, long bdSeq, String kind, long atSeq, ObjectNode payload) {
+        ObjectNode v = Json.object();
+        v.put("edge", edge);
+        v.put("device", device);
+        Json.putSafe(v, "birthPublishTs", birth);
+        Json.putSafe(v, "bdSeq", bdSeq);
+        v.put("kind", kind);
+        Json.putSafe(v, "atSeq", atSeq);   // session-up: the DBIRTH, counted as having consumed seq 1 (spec Process messages)
+        v.set("payload", payload);
+        return v;
+    }
+    private static ObjectNode upPayload(long at) {
+        ObjectNode p = Json.object();
+        Json.putSafe(p, "at", at);
+        p.put("rebirth", false);
+        return p;
+    }
+    /** A new session's {@code session-up} at scan time {@code t} (milliseconds from T0), {@code at} the same instant in epoch ms. */
+    private static void addUp(List<Item> l, RoutingManifest routing, List<Long> boundaries, String edge, String dev, long birth, long bdSeq, long t, long at) {
+        l.add(new Item("ot.sessions", routing.rawPartitionOf(dev), dev, batchOf(boundaries, t, "session-up"), sessionEvent(edge, dev, birth, bdSeq, "session-up", 1, upPayload(at))));
+    }
+
+    static String sampleKey(String edge, String device, long birth, String metric, long bdSeq, long seq, long publishTs) {
+        ObjectNode n = Json.object().put("edge", edge).put("device", device);
+        Json.putSafe(n, "birthPublishTs", birth).put("metric", metric);
+        Json.putSafe(n, "bdSeq", bdSeq); Json.putSafe(n, "seq", seq); Json.putSafe(n, "publishTs", publishTs);
+        return Canonical.utf8(Canonical.bytes(n));
+    }
+
     private static ObjectNode expected(long t0, List<Visit> visits, List<Stamp> stamps, List<String> incidents, long settleTarget) {
         ObjectNode e = Json.object();
         Json.putSafe(e, "expectedVersion", 1);
-        e.put("scope", "minimal");   // the scenario's facts only; Task 16's GroundTruth adds statuses, samples, dispositions, transitions
+        e.put("scope", "minimal");   // the scenario's facts only: a smoke scenario carries no full ground truth (its rule is inline)
         ArrayNode vs = e.putArray("visits");
         for (Visit v : visits) {
             ObjectNode o = vs.addObject();
@@ -451,12 +736,12 @@ public final class ScenarioBuilder {
         return e;
     }
 
-    private static ObjectNode occupancyEvent(String id, long time, long recordDelay, Visit v, String bizStep, String arrival, String source) {
+    private static ObjectNode occupancyEvent(String id, long time, long recordDelay, Visit v, String unit, String bizStep, String arrival, String source) {
         ObjectNode o = Json.object();
         o.put("eventId", id);
         Json.putSafe(o, "eventTime", time);
         Json.putSafe(o, "recordTime", time + recordDelay);
-        o.put("unitId", v.unit());
+        o.put("unitId", unit);
         o.put("action", "OBSERVE");
         o.put("bizStep", bizStep);
         o.put("readPoint", v.station());

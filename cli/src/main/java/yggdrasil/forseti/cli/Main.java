@@ -50,8 +50,8 @@ public final class Main {
     }
 
     private static int usage(PrintStream err) {
-        err.println("usage: forseti recordings build --scenario <file> --out <dir> [--lock]");
-        err.println("       forseti recordings verify --scenario <file> --out <dir>");
+        err.println("usage: forseti recordings build --scenario <file> --out <dir> [--registry <dir>] [--lock]");
+        err.println("       forseti recordings verify --scenario <file> --out <dir> [--registry <dir>]");
         err.println("       forseti gate --engine core [--out <dir>] [--python <interpreter>] [--negative-control <name>] [--seed <n>]");
         err.println("       forseti run --engine core --recording <dir> --registry <dir> --state <dir> --generation <n> --out <run dir>");
         err.println("                   [--seed <n>] [--shuffle] [--subscribe <topic>=<p,p>[;<topic>=<p,p>]] [--artifact-sha256 <hex>]");
@@ -114,9 +114,9 @@ public final class Main {
     }
 
     private static int build(Args f, PrintStream out) {
-        f.only(Set.of("scenario", "out", "lock"));
+        f.only(Set.of("scenario", "out", "registry", "lock"));
         Path scenario = Path.of(f.required("scenario")), dir = Path.of(f.required("out"));
-        ScenarioBuilder.Built b = ScenarioBuilder.build(scenario, dir);
+        ScenarioBuilder.Built b = ScenarioBuilder.build(scenario, f.get("registry").map(Path::of).orElse(null), dir);
         if (f.has("lock")) Json.write(ScenarioBuilder.lockOf(scenario).toAbsolutePath(), b.lock());
         out.println(summary(b));
         return 0;
@@ -125,14 +125,15 @@ public final class Main {
     /** Rebuilds the scenario into a temporary directory, compares it byte for byte with {@code --out}, and compares the rebuilt lock
      *  with the committed one; then opens {@code --out} and verifies its digests and batches. */
     private static int verify(Args f, PrintStream out, PrintStream err) {
-        f.only(Set.of("scenario", "out"));
+        f.only(Set.of("scenario", "out", "registry"));
         Path scenario = Path.of(f.required("scenario")), dir = Path.of(f.required("out"));
+        Path registry = f.get("registry").map(Path::of).orElse(null);
         Path tmp;
         try { tmp = Files.createTempDirectory("forseti-verify-"); } catch (IOException e) { throw new UncheckedIOException(e); }
         List<String> problems = new ArrayList<>();
         try {
             Path rebuilt = tmp.resolve("recording");
-            ScenarioBuilder.Built b = ScenarioBuilder.build(scenario, rebuilt);
+            ScenarioBuilder.Built b = ScenarioBuilder.build(scenario, registry, rebuilt);
             TreeMap<String, byte[]> want = files(rebuilt), have = files(dir);
             for (String k : want.keySet()) if (!have.containsKey(k)) problems.add("missing " + k);
             for (String k : have.keySet()) if (!want.containsKey(k)) problems.add("unexpected " + k);
