@@ -1,9 +1,13 @@
 package yggdrasil.forseti.core.journal;
 
 import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.node.ObjectNode;
 import java.util.HashMap;
+import java.util.Iterator;
 import java.util.Map;
 import java.util.Optional;
+import java.util.TreeMap;
+import yggdrasil.forseti.core.Json;
 import yggdrasil.forseti.core.canon.Canonical;
 
 /** Revision emission per (generation, logical key): a row is emitted only when its body digest differs from the last emitted one;
@@ -38,5 +42,33 @@ public final class Revisions {
         if (s == null || s.lastDigest() == null) throw new IllegalStateException("no live row to delete: " + k);
         g.put(k, new State(s.lastRevision() + 1, null));
         return new Emission(s.lastRevision() + 1, s.lastDigest());
+    }
+
+    /** The emission state as JSON, for the adapters' state stores: {@code {"<generation>": {"<canonical key>": {revision, digest}}}}
+     *  with generations and keys in sorted order, so equal states serialize to equal bytes. */
+    public ObjectNode toJson() {
+        ObjectNode n = Json.object();
+        new TreeMap<>(byGeneration).forEach((g, keys) -> {
+            ObjectNode gn = n.putObject(Long.toString(g));
+            new TreeMap<>(keys).forEach((k, st) -> {
+                ObjectNode e = Json.putSafe(gn.putObject(k), "revision", st.lastRevision());
+                e.put("digest", st.lastDigest());
+            });
+        });
+        return n;
+    }
+
+    public static Revisions fromJson(JsonNode n) {
+        Revisions r = new Revisions();
+        for (Iterator<Map.Entry<String, JsonNode>> gs = n.fields(); gs.hasNext();) {
+            Map.Entry<String, JsonNode> g = gs.next();
+            Map<String, State> keys = r.generation(Long.parseLong(g.getKey()));
+            for (Iterator<Map.Entry<String, JsonNode>> ks = g.getValue().fields(); ks.hasNext();) {
+                Map.Entry<String, JsonNode> k = ks.next();
+                JsonNode d = k.getValue().get("digest");
+                keys.put(k.getKey(), new State(Json.safeLong(k.getValue().get("revision"), "revision", Json.NON_NEGATIVE), d == null || d.isNull() ? null : d.textValue()));
+            }
+        }
+        return r;
     }
 }
