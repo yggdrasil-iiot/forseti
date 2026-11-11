@@ -90,6 +90,36 @@
       "id": "F-BINDING-SCHEMA-MISMATCH",
       "pr": 1,
       "description": "on fixtures/registry-mismatch the head verifies and the release reads, then RuleSet.load is refused with binding.schema-mismatch (approved 0000000000000000000000000000000000000000000000000000000000000001)"
+    },
+    {
+      "id": "S-SMOKE-VISIT",
+      "pr": 2,
+      "description": "the harness on fixtures/recordings/smoke: one work record (occupancy-join, occ-1) complete at the last cut, 5684 sample row keys (4060 messages x their members), samplesDigest e518a18ba8c533fb5e3fb00529aaf1ebff54d67a07c810a5012f7fe1a926096f, provisional at the cut ending at scan T0 + 1410000 and complete at the next cut, ending at scan T0 + 1411000"
+    },
+    {
+      "id": "S-SMOKE-PLC",
+      "pr": 2,
+      "description": "the harness on fixtures/recordings/smoke-plc: one complete visit keyed by visitRef mode plc-stamped (urn:line2:visits, station1, V1), readPoint the station path"
+    },
+    {
+      "id": "S-REVISIONS",
+      "pr": 2,
+      "description": "on both recordings, every journal partition folded by JournalFold through the last cut: revisions contiguous from 1 per key, no equal consecutive digests, no delete mismatch, no row after its cut's progress"
+    },
+    {
+      "id": "S-PROGRESS",
+      "pr": 2,
+      "description": "on both recordings, work-records and samples carry one progress per cut after the cut's rows (stamped with its W1, triggered inside its offsets or by a due timer); station and partition-6 ledger progress per cut; admissionW equals the previous W1; initEvidence only on the first progress"
+    },
+    {
+      "id": "S-W1",
+      "pr": 2,
+      "description": "on both recordings, W1 in cuts.json and in both progress topics equals max routed telemetry sourceTs - outOfOrdernessMs - 1, never decreasing, at every cut and station"
+    },
+    {
+      "id": "S-DETERMINISM",
+      "pr": 2,
+      "description": "on both recordings, the default run and two --shuffle runs with seeds 7 and 20261110: journal and quarantine lines equal once value.envelope.pins.job.runId is removed, cuts.json equal byte for byte, run.json equal but for runId, pins.job.runId, seed, shuffle and command"
     }
   ]
 }

@@ -60,12 +60,13 @@ class CoreGateTest {
 
     @Test void everyManifestIdHasARegisteredAssertion() {
         List<String> manifest = manifestIds(MANIFEST), registered = registeredIds();
-        assertEquals(18, manifest.size());
+        assertEquals(24, manifest.size());
         assertEquals(manifest.size(), new HashSet<>(manifest).size(), "no id twice in the manifest");
         assertEquals(registered.size(), new HashSet<>(registered).size(), "no id registered twice");
         assertEquals(new TreeSet<>(manifest), new TreeSet<>(registered), "every manifest id is registered and every registered id is in the manifest");
         for (JsonNode a : Json.read(MANIFEST).path("assertions")) {
-            assertEquals(1, a.path("pr").asInt(), a.toString());
+            assertEquals(a.path("id").asText().startsWith("F-") ? 1 : 2, a.path("pr").asInt(), a.toString());
+            assertTrue(a.path("id").asText().matches("[FS]-[A-Z0-9-]+"), a.toString());
             assertFalse(a.path("description").asText().isBlank(), a.toString());
         }
     }
@@ -76,7 +77,9 @@ class CoreGateTest {
         Run r = run(manifest, checks);
         assertEquals(List.of(), r.list("failed"), String.join("\n", r.lines()));
         assertEquals(0, r.exit());
-        assertEquals("assertions run 14 / expected 14", r.last());
+        assertEquals("assertions run 20 / expected 20", r.last());
+        for (String id : List.of("S-SMOKE-VISIT", "S-SMOKE-PLC", "S-REVISIONS", "S-PROGRESS", "S-W1", "S-DETERMINISM"))
+            assertTrue(r.lines().stream().anyMatch(l -> l.startsWith("PASS " + id + " ")), id + " in " + r.lines());
     }
 
     @Test void anAssertionNotRunFailsTheGate() throws Exception {
@@ -85,10 +88,10 @@ class CoreGateTest {
         assertEquals(1, r.exit());
         assertEquals(List.of("F-NOT-REGISTERED"), r.list("notRun"));
         assertEquals(List.of(), r.list("failed"));
-        assertEquals("assertions run 18 / expected 19", r.last());
+        assertEquals("assertions run 24 / expected 25", r.last());
         assertEquals(1, r.report().path("exit").asInt());
-        assertEquals(19, r.report().path("assertionsExpected").asInt());
-        assertEquals(18, r.report().path("assertionsRun").asInt());
+        assertEquals(25, r.report().path("assertionsExpected").asInt());
+        assertEquals(24, r.report().path("assertionsRun").asInt());
     }
 
     @Test void anUnknownAssertionFailsTheGate() {
@@ -98,7 +101,7 @@ class CoreGateTest {
         assertEquals(1, r.exit());
         assertEquals(List.of("F-UNKNOWN"), r.list("failed"));
         assertEquals(List.of(), r.list("notRun"));
-        assertEquals("assertions run 18 / expected 18", r.last());
+        assertEquals("assertions run 24 / expected 24", r.last());
 
         List<Check> twice = new ArrayList<>(holding());
         twice.add(new Check("F-JCS-JAVA", c -> new Result(true, "a second run of one id")));
@@ -113,7 +116,7 @@ class CoreGateTest {
         Run r = run(MANIFEST, checks);
         assertEquals(1, r.exit());
         assertEquals(List.of(checks.get(3).id()), r.list("failed"));
-        assertEquals("assertions run 18 / expected 18", r.last());
+        assertEquals("assertions run 24 / expected 24", r.last());
     }
 
     @Test void aCrashStillWritesAFailureReport() throws Exception {
@@ -135,17 +138,17 @@ class CoreGateTest {
         assertEquals(1, missing.exit());
         Set<String> wantFailed = new TreeSet<>(registeredIds());
         wantFailed.removeAll(NEEDS_PYTHON);
-        wantFailed.remove("F-JOURNAL-REDUCERS");   // inline journals: the one foundation assertion that reads no file
+        wantFailed.remove("F-JOURNAL-REDUCERS");   // inline journals: the one assertion that reads no file
         assertEquals(wantFailed, new TreeSet<>(missing.list("failed")), missing.lines().toString());
         assertEquals(new TreeSet<>(NEEDS_PYTHON), new TreeSet<>(missing.list("notRun")));
-        assertEquals("assertions run 14 / expected 18", missing.last());
+        assertEquals("assertions run 20 / expected 24", missing.last());
         assertTrue(missing.report().path("fixtureDigests").path("registry").isNull());
     }
 
     @Test void theReportRecordsPinsAndDigests() throws Exception {
         Run r = run(MANIFEST, holding());
         assertEquals(0, r.exit());
-        assertEquals("assertions run 18 / expected 18", r.last());
+        assertEquals("assertions run 24 / expected 24", r.last());
         JsonNode rep = r.report();
         List<String> fields = new ArrayList<>();
         rep.fieldNames().forEachRemaining(fields::add);
@@ -153,8 +156,8 @@ class CoreGateTest {
         assertEquals("core", rep.path("scope").asText());
         assertEquals("core", rep.path("engine").asText());
         assertEquals(Canonical.digestOf(Files.readAllBytes(MANIFEST)), rep.path("manifestSha256").asText());
-        assertEquals(18, rep.path("assertionsExpected").asInt());
-        assertEquals(18, rep.path("assertionsRun").asInt());
+        assertEquals(24, rep.path("assertionsExpected").asInt());
+        assertEquals(24, rep.path("assertionsRun").asInt());
         assertEquals(20261109L, rep.path("seed").asLong());
         assertEquals("io.github.erdtman:java-json-canonicalization:1.1", rep.path("pins").path("jcs").path("java").asText());
         assertTrue(rep.path("pins").has("python") && rep.path("pins").path("jcs").has("python"));

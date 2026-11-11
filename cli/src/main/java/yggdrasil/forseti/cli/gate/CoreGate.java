@@ -37,7 +37,9 @@ public final class CoreGate {
     static final Map<String, List<String>> IMPLEMENTED_CONTROLS = Map.of();
 
     public static List<Check> registered() {
-        return Foundation.checks();
+        List<Check> all = new ArrayList<>(Foundation.checks());
+        all.addAll(Stage1Assertions.checks());
+        return List.copyOf(all);
     }
 
     public record Options(Path root, Path manifest, Path out, String python, String negativeControl, List<String> intendedFailures,
@@ -48,11 +50,21 @@ public final class CoreGate {
         final Path root, tmp, logs;
         final String python;
         private int dirs;
+        private final Map<String, Object> memo = new HashMap<>();
         Context(Path root, Path tmp, Path logs, String python) { this.root = root; this.tmp = tmp; this.logs = logs; this.python = python; }
         public Path path(String relative) { return root.resolve(relative); }
         public Path fixtures() { return root.resolve("fixtures"); }
         /** A new empty directory under the gate's temporary directory. */
         public Path newDir(String name) throws IOException { return Files.createDirectories(tmp.resolve(name + "-" + dirs++)); }
+        /** The value {@code make} computes, made once per gate run and shared by the assertions that ask for {@code key} (a harness run,
+         *  say); a computation that throws is not kept, so the next assertion that asks makes it again and reports its own failure. */
+        @SuppressWarnings("unchecked")
+        public <T> T memo(String key, java.util.concurrent.Callable<T> make) throws Exception {
+            if (memo.containsKey(key)) return (T) memo.get(key);
+            T v = make.call();
+            memo.put(key, v);
+            return v;
+        }
         /** Runs {@code <python> -I <args...>} from the repository root; output goes to {@code <out>/logs/<log>.log}. */
         public Proc python(String log, String... args) throws IOException, InterruptedException {
             List<String> cmd = new ArrayList<>(List.of(python, "-I"));
