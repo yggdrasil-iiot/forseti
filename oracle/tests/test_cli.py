@@ -105,3 +105,52 @@ def test_the_module_runs_isolated_as_the_gate_launches_it():
                         "--release", "line2-rules@1.0.0", "--rule", "line2-attribution@1.0.0"],
                        capture_output=True, text=True, cwd=ROOT, timeout=120)
     assert (p.returncode, p.stdout.strip()) == (0, DIGESTS[0][3])
+
+
+def _cut_log(rec, n):
+    """A cut log for the first n batches of a recording with the harness formulas (W1 per station, admissionW the previous W1)."""
+    from forseti_oracle import cuts as cutlog, recording as recmod, rules as rulemod
+    rs = rulemod.rule_set(rulemod.load_release(REGISTRY, "line2-rules", "1.0.0"), "line2-attribution", "1.0.0")
+    h = cutlog.formula_history(rec, rs, 30_000)
+    throughs = cutlog.through_offsets(rec)
+    out = []
+    for i, c in enumerate(h.cuts[:n]):
+        ranges = {t: {str(p): [cutlog.selected(throughs[i], throughs[i - 1] if i else None, t, p).start,
+                               cutlog.selected(throughs[i], throughs[i - 1] if i else None, t, p).stop] for p in rec.subscribed(t)}
+                  for t in recmod.TOPICS}
+        out.append({"cutId": c.cut_id, "perStation": {s: {"W1": v.w1, "admissionW": v.admission_w, "W2": v.w1, "mergedCutIds": [],
+                                                           "onlineVisits": 0} for s, v in c.per_station.items()},
+                    "offsetRanges": ranges, "incidentOffsets": []})
+    return {"generation": 1, "routingDigest": rec.routing["routingDigest"], "cuts": out}
+
+
+def test_all_writes_every_cut_of_the_cut_log(tmp_path):
+    from forseti_oracle import recording as recmod
+    smoke = ROOT / "fixtures" / "recordings" / "smoke-incident"
+    rec = recmod.open_recording(smoke)
+    (tmp_path / "cuts.json").write_text(json.dumps(_cut_log(rec, 3)))
+    code, out, err = run(["all", "--recording", str(smoke), "--cuts", str(tmp_path / "cuts.json"), "--mappings", str(REGISTRY),
+                          "--release", "line2-rules@1.0.0", "--rule", "line2-attribution@1.0.0", "--definitions", str(smoke / "manifest.json"),
+                          "--out", str(tmp_path / "out")])
+    assert (code, err) == (0, ""), err
+    assert out.startswith("cuts 3, rows ")
+    names = sorted(p.name for p in (tmp_path / "out" / "cut-3").iterdir())
+    assert names == ["dispositions-stage1.json", "dispositions-stage2.json", "forseti.affected-sets.json", "forseti.affected.json",
+                     "forseti.samples.json", "forseti.work-records.json"]
+    wr = json.loads((tmp_path / "out" / "cut-3" / "forseti.work-records.json").read_text())
+    (v,) = wr.values()
+    assert v["body"]["status"] == "provisional" and len(v["bodyDigest"]) == 64
+    meta = json.loads((tmp_path / "out" / "oracle-run.json").read_text())
+    assert meta["cuts"] == [1, 2, 3] and meta["rulesDigest"] == "de19f15a65f26fa6d75813c1f834df5c6b3a2b335f32e002e9ee6e97a929ab6a"
+
+
+def test_all_refuses_a_cut_log_that_differs_from_the_batches(tmp_path):
+    from forseti_oracle import recording as recmod
+    smoke = ROOT / "fixtures" / "recordings" / "smoke-incident"
+    doc = _cut_log(recmod.open_recording(smoke), 2)
+    doc["cuts"][1]["offsetRanges"]["ot.messages"]["1"] = [0, 1]
+    (tmp_path / "cuts.json").write_text(json.dumps(doc))
+    code, out, err = run(["stage1", "--recording", str(smoke), "--cuts", str(tmp_path / "cuts.json"), "--mappings", str(REGISTRY),
+                          "--release", "line2-rules@1.0.0", "--rule", "line2-attribution@1.0.0", "--definitions", str(smoke / "manifest.json"),
+                          "--out", str(tmp_path / "out")])
+    assert code == 1 and "offsetRanges" in err
