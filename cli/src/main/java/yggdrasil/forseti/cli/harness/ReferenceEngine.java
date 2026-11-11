@@ -20,6 +20,7 @@ import yggdrasil.forseti.core.generation.Generation;
 import yggdrasil.forseti.core.generation.GenerationStore;
 import yggdrasil.forseti.core.input.InputParser;
 import yggdrasil.forseti.core.input.Inputs;
+import yggdrasil.forseti.core.journal.Delete;
 import yggdrasil.forseti.core.journal.Disposition;
 import yggdrasil.forseti.core.journal.Pins;
 import yggdrasil.forseti.core.journal.Progress;
@@ -31,14 +32,21 @@ import yggdrasil.forseti.core.rules.RuleSet;
 import yggdrasil.forseti.core.stage1.QuarantineRecord;
 import yggdrasil.forseti.core.stage1.Routing;
 import yggdrasil.forseti.core.stage1.Stage1;
+import yggdrasil.forseti.core.stage2.Incidents;
+import yggdrasil.forseti.core.stage2.ProgressTracker;
+import yggdrasil.forseti.core.stage2.SetCoverage;
+import yggdrasil.forseti.core.stage2.Stage2;
 
-/** The engine-independent reference adapter of stage 1 ({@code forseti run --engine core}). It owns only the adapter duties of
- *  Decision 12: partitioning (S1 routing to a {@link StationTask} or the {@link RejectCollector}), timers, state, side outputs and sinks;
- *  every judgement is {@link Stage1#decide}'s. It runs a registered generation from its pinned snapshot: it reads the generation row,
+/** The engine-independent reference adapter of stages 1 and 2 ({@code forseti run --engine core}). It owns only the adapter duties of
+ *  Decision 12: partitioning (S1 routing to a {@link StationTask} or the {@link RejectCollector}, T1 routing of incidents to a
+ *  {@link Stage2Task} or the stage-2 reject collector), timers, state, side outputs and sinks; every judgement is {@link Stage1#decide}'s
+ *  or {@link Stage2#decide}'s. It runs a registered generation from its pinned snapshot: it reads the generation row,
  *  rebuilds the head from {@code releaseEvidence} and lets {@link ReleaseReader} verify {@code release.json} and every payload file against
  *  those digests; it never verifies a head and never writes a generation row. Per batch of the recording it delivers the records of
  *  {@code (throughOffsets[k-1], throughOffsets[k]]} of every subscribed stage-1 partition, closes the cut at every station and the reject
- *  collector, and writes the journals, the cut log and the run record. */
+ *  collector, then runs stage 2 of the cut at every station on what stage 1 wrote to its partition (rows, deletes, the two progress
+ *  records) and the incidents of {@code (throughOffsets[k-1], throughOffsets[k]]} routed to it, closes the stage-2 reject collector, and
+ *  writes the journals, the cut log and the run record. */
 public final class ReferenceEngine {
     private ReferenceEngine() {}
 
@@ -135,9 +143,26 @@ public final class ReferenceEngine {
         Map<String, StationTask> tasks = new LinkedHashMap<>();
         for (String s : stations) tasks.put(s, new StationTask(stage1, g.generation(), s, routing.partitionOf(s), oo, pins, initEvidence(o.state(), g.generation())));
         RejectCollector rejects = new RejectCollector(g.generation(), initEvidence(o.state(), g.generation()));
+        // stage 2: one writer per station sharing one progress tracker, the stage-2 reject collector (partition 6, no initEvidence)
+        Stage2 stage2 = new Stage2(rules, NegativeControls.NONE);
+        ProgressTracker tracker = new ProgressTracker();
+        Map<String, SetCoverage.EvidenceRange> evidenceRanges = new TreeMap<>();
+        rec.evidenceRange().forEach((d, r) -> evidenceRanges.put(d, new SetCoverage.EvidenceRange(r.from(), r.to())));
+        Map<String, Stage2Task> tasks2 = new LinkedHashMap<>();
+        for (String s : stations) tasks2.put(s, new Stage2Task(stage2, tracker, g.generation(), s, routing.partitionOf(s), pins, evidenceRanges));
+        RejectCollector rejects2 = new RejectCollector(g.generation(), 2, null);
+        List<Integer> incidentPartitions = routing.subscribed(InputParser.INCIDENTS);
+        if (!incidentPartitions.equals(List.of(0, 1, 2, 3, 4, 5)))
+            throw new IllegalArgumentException("malformed recording: " + InputParser.INCIDENTS + " partitions " + incidentPartitions + " are not the six of spec 487");
+        Map<String, List<Integer>> subscribedAll = new LinkedHashMap<>(subscribed);
+        subscribedAll.put(InputParser.INCIDENTS, List.copyOf(incidentPartitions));
+        // T1: an incident whose (source, incidentId) passed the door before goes to the station of its first routed revision, so that a
+        // revision naming another station reaches Stage2.decide and is rejected station-change there
+        Map<String, String> incidentStation = new HashMap<>();
 
         Map<String, List<byte[]>> raw = new HashMap<>();
         for (String t : STAGE1_TOPICS) for (int p : subscribed.get(t)) raw.put(t + "/" + p, rawValues(rec, t, p));
+        for (int p : incidentPartitions) raw.put(InputParser.INCIDENTS + "/" + p, rawValues(rec, InputParser.INCIDENTS, p));
 
         // (3) the batches
         try { Files.createDirectories(o.out()); } catch (IOException e) { throw new UncheckedIOException(e); }
@@ -174,17 +199,49 @@ public final class ReferenceEngine {
                     if (out instanceof Routing.Rejected x) rejects.add(x);
                     else tasks.get(((Routing.Routed) out).station()).add(r.record());
                 }
+                // the cut's incidents: (throughOffsets[k-1], throughOffsets[k]] of every incident partition, through T1's door
+                Map<Integer, Long> incidents = new TreeMap<>();
+                Map<Integer, CutLog.Range> incidentRanges = new TreeMap<>();
+                List<Inputs.InputRecord> routedIncidents = new ArrayList<>();
+                for (int p : incidentPartitions) {
+                    String k = InputParser.INCIDENTS + "/" + p;
+                    long from = previous.getOrDefault(k, -1L) + 1, through = b.through(InputParser.INCIDENTS, p);
+                    List<Recording.Record> records = rec.records(InputParser.INCIDENTS, p);
+                    for (long off = from; off <= through; off++) {
+                        InputParser.Read read = InputParser.read(new Inputs.Origin(InputParser.INCIDENTS, p, off), records.get((int) off).key(), raw.get(k).get((int) off));
+                        Incidents.Outcome door = Incidents.door(rules, read);
+                        if (door instanceof Incidents.Rejected x) rejects2.add(x.record(), Disposition.Part.EVENT, x.body());
+                        else routedIncidents.add(((Incidents.Routed) door).record());
+                    }
+                    incidents.put(p, through);
+                    incidentRanges.put(p, new CutLog.Range(from, through + 1));
+                    consumed.computeIfAbsent(InputParser.INCIDENTS, x -> new TreeMap<>()).merge(p, new CutLog.Range(from, through + 1),
+                        (a, c) -> new CutLog.Range(a.from(), c.to()));
+                    previous.put(k, through);
+                }
+                ranges.put(InputParser.INCIDENTS, incidentRanges);
+                routedIncidents.sort(Stage2Task.INCIDENT_ORDER);
+                for (Inputs.InputRecord r : routedIncidents) {
+                    Inputs.IncidentEvent i = (Inputs.IncidentEvent) r.parsed();
+                    String station = incidentStation.computeIfAbsent(Canonical.utf8(Canonical.bytes(Incidents.setKey(i.source(), i.incidentId()))), x -> i.stationRef());
+                    tasks2.get(station).addIncident(r);
+                }
+
                 Map<String, CutLog.StationCut> perStation = new LinkedHashMap<>();
                 for (StationTask task : tasks.values()) {
                     StationTask.CutOutputs co = task.cut(cutId, stationBarriers(cutId, b, task, routing, subscribed));
                     write(journals, co.outputs(), task.partition);
-                    perStation.put(task.station, new CutLog.StationCut(co.w1(), co.admissionW(), task.onlineVisits()));
+                    Stage2Task t2 = tasks2.get(task.station);
+                    Stage2Task.CutOutputs c2 = t2.cut(cutId, co.outputs(), incidents);
+                    write2(journals, c2.outputs(), t2.partition);
+                    perStation.put(task.station, new CutLog.StationCut(co.w1(), co.admissionW(), c2.w2(), task.onlineVisits()));
                 }
                 for (Object x : rejects.cut(cutId, barriers(cutId, b, subscribed, null)))
                     if (x instanceof Disposition d) journals.disposition(d, RejectCollector.PARTITION);
                     else journals.progress(JournalFiles.DISPOSITIONS, (Progress) x, RejectCollector.PARTITION);
-                Map<Integer, Long> incidents = new TreeMap<>();
-                for (int p : routing.subscribed(InputParser.INCIDENTS)) incidents.put(p, b.through(InputParser.INCIDENTS, p));
+                for (Object x : rejects2.cut(cutId, incidentBarriers(cutId, incidents)))
+                    if (x instanceof Disposition d) journals.disposition(JournalFiles.DISPOSITIONS2, d, RejectCollector.PARTITION);
+                    else journals.progress(JournalFiles.DISPOSITIONS2, (Progress) x, RejectCollector.PARTITION);
                 cutLog.cut(cutId, perStation, ranges, incidents);
             }
         }
@@ -196,7 +253,7 @@ public final class ReferenceEngine {
         ObjectNode digests = Json.object();
         rec.digests().forEach(digests::put);
         ObjectNode record = RunRecord.build(new RunRecord.Facts(runId, g.generation(), o.seed(), o.shuffle(), pins, manifestSha, digests,
-            head.releaseSha256(), rules.rulesDigest(), jcsJava(), subscribed, consumed, cutLog.size(), o.command()));
+            head.releaseSha256(), rules.rulesDigest(), jcsJava(), subscribedAll, consumed, cutLog.size(), o.command()));
         RunRecord.write(o.out(), record);
         return new Result(runId, o.out(), cutLog.size(), record);
     }
@@ -210,6 +267,30 @@ public final class ReferenceEngine {
             else if (x instanceof Progress.Ledger l) journals.progress(JournalFiles.DISPOSITIONS, l, partition);
             else throw new IllegalStateException("not a stage-1 output: " + x);
         }
+    }
+
+    /** Stage 2's outputs of one station: assessments and sets on their topics, deletes on {@code forseti.affected} only (a set row is never
+     *  deleted), dispositions and the ledger progress on {@code forseti.dispositions-stage2}, the stage-2 progress on both business topics. */
+    private static void write2(JournalFiles journals, List<Object> outputs, int partition) {
+        for (Object x : outputs) {
+            if (x instanceof Row r) journals.row(r, partition);
+            else if (x instanceof Delete d) journals.delete(Stage2.AFFECTED, d, partition);
+            else if (x instanceof Disposition d) journals.disposition(JournalFiles.DISPOSITIONS2, d, partition);
+            else if (x instanceof Progress.Stage2 p) { journals.progress(Stage2.AFFECTED, p, partition); journals.progress(Stage2.AFFECTED_SETS, p, partition); }
+            else if (x instanceof Progress.Ledger l) journals.progress(JournalFiles.DISPOSITIONS2, l, partition);
+            else throw new IllegalStateException("not a stage-2 output: " + x);
+        }
+    }
+
+    /** The stage-2 reject collector's required barriers: the six incident partitions. */
+    static List<JsonNode> incidentBarriers(long cutId, Map<Integer, Long> incidents) {
+        List<JsonNode> l = new ArrayList<>();
+        incidents.forEach((p, through) -> {
+            ObjectNode n = Json.putSafe(Json.object(), "cutId", cutId);
+            n.putObject("origin").put("topic", InputParser.INCIDENTS).put("partition", p);
+            l.add(Json.putSafe(n, "throughOffset", through));
+        });
+        return l;
     }
 
     /** A station's required barriers: every subscribed raw telemetry partition, plus the session partitions of its devices and its

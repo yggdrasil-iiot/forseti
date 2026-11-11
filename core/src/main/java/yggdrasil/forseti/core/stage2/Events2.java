@@ -33,8 +33,10 @@ public final class Events2 {
     public record Incident(Inputs.InputRecord record) implements Event {}
     /** A due deadline of the stage-2 state's index. */
     public record Timer(long deadline, JsonNode key, String purpose) implements Event {}
-    /** The cut is complete at this station (ProgressTracker.ready): its W2, the stage-1 progress records and incident barriers processed. */
-    public record CutClose(long cutId, long w2, List<Progress.Stage1ProgressRef> stage1ProgressRefs, List<Progress.IncidentOffset> incidentOffsets) implements Event {
-        public CutClose { stage1ProgressRefs = List.copyOf(stage1ProgressRefs); incidentOffsets = List.copyOf(incidentOffsets); }
+    /** The cut is complete at this station (ProgressTracker.ready): its W2, the stage-1 progress records and incident barriers processed,
+     *  and the {@code mergedCutIds} of the stage-1 progress it consumed (spec 432: stage 2 writes its progress with the same ones). */
+    public record CutClose(long cutId, long w2, List<Progress.Stage1ProgressRef> stage1ProgressRefs, List<Progress.IncidentOffset> incidentOffsets,
+                           List<Long> mergedCutIds) implements Event {
+        public CutClose { stage1ProgressRefs = List.copyOf(stage1ProgressRefs); incidentOffsets = List.copyOf(incidentOffsets); mergedCutIds = List.copyOf(mergedCutIds); }
     }
 }

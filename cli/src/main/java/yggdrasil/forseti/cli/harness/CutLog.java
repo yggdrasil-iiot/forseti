@@ -7,14 +7,14 @@ import java.util.Map;
 import yggdrasil.forseti.core.Json;
 
 /** {@code <out>/cuts.json}: {@code {generation, routingDigest, cuts: [...]}}, per cut {@code {cutId, perStation {station -> {W1,
- *  admissionW, mergedCutIds: [], onlineVisits}}, offsetRanges {topic -> {partition -> [from, to]}}, incidentOffsets}}. The offset ranges are
+ *  admissionW, W2 (stage 2's, equal to W1 by construction, spec 588), mergedCutIds: [], onlineVisits}}, offsetRanges {topic -> {partition -> [from, to]}}, incidentOffsets}}. The offset ranges are
  *  half-open ({@code [from, to)}, empty when equal), distinct from the inclusive through-offsets of barriers; {@code incidentOffsets} are
  *  the {@code quality.incidents} through-offsets of the cut as {@code {cutId, partition, throughOffset}}. */
 final class CutLog {
     record Range(long from, long to) {
         Range { if (from < 0 || to < from || to > Json.MAX_SAFE) throw new IllegalArgumentException("offset range [" + from + ", " + to + ")"); }
     }
-    record StationCut(long w1, Long admissionW, int onlineVisits) {}
+    record StationCut(long w1, Long admissionW, long w2, int onlineVisits) {}
 
     private final ObjectNode root = Json.object();
     private final ArrayNode cuts;
@@ -30,6 +30,7 @@ final class CutLog {
         perStation.forEach((s, v) -> {
             ObjectNode o = Json.putSafe(ps.putObject(s), "W1", v.w1());
             if (v.admissionW() == null) o.putNull("admissionW"); else Json.putSafe(o, "admissionW", v.admissionW());
+            Json.putSafe(o, "W2", v.w2());
             o.putArray("mergedCutIds");
             Json.putSafe(o, "onlineVisits", v.onlineVisits());
         });

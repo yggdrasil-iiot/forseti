@@ -238,8 +238,8 @@ public final class Stage2 {
         List<Progress.BarrierRef> refs = new ArrayList<>();
         for (Progress.IncidentOffset o : cc.incidentOffsets())
             refs.add(new Progress.BarrierRef(o.cutId(), new Progress.Origin(yggdrasil.forseti.core.input.InputParser.INCIDENTS, o.partition()), o.throughOffset()));
-        out.add(new Progress.Stage2(s.generation, s.station, cc.cutId(), 0, w, cc.stage1ProgressRefs(), cc.incidentOffsets(), List.of()));
-        out.add(new Progress.Ledger(s.generation, 2, s.partition, s.station, cc.cutId(), 0, refs, List.of(), 0, null, null));
+        out.add(new Progress.Stage2(s.generation, s.station, cc.cutId(), 0, w, cc.stage1ProgressRefs(), cc.incidentOffsets(), cc.mergedCutIds()));
+        out.add(new Progress.Ledger(s.generation, 2, s.partition, s.station, cc.cutId(), 0, refs, cc.mergedCutIds(), 0, null, null));
         s.progressCount++;
     }
 

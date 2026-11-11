@@ -192,7 +192,8 @@ class Stage2Test {
             Inputs.InputRecord r = InputParser.read(new Inputs.Origin(InputParser.INCIDENTS, 0, incidentOffset++), value.path("equipmentRef").asText(), raw).record();
             return apply(new Events2.Incident(r), state.lastW2());
         }
-        void cut(long w2) {
+        void cut(long w2) { cut(w2, List.of()); }
+        void cut(long w2, List<Long> merged) {
             cutId++;
             while (true) {
                 List<DeadlineIndex.Deadline> due = state.deadlines().due(w2);
@@ -201,9 +202,10 @@ class Stage2Test {
                 apply(new Events2.Timer(d.deadline(), d.key(), d.purpose()), w2);
             }
             List<Progress.IncidentOffset> offsets = new ArrayList<>();
+            for (long c : merged) for (int q = 0; q < 6; q++) offsets.add(new Progress.IncidentOffset(c, q, -1));
             for (int q = 0; q < 6; q++) offsets.add(new Progress.IncidentOffset(cutId, q, q == 0 ? incidentOffset - 1 : -1));
             apply(new Events2.CutClose(cutId, w2, List.of(new Progress.Stage1ProgressRef(Stage2.WORK_RECORDS, 0, cutId),
-                new Progress.Stage1ProgressRef(Stage2.SAMPLES, 0, cutId)), offsets), w2);
+                new Progress.Stage1ProgressRef(Stage2.SAMPLES, 0, cutId)), offsets, merged), w2);
             if (roundTrip) state = Stage2State.fromJson(Json.read(Canonical.bytes(state.toJson())));
         }
 
@@ -591,6 +593,22 @@ class Stage2Test {
         assertEquals(6, p.incidentOffsets().size());
         assertEquals(List.of(), p.mergedCutIds());
         assertTrue(a.outputs.get(a.outputs.size() - 1) instanceof Progress.Ledger, "progress follows the cut's rows");
+    }
+
+    /** Spec 432: stage 2 writes its progress with the same mergedCutIds as the stage-1 progress it consumed (the ledger progress too). */
+    @Test void theStage2ProgressCarriesTheConsumedMergedCutIds() {
+        Bench b = new Bench();
+        b.cut(T);
+        b.cutId++;   // cut 2 skipped at stage 1: cut 3's stage-1 progress lists it
+        b.cut(T + 1000, List.of(2L));
+        List<Progress.Stage2> p = b.outputs.stream().filter(o -> o instanceof Progress.Stage2).map(o -> (Progress.Stage2) o).toList();
+        List<Progress.Ledger> l = b.outputs.stream().filter(o -> o instanceof Progress.Ledger).map(o -> (Progress.Ledger) o).toList();
+        assertEquals(List.of(1L, 3L), p.stream().map(Progress.Stage2::cutId).toList());
+        assertEquals(List.of(), p.get(0).mergedCutIds());
+        assertEquals(List.of(2L), p.get(1).mergedCutIds());
+        assertEquals(List.of(2L), l.get(1).mergedCutIds());
+        assertEquals(12, p.get(1).incidentOffsets().size(), "6 x (1 + mergedCutIds)");
+        assertEquals("[2]", Canonical.utf8(Canonical.bytes(p.get(1).toJson().get("mergedCutIds"))));
     }
 
     static Bench sequence(boolean roundTrip) {

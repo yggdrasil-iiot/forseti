@@ -39,6 +39,7 @@ public final class CoreGate {
     public static List<Check> registered() {
         List<Check> all = new ArrayList<>(Foundation.checks());
         all.addAll(Stage1Assertions.checks());
+        all.addAll(Stage2Assertions.checks());
         return List.copyOf(all);
     }
 
