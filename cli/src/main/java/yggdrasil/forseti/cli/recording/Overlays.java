@@ -13,7 +13,7 @@ final class Overlays {
     static final List<String> TYPES = List.of("plc-identity", "hold-back", "redeliver", "shift-source-ts", "bad-status", "overlap-visit",
         "delay-occupancy", "late-correction", "error-declaration", "resend-different", "activity-without-visit", "session-gap",
         "session-down", "stale-death", "session-ambiguous", "plc-cross-check-mismatch", "mixed-snapshot", "id-change-without-false",
-        "no-visit-end", "no-departure", "incident");
+        "no-visit-end", "no-departure", "planned-late-samples", "incident");
     static final String DID_NOT_OCCUR = "urn:epcglobal:cbv:er:did_not_occur", INCORRECT_DATA = "urn:epcglobal:cbv:er:incorrect_data";
 
     record HoldBack(String topic, Set<String> devices, long from, long to, long delayMs) {}
@@ -32,6 +32,9 @@ final class Overlays {
     record MixedSnapshot(String device, long at) {}
     record IdChange(String station, long at, String newVisitId, String newUnit) {}
     record NoVisitEnd(String station, String visitId) {}
+    /** Injection 23 (Task 17): the on-time {@code metric} observation of {@code device} at the scan {@code holeAt} is removed, and three
+     *  late samples at {@code holeAt}, {@code holeAt - 1}, {@code holeAt - 2} follow the batch that ends at {@code holeAt + H + O}. */
+    record PlannedLate(String device, String metric, long holeAt) {}
 
     final List<JsonNode> all = new ArrayList<>();
     final List<JsonNode> plcIdentity = new ArrayList<>(), overlapVisits = new ArrayList<>();
@@ -53,6 +56,7 @@ final class Overlays {
     final List<IdChange> idChanges = new ArrayList<>();
     final List<NoVisitEnd> noVisitEnds = new ArrayList<>();
     final Set<String> noDeparture = new TreeSet<>();
+    final List<PlannedLate> plannedLate = new ArrayList<>();
 
     Overlays(JsonNode injections, Set<String> devices) {
         for (JsonNode inj : injections) {
@@ -107,6 +111,10 @@ final class Overlays {
                 case "id-change-without-false" -> idChanges.add(new IdChange(Json.text(inj, "station"), ms(inj, "at"), Json.text(inj, "newVisitId"), Json.text(inj, "newUnit")));
                 case "no-visit-end" -> noVisitEnds.add(new NoVisitEnd(Json.text(inj, "station"), Json.text(inj, "visitId")));
                 case "no-departure" -> noDeparture.add(Json.text(inj, "eventId"));
+                case "planned-late-samples" -> {
+                    if (!plannedLate.isEmpty()) throw refuse("one planned-late-samples overlay per scenario");
+                    plannedLate.add(new PlannedLate(device(Json.text(inj, "device"), devices), Json.text(inj, "metric"), ms(inj, "holeAt")));
+                }
                 case "incident" -> throw refuse("incident overlays are written as the scenario's incidents[]");
                 default -> throw new IllegalStateException(type);
             }

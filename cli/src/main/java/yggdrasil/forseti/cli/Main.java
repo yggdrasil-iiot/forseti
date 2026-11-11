@@ -39,7 +39,8 @@ public final class Main {
         catch (IllegalArgumentException e) { err.println(e.getMessage()); return usage(err); }
         try {
             switch (args[0] + " " + args[1]) {
-                case "recordings build": return build(flags, out);
+                case "recordings build": return build(flags, out, false);
+                case "recordings synth": return build(flags, out, true);
                 case "recordings verify": return verify(flags, out, err);
                 default: return usage(err);
             }
@@ -51,6 +52,7 @@ public final class Main {
 
     private static int usage(PrintStream err) {
         err.println("usage: forseti recordings build --scenario <file> --out <dir> [--registry <dir>] [--lock]");
+        err.println("       forseti recordings synth --scenario <synthetic scenario file> --out <dir> --registry <dir> [--lock]");
         err.println("       forseti recordings verify --scenario <file> --out <dir> [--registry <dir>]");
         err.println("       forseti gate --engine core [--out <dir>] [--python <interpreter>] [--negative-control <name>] [--seed <n>]");
         err.println("       forseti run --engine core --recording <dir> --registry <dir> --state <dir> --generation <n> --out <run dir>");
@@ -113,9 +115,13 @@ public final class Main {
         return m;
     }
 
-    private static int build(Args f, PrintStream out) {
+    /** {@code recordings build} builds any scenario (a {@code "synthetic": true} one through the synthesizer); {@code recordings synth}
+     *  builds only synthetic ones. */
+    private static int build(Args f, PrintStream out, boolean synthOnly) {
         f.only(Set.of("scenario", "out", "registry", "lock"));
         Path scenario = Path.of(f.required("scenario")), dir = Path.of(f.required("out"));
+        if (synthOnly && !Json.read(scenario).path("synthetic").asBoolean(false))
+            throw new IllegalArgumentException("recordings synth: " + scenario.getFileName() + " is not a synthetic scenario (use recordings build)");
         ScenarioBuilder.Built b = ScenarioBuilder.build(scenario, f.get("registry").map(Path::of).orElse(null), dir);
         if (f.has("lock")) Json.write(ScenarioBuilder.lockOf(scenario).toAbsolutePath(), b.lock());
         out.println(summary(b));
@@ -134,10 +140,10 @@ public final class Main {
         try {
             Path rebuilt = tmp.resolve("recording");
             ScenarioBuilder.Built b = ScenarioBuilder.build(scenario, registry, rebuilt);
-            TreeMap<String, byte[]> want = files(rebuilt), have = files(dir);
+            TreeMap<String, String> want = files(rebuilt), have = files(dir);
             for (String k : want.keySet()) if (!have.containsKey(k)) problems.add("missing " + k);
             for (String k : have.keySet()) if (!want.containsKey(k)) problems.add("unexpected " + k);
-            for (String k : want.keySet()) if (have.containsKey(k) && !Arrays.equals(want.get(k), have.get(k))) problems.add("bytes differ: " + k);
+            for (String k : want.keySet()) if (have.containsKey(k) && !want.get(k).equals(have.get(k))) problems.add("bytes differ: " + k);
             Path lock = ScenarioBuilder.lockOf(scenario);
             if (!Files.isRegularFile(lock)) problems.add("no lock " + lock.getFileName());
             else if (!Arrays.equals(Files.readAllBytes(lock), Json.pretty(b.lock()))) problems.add("lock differs: " + lock.getFileName());
@@ -158,14 +164,18 @@ public final class Main {
             + ", incidents " + b.incidents() + ", cuts " + b.cuts();
     }
 
-    private static TreeMap<String, byte[]> files(Path root) throws IOException {
-        TreeMap<String, byte[]> m = new TreeMap<>();
+    /** Every file under {@code root} with its raw-byte SHA-256, read through a digest (a synthesized recording is hundreds of MB). */
+    private static TreeMap<String, String> files(Path root) throws IOException {
+        TreeMap<String, String> m = new TreeMap<>();
         if (!Files.isDirectory(root)) return m;
         try (Stream<Path> s = Files.walk(root)) {
             for (Path p : s.filter(Files::isRegularFile).toList()) {
                 List<String> parts = new ArrayList<>();
                 for (Path x : root.relativize(p)) parts.add(x.toString());
-                m.put(String.join("/", parts), Files.readAllBytes(p));
+                java.security.MessageDigest md;
+                try { md = java.security.MessageDigest.getInstance("SHA-256"); } catch (java.security.NoSuchAlgorithmException e) { throw new IllegalStateException(e); }
+                try (java.io.InputStream in = new java.security.DigestInputStream(Files.newInputStream(p), md)) { in.transferTo(java.io.OutputStream.nullOutputStream()); }
+                m.put(String.join("/", parts), HexFormat.of().formatHex(md.digest()));
             }
         }
         return m;

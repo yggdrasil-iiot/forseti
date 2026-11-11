@@ -1,0 +1,47 @@
+{
+  "scenarioVersion": 1,
+  "name": "horizon-reopened",
+  "synthetic": true,
+  "rule": {"stream": "line2", "releaseId": "line2-rules", "version": "1.0.0", "attributionRuleId": "line2-attribution", "attributionRuleVersion": "1.0.0"},
+  "mode": "occupancy-join",
+  "T0": 1794182400000,
+  "seed": 20261109,
+  "scanMs": 1000,
+  "edge": "edge-line2",
+  "devices": {
+    "synthetic-site:line2:station1": {"model": "station-model", "members": {"Running": "Boolean"}},
+    "synthetic-site:line2:station2": {"model": "station-model", "members": {"Running": "Boolean"}},
+    "synthetic-site:line2:station3": {"model": "station-model", "members": {"Running": "Boolean"}},
+    "synthetic-site:line2:station1:nutrunner1": {"model": "tool-model", "members": {"Torque": "Double", "Running": "Boolean"}},
+    "synthetic-site:line2:station1:nutrunner2": {"model": "tool-model", "members": {"Torque": "Double", "Running": "Boolean"}}
+  },
+  "telemetryFrom": 0,
+  "telemetryTo": 2400000,
+  "visits": [
+    {"unit": "UNIT0000000000001", "station": "synthetic-site:line2:station1", "enter": 600000, "leave": 660000, "tools": ["nutrunner1"], "visitSeq": 1},
+    {"unit": "UNIT0000000000002", "station": "synthetic-site:line2:station1", "enter": 780000, "leave": 840000, "tools": ["nutrunner2"], "visitSeq": 2},
+    {"unit": "UNIT0000000000003", "station": "synthetic-site:line2:station1", "enter": 960000, "leave": 1020000, "tools": ["nutrunner1", "nutrunner2"], "visitSeq": 3},
+    {"unit": "UNIT0000000000004", "station": "synthetic-site:line2:station1", "enter": 1140000, "leave": 1200000, "tools": [], "visitSeq": 4},
+    {"unit": "UNIT0000000000005", "station": "synthetic-site:line2:station1", "enter": 1320000, "leave": 1380000, "tools": ["nutrunner1"], "visitSeq": 5},
+    {"unit": "UNIT0000000000006", "station": "synthetic-site:line2:station1", "enter": 1500000, "leave": 1560000, "tools": ["nutrunner2"], "visitSeq": 6},
+    {"unit": "UNIT0000000000007", "station": "synthetic-site:line2:station1", "enter": 1680000, "leave": 1740000, "tools": ["nutrunner1", "nutrunner2"], "visitSeq": 7},
+    {"unit": "UNIT0000000000008", "station": "synthetic-site:line2:station1", "enter": 1860000, "leave": 1920000, "tools": [], "visitSeq": 8},
+    {"unit": "UNIT0000000000001", "station": "synthetic-site:line2:station2", "enter": 690000, "leave": 750000, "tools": [], "visitSeq": 1},
+    {"unit": "UNIT0000000000002", "station": "synthetic-site:line2:station2", "enter": 870000, "leave": 930000, "tools": [], "visitSeq": 2},
+    {"unit": "UNIT0000000000003", "station": "synthetic-site:line2:station2", "enter": 1050000, "leave": 1110000, "tools": [], "visitSeq": 3},
+    {"unit": "UNIT0000000000004", "station": "synthetic-site:line2:station2", "enter": 1230000, "leave": 1290000, "tools": [], "visitSeq": 4},
+    {"unit": "UNIT0000000000001", "station": "synthetic-site:line2:station3", "enter": 780000, "leave": 840000, "tools": [], "visitSeq": 1},
+    {"unit": "UNIT0000000000002", "station": "synthetic-site:line2:station3", "enter": 960000, "leave": 1020000, "tools": [], "visitSeq": 2},
+    {"unit": "UNIT0000000000003", "station": "synthetic-site:line2:station3", "enter": 1140000, "leave": 1200000, "tools": [], "visitSeq": 3},
+    {"unit": "UNIT0000000000004", "station": "synthetic-site:line2:station3", "enter": 1320000, "leave": 1380000, "tools": [], "visitSeq": 4}
+  ],
+  "toolActivity": {"startAfterEnter": 5000, "endBeforeLeave": 1000, "torque": {"min": 10.0, "max": 45.0}},
+  "incidents": [],
+  "batchMs": 3600000,
+  "denseBatches": {"batchMs": 60000, "until": 2400000},
+  "tailMs": 751000,
+  "injections": [
+    {"type": "error-declaration", "eventId": "occ-16", "reason": "incorrect_data", "declarationTime": 2672000, "deliverAt": 2672000}
+  ],
+  "horizonDeadlines": ["visit-8"]
+}

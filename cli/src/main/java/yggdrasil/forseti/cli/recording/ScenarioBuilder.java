@@ -60,6 +60,15 @@ public final class ScenarioBuilder {
     public static Built build(JsonNode s, String scenarioSha256, Path out) { return build(s, scenarioSha256, null, out); }
 
     public static Built build(JsonNode s, String scenarioSha256, Path registry, Path out) {
+        Synthesizer[] streaming = new Synthesizer[1];
+        try { return build(s, scenarioSha256, registry, out, streaming); }
+        catch (RuntimeException | Error e) { if (streaming[0] != null) streaming[0].abort(); throw e; }
+    }
+
+    /** {@code "synthetic": true} (plan Task 17): the telemetry is streamed to its files by a {@link Synthesizer} as it is generated
+     *  instead of being collected; every other input, the batches, the deadlines and the ground truth are planned here as for a
+     *  hand-made scenario, under the same rules. */
+    private static Built build(JsonNode s, String scenarioSha256, Path registry, Path out, Synthesizer[] streaming) {
         if (Json.safeLong(s.get("scenarioVersion"), "scenarioVersion", 1, 1) != 1) throw refuse("scenarioVersion");
         String name = Json.text(s, "name");
         String mode = Json.text(s, "mode");
@@ -72,6 +81,8 @@ public final class ScenarioBuilder {
         long from = Json.safeLong(s.get("telemetryFrom"), "telemetryFrom", Json.NON_NEGATIVE);
         long to = Json.safeLong(s.get("telemetryTo"), "telemetryTo", Json.NON_NEGATIVE);
         String edge = Json.text(s, "edge");
+        if (s.has("synthetic") && !s.get("synthetic").isBoolean()) throw refuse("synthetic is a boolean");
+        boolean synthetic = s.path("synthetic").asBoolean(false);
 
         // The rule's parameters: inline (Task 8 smoke form, minimal ground truth) or from the registry (full ground truth).
         boolean full = !s.has("temporal");
@@ -122,6 +133,12 @@ public final class ScenarioBuilder {
         if (tMin.compareTo(tMax) > 0) throw refuse("toolActivity.torque min > max");
 
         Overlays ov = new Overlays(s.path("injections"), devices.keySet());
+        if (synthetic) {
+            if (!full) throw refuse("a synthetic scenario reads its rule from the registry");
+            if (!ov.holdBacks.isEmpty()) throw refuse("hold-back in a synthetic scenario (its telemetry is streamed in scan order)");
+            for (Overlays.Redeliver r : ov.redelivers) if ("ot.messages".equals(r.topic())) throw refuse("redeliver of a message in a synthetic scenario");
+        }
+        if (!ov.plannedLate.isEmpty() && (!synthetic || !mode.equals("occupancy-join"))) throw refuse("planned-late-samples needs a synthetic occupancy-join scenario");
         List<Visit> visits = new ArrayList<>();
         int vi = 0;
         List<JsonNode> visitNodes = new ArrayList<>();
@@ -239,6 +256,39 @@ public final class ScenarioBuilder {
         s.path("horizonDeadlines").forEach(h -> horizonRefs.add(h.asText()));
         if (!full && !horizonRefs.isEmpty()) throw refuse("horizonDeadlines need the registry's horizonMs");
         for (String ref : horizonRefs) lastBusiness = Math.max(lastBusiness, enterOf(ref, visits, stamps) + rule.horizon());
+        // onlineExpiresAt (spec 521): leave + H + L for a visit with a delivered departure, enter + H + L for an open one.
+        List<String> expiryRefs = new ArrayList<>();
+        s.path("onlineExpiryDeadlines").forEach(h -> expiryRefs.add(h.asText()));
+        if (!full && !expiryRefs.isEmpty()) throw refuse("onlineExpiryDeadlines need the registry's horizonMs");
+        if (!expiryRefs.isEmpty() && !mode.equals("occupancy-join")) throw refuse("onlineExpiryDeadlines on a plc-stamped scenario");
+        Map<String, Long> expiry = new LinkedHashMap<>();
+        for (String ref : expiryRefs) {
+            Visit v = null;
+            for (Visit x : visits) if (("visit-" + x.index()).equals(ref)) v = x;
+            if (v == null) throw refuse("onlineExpiryDeadlines names no visit " + ref);
+            long base = v.enter();
+            for (Occ o : occList) {
+                ObjectNode x = o.value();
+                if (DEPARTING.equals(x.get("bizStep").asText()) && !x.has("errorDeclaration") && ("occ-" + (2 * v.index() - 1)).equals(x.path("arrivalEventId").asText()))
+                    base = Math.max(base, x.get("eventTime").longValue() - t0);
+            }
+            expiry.put(ref, base + rule.horizon() + rule.lateness());
+            lastBusiness = Math.max(lastBusiness, base + rule.horizon() + rule.lateness());
+        }
+        // Injection 23's planned A (current spec 592): the hole first, then A = holeAt + H - 1 and the batch boundary T = A + O + 1.
+        Overlays.PlannedLate late = ov.plannedLate.isEmpty() ? null : ov.plannedLate.get(0);
+        long lateA = 0, lateT = 0;
+        String lateRef = null;
+        if (late != null) {
+            if (!devices.get(late.device()).path("members").has(late.metric())) throw refuse("planned-late-samples metric " + late.metric() + " is not a member of " + late.device());
+            lateA = late.holeAt() + rule.horizon() - 1;
+            lateT = lateA + oooMs + 1;
+            if ((late.holeAt() - from) % scanMs != 0 || (lateT - from) % scanMs != 0 || late.holeAt() < from)
+                throw refuse("planned-late-samples: holeAt " + late.holeAt() + " and T " + lateT + " must lie on the scan grid");
+            for (Visit v : visits) if (v.station().equals(stationOf.get(late.device())) && v.enter() <= late.holeAt() && late.holeAt() < v.leave()) lateRef = "visit-" + v.index();
+            if (lateRef == null) throw refuse("planned-late-samples: holeAt " + late.holeAt() + " lies in no visit of " + stationOf.get(late.device()));
+            lastBusiness = Math.max(lastBusiness, lateT);   // the planned cut; the late samples follow it in the next batch
+        }
         long end = Math.max(to, lastBusiness) + tailMs;
         if (end < from || (end - from) % scanMs != 0) throw refuse("telemetry end " + end + " is not on the scan grid from " + from);
         long scans = (end - from) / scanMs + 1;
@@ -260,6 +310,9 @@ public final class ScenarioBuilder {
             }
         } else for (Stamp st : stamps) if (st.closes()) dues.add(new Due("visit-settlement", st.visitId(), st.station(), st.to() + latenessMs));
         for (String ref : horizonRefs) dues.add(new Due("visit-horizon", ref, stationOfRef(ref, visits, stamps), enterOf(ref, visits, stamps) + rule.horizon()));
+        expiry.forEach((ref, at) -> dues.add(new Due("visit-online-expiry", ref, stationOfRef(ref, visits, stamps), at)));
+        Due lateDue = late == null ? null : new Due("planned-late", lateRef, stationOf.get(late.device()), lateA);
+        if (lateDue != null) dues.add(lateDue);
         Map<String, Long> latestSuspectTo = new TreeMap<>();
         Map<String, Long> latestRevision = new TreeMap<>();
         Map<String, String> incidentStation = new TreeMap<>();
@@ -274,6 +327,11 @@ public final class ScenarioBuilder {
         // the scan whose sourceTs reaches d + O.
         TreeSet<Long> bounds = new TreeSet<>();
         for (long b = from + batchMs; b <= end; b += batchMs) bounds.add(b);
+        if (s.has("denseBatches")) {   // a synthesized scenario: a cut every denseBatches.batchMs up to denseBatches.until, then every batchMs
+            long dense = Json.safeLong(s.path("denseBatches").get("batchMs"), "denseBatches.batchMs", 1, Json.MAX_SAFE);
+            long until = Json.safeLong(s.path("denseBatches").get("until"), "denseBatches.until", Json.NON_NEGATIVE);
+            for (long b = from + dense; b <= Math.min(until, end); b += dense) bounds.add(b);
+        }
         Map<Due, long[]> bracket = new LinkedHashMap<>();
         for (Due d : dues) {
             long shift = Long.MIN_VALUE;
@@ -305,6 +363,11 @@ public final class ScenarioBuilder {
             String rp = o.value().get("readPoint").textValue();
             items.add(new Item("mfg.occupancy", routing.partitionOf(rp), rp, batchOf(boundaries, o.deliverAt(), o.value().get("eventId").textValue()), o.value()));
         }
+
+        Set<String> routed = new TreeSet<>(devices.keySet());   // S1: only equipment of the rule's catalog is routed and advances W1
+        if (full) { routed.clear(); for (GroundTruth.Member m : rule.members()) routed.add(m.equipment()); }
+        Synthesizer syn = null;
+        if (synthetic) streaming[0] = syn = new Synthesizer(out, routing.subscribed("ot.messages"), boundaries.size(), stations, oooMs);
 
         // Telemetry with its sessions: one session per device from T0, replaced where an overlay ends it.
         final class Session { long birth = t0, bdSeq = 0, seq = 1, lastSeq = 1; Long lastTs; }
@@ -359,7 +422,7 @@ public final class ScenarioBuilder {
                 }
                 boolean isStation = stationOf.get(dev).equals(dev);
                 long sourceTs = t0 + t + ov.shiftOf(dev);
-                seqTime.put(dev + "|" + sq, sourceTs);
+                if (!ov.gaps.isEmpty()) seqTime.put(dev + "|" + sq, sourceTs);
                 ObjectNode v = Json.object();
                 v.put("edge", edge);
                 v.put("device", dev);
@@ -383,6 +446,7 @@ public final class ScenarioBuilder {
                 while (it.hasNext()) {
                     Map.Entry<String, JsonNode> m = it.next();
                     String metric = m.getKey(), type = m.getValue().asText();
+                    if (late != null && dev.equals(late.device()) && t == late.holeAt() && metric.equals(late.metric())) continue;   // the planned hole
                     ObjectNode mo = members.addObject();
                     mo.put("metric", metric);
                     switch (metric + ":" + type) {
@@ -407,13 +471,46 @@ public final class ScenarioBuilder {
                 }
                 ss.lastSeq = sq;
                 ss.lastTs = t;
-                Item item = new Item("ot.messages", routing.rawPartitionOf(dev), dev, batch, v);
-                items.add(item);
+                if (syn != null) syn.message(routing.rawPartitionOf(dev), dev, batch, v, routed.contains(dev) ? stationOf.get(dev) : null);
+                else items.add(new Item("ot.messages", routing.rawPartitionOf(dev), dev, batch, v));
                 maxTs.merge(dev, sourceTs, Math::max);
-                for (Object[] f : memberFacts) {
-                    String key = sampleKey(edge, dev, ss.birth, (String) f[0], ss.bdSeq, sq, t0 + t + publishDelay);
-                    gtSamples.add(new GroundTruth.Sample(key, dev, (String) f[0], (Long) f[1], (Long) f[2], (JsonNode) f[3], batch, !mixed,
+                for (Object[] f : memberFacts)
+                    gtSamples.add(new GroundTruth.Sample(edge, ss.birth, ss.bdSeq, sq, t0 + t + publishDelay, dev, (String) f[0], (Long) f[1], (Long) f[2], (JsonNode) f[3], batch, !mixed,
                         lastStamp == null ? "" : lastStamp.visitId(), lastStamp == null ? "" : lastStamp.unit(), stamp != null));
+                // Injection 23: after the first scan past the planned boundary T, three late DDATA of one member each, seq continuing the
+                // session, sourceTs holeAt, holeAt - 1, holeAt - 2 (A - H + 1, A - H, A - H - 1), published 1, 2, 3 ms after that scan's
+                // message; the value is the seeded torque of the scan the sourceTs falls in (holeAt: the removed observation's value).
+                if (late != null && dev.equals(late.device()) && t == lateT + scanMs) {
+                    String type = d.getValue().path("members").path(late.metric()).asText();
+                    for (int j = 0; j < 3; j++) {
+                        long lt = late.holeAt() - j, lsq = ++ss.seq;
+                        ObjectNode lv = Json.object();
+                        lv.put("edge", edge);
+                        lv.put("device", dev);
+                        Json.putSafe(lv, "birthPublishTs", ss.birth);
+                        Json.putSafe(lv, "bdSeq", ss.bdSeq);
+                        Json.putSafe(lv, "seq", lsq);
+                        Json.putSafe(lv, "publishTs", t0 + t + publishDelay + j + 1);
+                        Json.putSafe(lv, "bridgeReceivedAt", t0 + t + bridgeDelay + j + 1);
+                        lv.put("definitionSha256", definitionSha.get(dev));
+                        ObjectNode mo = lv.putArray("members").addObject();
+                        mo.put("metric", late.metric());
+                        long scan = Math.floorDiv(lt - from, scanMs) * scanMs + from;
+                        boolean lateRunning = toolRunning(visits, dev, scan, startAfter, endBefore) || ov.forcedActive(dev, scan);
+                        JsonNode value = switch (late.metric() + ":" + type) {
+                            case "Torque:Double" -> new DecimalNode(lateRunning ? Telemetry.torque(seed, dev, scan / scanMs, tMin, tMax) : Telemetry.IDLE);
+                            default -> throw refuse("planned-late-samples on " + late.metric() + " " + type + " (Torque only)");
+                        };
+                        mo.set("value", value);
+                        Json.putSafe(mo, "uaStatusCode", 0);
+                        Json.putSafe(mo, "quality", 192);
+                        Json.putSafe(mo, "sourceTs", t0 + lt);
+                        Json.putSafe(mo, "serverTs", t0 + lt + serverDelay);
+                        samples++;
+                        syn.message(routing.rawPartitionOf(dev), dev, batch, lv, routed.contains(dev) ? stationOf.get(dev) : null);
+                        gtSamples.add(new GroundTruth.Sample(edge, ss.birth, ss.bdSeq, lsq, t0 + t + publishDelay + j + 1, dev, late.metric(), t0 + lt, 0L, value, batch, true, "", "", false));
+                        ss.lastSeq = lsq;
+                    }
                 }
                 for (Overlays.Redeliver r : ov.redelivers) if ("ot.messages".equals(r.topic()) && r.device().equals(dev) && r.at() == t) {
                     ObjectNode copy = v.deepCopy();
@@ -445,15 +542,15 @@ public final class ScenarioBuilder {
         byPartition.values().forEach(l -> l.sort(Comparator.comparingInt(Item::batch)));
 
         TreeSet<Integer> firstPartitions = new TreeSet<>();
-        for (int p : routing.subscribed("ot.messages")) if (!byPartition.get("ot.messages/" + p).isEmpty() && byPartition.get("ot.messages/" + p).get(0).batch() == 0) firstPartitions.add(p);
+        if (syn != null) firstPartitions.addAll(syn.firstBatchPartitions());
+        else for (int p : routing.subscribed("ot.messages")) if (!byPartition.get("ot.messages/" + p).isEmpty() && byPartition.get("ot.messages/" + p).get(0).batch() == 0) firstPartitions.add(p);
         if (!firstPartitions.equals(new TreeSet<>(routing.subscribed("ot.messages"))))
             throw refuse("the first batch carries no telemetry on some subscribed raw partition (spec 406): " + firstPartitions);
 
         // W1 per station after every batch (the reference harness's formula): largest delivered sourceTs routed to it - O - 1.
         Map<String, long[]> w1 = new TreeMap<>();
         for (String st : stations) { long[] a = new long[boundaries.size()]; Arrays.fill(a, Long.MIN_VALUE); w1.put(st, a); }
-        Set<String> routed = new TreeSet<>(devices.keySet());   // S1: only equipment of the rule's catalog is routed and advances W1
-        if (full) { routed.clear(); for (GroundTruth.Member m : rule.members()) routed.add(m.equipment()); }
+        if (syn != null) syn.contributeW1(w1);
         for (Item it : items) if (it.topic().equals("ot.messages") && routed.contains(it.key())) {
             long[] a = w1.get(stationOf.get(it.key()));
             for (JsonNode m : it.value().path("members")) a[it.batch()] = Math.max(a[it.batch()], m.get("sourceTs").longValue() - oooMs - 1);
@@ -472,7 +569,8 @@ public final class ScenarioBuilder {
                 for (int p : routing.subscribed(topic)) {
                     List<Item> l = byPartition.get(topic + "/" + p);
                     long last = -1;
-                    for (int i = 0; i < l.size() && l.get(i).batch() <= k; i++) last = i;
+                    if (syn != null && topic.equals("ot.messages")) last = syn.through(p, k);
+                    else for (int i = 0; i < l.size() && l.get(i).batch() <= k; i++) last = i;
                     Json.putSafe(tp, Integer.toString(p), last);
                 }
             }
@@ -496,12 +594,18 @@ public final class ScenarioBuilder {
             Json.putSafe(o, "cutB", b + 1);
             gtDeadlines.add(new GroundTruth.Deadline(d.kind(), d.ref(), d.station(), at, a, b));
             settleTarget = Math.max(settleTarget, at);
+            if (d == lateDue) {   // the planned cut: every subscribed raw partition's largest sourceTs is T, so W1 = T - O - 1 = A exactly
+                if (w1b != at) throw refuse("planned-late-samples: W1 " + w1b + " at the planned cut is not A " + at);
+                for (int p : routing.subscribed("ot.messages"))
+                    if (syn.maxSourceTsThrough(p, b) != t0 + lateT) throw refuse("planned-late-samples: raw partition " + p + " does not end at T " + (t0 + lateT) + " at the planned cut");
+            }
         }
         if (settleTarget == Long.MIN_VALUE) settleTarget = t0 + end - oooMs - 1;
 
         // Files.
         TreeMap<String, byte[]> files = new TreeMap<>();
         for (Map.Entry<String, List<Item>> e : byPartition.entrySet()) {
+            if (syn != null && e.getKey().startsWith("ot.messages/")) continue;   // streamed; digested by the synthesizer
             StringBuilder sb = new StringBuilder();
             long offset = 0;
             for (Item it : e.getValue()) {
@@ -539,18 +643,18 @@ public final class ScenarioBuilder {
             Comparator<GroundTruth.Delivery> byBatch = Comparator.comparingInt(GroundTruth.Delivery::batch);
             occD.sort(byBatch); sesD.sort(byBatch); incD.sort(byBatch);
             expected = new GroundTruth(rule, occSource, stationOf, gtSamples, occD, sesD, incD, w1, boundaries.size(), facts, evidence, duplicates)
-                .expected(t0, gtDeadlines, settleTarget, null);
+                .expected(t0, gtDeadlines, settleTarget, null, synthetic ? scanMs : 0);
         }
         files.put(Recording.EXPECTED, Json.pretty(expected));
 
         ObjectNode manifest = Json.object();
         Json.putSafe(manifest, "recordingVersion", 1);
         manifest.put("name", name);
-        manifest.put("synthetic", false);
+        manifest.put("synthetic", synthetic);
         ObjectNode source = manifest.putObject("source");
         source.put("scenario", name);
         source.put("scenarioSha256", scenarioSha256);
-        source.put("generator", GENERATOR);
+        source.put("generator", synthetic ? Synthesizer.GENERATOR : GENERATOR);
         Json.putSafe(source, "seed", seed);
         ArrayNode overlays = source.putArray("overlays");
         ov.all.forEach(overlays::add);
@@ -564,13 +668,17 @@ public final class ScenarioBuilder {
         Json.putSafe(manifest, "settleTargetW", settleTarget);
         Json.putSafe(manifest, "tailMs", tailMs);
         if (s.has("subscribed")) manifest.set("subscribe", s.get("subscribed").deepCopy());
+        TreeMap<String, String> fileDigests = new TreeMap<>();
+        files.forEach((f, b) -> fileDigests.put(f, Canonical.digestOf(b)));
+        if (syn != null) fileDigests.putAll(syn.close());
         ObjectNode digests = manifest.putObject("digests");
-        files.forEach((f, b) -> digests.put(f, Canonical.digestOf(b)));
+        fileDigests.forEach(digests::put);
         byte[] manifestBytes = Json.pretty(manifest);
 
-        write(out, files, manifestBytes);
+        if (syn == null) write(out, files, manifestBytes);
+        else writeFiles(out, files, manifestBytes);
 
-        long messages = items.stream().filter(i -> i.topic().equals("ot.messages")).count();
+        long messages = syn != null ? syn.messages() : items.stream().filter(i -> i.topic().equals("ot.messages")).count();
         long sessions = items.stream().filter(i -> i.topic().equals("ot.sessions")).count();
         long occCount = items.stream().filter(i -> i.topic().equals("mfg.occupancy")).count();
         long incidents = items.stream().filter(i -> i.topic().equals("quality.incidents")).count();
@@ -578,7 +686,7 @@ public final class ScenarioBuilder {
         Json.putSafe(lock, "lockVersion", 1);
         lock.put("scenario", name);
         lock.put("scenarioSha256", scenarioSha256);
-        lock.put("generator", GENERATOR);
+        lock.put("generator", synthetic ? Synthesizer.GENERATOR : GENERATOR);
         ObjectNode counts = lock.putObject("counts");
         Json.putSafe(counts, "messages", messages);
         Json.putSafe(counts, "samples", samples);
@@ -594,8 +702,7 @@ public final class ScenarioBuilder {
         }
         if (s.has("subscribed")) lock.set("subscribe", s.get("subscribed").deepCopy());
         ObjectNode lf = lock.putObject("files");
-        TreeMap<String, String> all = new TreeMap<>();
-        files.forEach((f, b) -> all.put(f, Canonical.digestOf(b)));
+        TreeMap<String, String> all = new TreeMap<>(fileDigests);
         all.put(Recording.MANIFEST, Canonical.digestOf(manifestBytes));
         all.forEach(lf::put);
         return new Built(messages, samples, sessions, occCount, incidents, boundaries.size(), lock);
@@ -780,6 +887,12 @@ public final class ScenarioBuilder {
 
     /** Replaces {@code out} with the recording; refuses to clear a non-empty directory that is not a recording. */
     private static void write(Path out, Map<String, byte[]> files, byte[] manifest) {
+        prepare(out);
+        writeFiles(out, files, manifest);
+    }
+
+    /** Empties {@code out} (creating it), refusing a non-empty directory that is not a recording. */
+    static void prepare(Path out) {
         try {
             if (Files.exists(out)) {
                 boolean empty;
@@ -790,6 +903,19 @@ public final class ScenarioBuilder {
                 }
             }
             Files.createDirectories(out);
+        } catch (IOException e) { throw new UncheckedIOException(e); }
+    }
+
+    /** Removes everything this build wrote under {@code out} (a refused synthesized build). */
+    static void clear(Path out) {
+        if (!Files.exists(out)) return;
+        try (Stream<Path> w = Files.walk(out)) {
+            for (Path p : w.sorted(Comparator.reverseOrder()).toList()) if (!p.equals(out)) Files.deleteIfExists(p);
+        } catch (IOException e) { throw new UncheckedIOException(e); }
+    }
+
+    private static void writeFiles(Path out, Map<String, byte[]> files, byte[] manifest) {
+        try {
             for (Map.Entry<String, byte[]> e : files.entrySet()) {
                 Path p = out;
                 for (String part : e.getKey().split("/")) p = p.resolve(part);

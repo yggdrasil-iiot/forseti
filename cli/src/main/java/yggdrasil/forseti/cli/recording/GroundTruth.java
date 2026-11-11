@@ -117,9 +117,13 @@ final class GroundTruth {
 
     // ---------------------------------------------------------------- what the builder hands over
 
-    /** One delivered member of one message. {@code key} is the JCS text of its sampleId. PLC fields describe the message's stamp. */
-    record Sample(String key, String device, String metric, long sourceTs, long status, JsonNode value, int batch,
-                  boolean coherent, String visitId, String unitId, Boolean present) {}
+    /** One delivered member of one message. Its sampleId is {@code (edge, device, birthPublishTs, metric, bdSeq, seq, publishTs)};
+     *  {@link #key()} spells it as JCS text on demand, so a recording of a million samples does not hold a million key strings. PLC fields
+     *  describe the message's stamp. */
+    record Sample(String edge, long birth, long bdSeq, long seq, long publishTs, String device, String metric, long sourceTs, long status,
+                  JsonNode value, int batch, boolean coherent, String visitId, String unitId, Boolean present) {
+        String key() { return ScenarioBuilder.sampleKey(edge, device, birth, metric, bdSeq, seq, publishTs); }
+    }
     /** One delivered record of an input topic, with the batch it was delivered in. */
     record Delivery(String topic, ObjectNode value, int batch) {}
     record Deadline(String kind, String ref, String station, long at, int cutA, int cutB) {}
@@ -169,6 +173,37 @@ final class GroundTruth {
         return c;
     }
 
+    private final Map<Delivery, Boolean> admission = new IdentityHashMap<>();
+
+    /** S3 for an occupancy input, against {@code admissionW}, the station's W1 at the cut before the one that delivers it (null before
+     *  the first cut: no bound). An arrival is refused when {@code admissionW >= eventTime + H + L}; a departure or an error declaration
+     *  when the visit it refers to is expired at admission ({@code admissionW >= onlineExpiresAt}: {@code leave + H + L} closed,
+     *  {@code enter + H + L} open), or, when that visit is unknown, when {@code admissionW >= eventTime + H + L}. */
+    private boolean admitted(Delivery d) {
+        Boolean known = admission.get(d);
+        if (known != null) return known;
+        boolean ok = true;
+        ObjectNode v = d.value();
+        long aw = d.batch() == 0 ? Long.MIN_VALUE : w1(v.get("readPoint").textValue(), d.batch() - 1);
+        long span = rule.horizon() + rule.lateness();
+        if (aw != Long.MIN_VALUE) {
+            boolean arrival = ScenarioBuilder.ARRIVING.equals(v.path("bizStep").asText());
+            if (arrival && !v.has("errorDeclaration")) ok = aw < v.get("eventTime").longValue() + span;
+            else {
+                String a = arrival ? v.get("eventId").textValue() : v.path("arrivalEventId").asText();
+                long earliestEnter = Long.MAX_VALUE;   // a visit's onlineExpiresAt is never before its enter + H + L
+                for (Delivery o : occupancy) if (o.value().get("eventId").textValue().equals(a)) earliestEnter = Math.min(earliestEnter, o.value().get("eventTime").longValue());
+                if (earliestEnter == Long.MAX_VALUE || aw >= earliestEnter + span) {
+                    Claim c = null;
+                    for (Claim x : occupancyClaims(d.batch() - 1)) if (x.key.equals(a)) c = x;
+                    ok = c == null ? aw < v.get("eventTime").longValue() + span : aw < (c.leave != null ? c.leave : c.enter) + span;
+                }
+            }
+        }
+        admission.put(d, ok);
+        return ok;
+    }
+
     /** Per occupancy eventId at cut k: its distinct contents (diagnostics and declaration stripped), its declarations, its deliveries. */
     private record EventState(List<ObjectNode> contents, List<ObjectNode> declarations, int deliveries) {}
 
@@ -176,7 +211,7 @@ final class GroundTruth {
         Map<String, List<ObjectNode>> contents = new LinkedHashMap<>(), decls = new LinkedHashMap<>();
         Map<String, Integer> count = new HashMap<>();
         for (Delivery d : occupancy) {
-            if (d.batch() > k) continue;
+            if (d.batch() > k || !admitted(d)) continue;
             String id = d.value().get("eventId").textValue();
             count.merge(id, 1, Integer::sum);
             ObjectNode b = base(d.value());
@@ -433,9 +468,11 @@ final class GroundTruth {
                     support.add(new long[] {Math.max(t, jFrom), Math.min(end, jTo)});
                 }
                 long unknownSlots = 0;
+                int first = 0;   // supports wholly before the slot are skipped by covered() anyway; skip them once (an open visit has 86,400 slots)
                 for (long i = 0; i < n; i++) {
                     long s0 = jFrom + i * rule.period(), s1 = Math.min(s0 + rule.period(), jTo);
-                    if (!covered(support, s0, s1)) unknownSlots++;
+                    while (first < support.size() && support.get(first)[1] <= s0) first++;
+                    if (!covered(support.subList(first, support.size()), s0, s1)) unknownSlots++;
                 }
                 if (unknownSlots > rule.maxMissing()) reasons.add("unknown-activity");
                 ObjectNode eq = equipment.computeIfAbsent(a.equipment(), z -> Json.object());
@@ -489,6 +526,11 @@ final class GroundTruth {
     // ---------------------------------------------------------------- expected.json
 
     ObjectNode expected(long t0, List<Deadline> deadlines, long settleTarget, ObjectNode minimalFacts) {
+        return expected(t0, deadlines, settleTarget, minimalFacts, 0);
+    }
+
+    /** {@code runStepMs > 0}: the per-sample expectation is written as runs ({@link ExpectedSamples}), for synthesized recordings. */
+    ObjectNode expected(long t0, List<Deadline> deadlines, long settleTarget, ObjectNode minimalFacts, long runStepMs) {
         int last = batches - 1;
         Eval fin = evaluate(last);
         ObjectNode e = Json.object();
@@ -523,14 +565,16 @@ final class GroundTruth {
             ObjectNode ee = o.putObject("equipmentEvidence");
             s.equipment().forEach(ee::set);
         }
-        ObjectNode ss = e.putObject("samples");
-        for (Map.Entry<Sample, Outcome> o : fin.outcomes().entrySet()) {
-            ObjectNode v = ss.putObject(o.getKey().key());
-            if (o.getValue().attributed() == null) v.putNull("attributedTo"); else v.put("attributedTo", o.getValue().attributed().ref);
-            v.put("state", o.getValue().state());
-            if (o.getValue().reason() == null) v.putNull("reason"); else v.put("reason", o.getValue().reason());
+        if (runStepMs > 0) {
+            e.put("samplesEncoding", ExpectedSamples.RUNS);
+            e.set("sampleRuns", ExpectedSamples.sampleRuns(fin.outcomes().entrySet(), runStepMs));
+        } else {
+            ObjectNode ss = e.putObject("samples");
+            for (Map.Entry<Sample, Outcome> o : fin.outcomes().entrySet()) ss.set(o.getKey().key(), expectation(o.getValue()));
         }
-        e.set("dispositions", dispositions(last));
+        ExpectedSamples.Builder messageRuns = runStepMs > 0 ? new ExpectedSamples.Builder(runStepMs, "messageId", "disposition") : null;
+        e.set("dispositions", dispositions(last, messageRuns));
+        if (messageRuns != null) e.set("messageDispositionRuns", messageRuns.toJson());
         ObjectNode md = e.putObject("messageMemberDispositions");
         md.put("topic", "ot.messages").put("part", "member:<metric>").put("disposition", "accepted").put("reason", "accepted");
         md.put("appliesTo", "every sampleId of samples{} not listed in dispositions{}; a message of a device outside the rule's catalog is listed by its message identity, part message");
@@ -566,21 +610,36 @@ final class GroundTruth {
         return e;
     }
 
+    static ObjectNode expectation(Outcome o) {
+        ObjectNode v = Json.object();
+        if (o.attributed() == null) v.putNull("attributedTo"); else v.put("attributedTo", o.attributed().ref);
+        v.put("state", o.state());
+        if (o.reason() == null) v.putNull("reason"); else v.put("reason", o.reason());
+        return v;
+    }
+
     private static int order(String ref) {
         if (ref.startsWith("visit-")) try { return Integer.parseInt(ref.substring(6)); } catch (NumberFormatException e) { return Integer.MAX_VALUE; }
         return Integer.MAX_VALUE;
     }
 
-    private final Map<Integer, Eval> cache = new HashMap<>();
+    // One evaluation is kept (an evaluation of a synthesized recording holds a million outcomes); statuses are remembered per cut and ref.
+    private Eval lastEval;
+    private final Map<String, String> statusMemo = new HashMap<>();
     private String statusOf(int k, String ref) {
-        Eval ev = cache.computeIfAbsent(k, this::evaluate);
-        for (Claim c : ev.claims()) if (c.ref.equals(ref)) return status(ev, c).status();
-        return "absent";
+        String key = k + "|" + ref, known = statusMemo.get(key);
+        if (known != null) return known;
+        if (lastEval == null || lastEval.k() != k) lastEval = evaluate(k);
+        String st = "absent";
+        for (Claim c : lastEval.claims()) if (c.ref.equals(ref)) st = status(lastEval, c).status();
+        statusMemo.put(key, st);
+        return st;
     }
 
     // ---------------------------------------------------------------- dispositions
 
-    private ObjectNode dispositions(int last) {
+    /** {@code messageRuns} non-null: the unknown-device message dispositions go there as runs instead of into the object. */
+    private ObjectNode dispositions(int last, ExpectedSamples.Builder messageRuns) {
         TreeMap<String, ObjectNode> out = new TreeMap<>();
         for (Delivery d : sessions) {
             ObjectNode v = d.value(), id = Json.object().put("edge", v.get("edge").asText()).put("device", v.get("device").asText());
@@ -604,18 +663,31 @@ final class GroundTruth {
                 continue;
             }
             Json.putSafe(n, "deliveries", e.getValue().size());
-            if (plain > 0) n.with("parts").set("event", outcome("accepted", lateAfterSettlement(e.getValue(), false) ? "late-after-settlement" : "accepted"));
+            Delivery firstPlain = e.getValue().stream().filter(d -> !d.value().has("errorDeclaration")).findFirst().orElse(null);
+            if (firstPlain != null && !admitted(firstPlain)) n.with("parts").set("event", outcome("replay-required", "beyond-horizon"));
+            else if (plain > 0) n.with("parts").set("event", outcome("accepted", lateAfterSettlement(e.getValue(), false) ? "late-after-settlement" : "accepted"));
             if (plain > 1) Json.putSafe(n, "duplicates", plain - 1);
             for (Delivery d : e.getValue()) if (d.value().has("errorDeclaration"))
-                n.with("parts").set("errorDeclaration", outcome("accepted", lateAfterSettlement(List.of(d), true) ? "late-after-settlement" : "accepted"));
+                n.with("parts").set("errorDeclaration", !admitted(d) ? outcome("replay-required", "correction-beyond-horizon")
+                    : outcome("accepted", lateAfterSettlement(List.of(d), true) ? "late-after-settlement" : "accepted"));
         }
         for (Delivery d : incidents) {
             ObjectNode v = d.value(), id = Json.object().put("source", v.get("source").asText()).put("incidentId", v.get("incidentId").asText());
             Json.putSafe(id, "revision", v.get("revision").longValue());
             entry(out, id, "quality.incidents").with("parts").set("event", outcome("accepted", "accepted"));
         }
+        ObjectNode unknownDevice = Json.object().put("topic", "ot.messages");
+        unknownDevice.with("parts").set("message", outcome("rejected", "unknown-device"));
         for (Sample x : samples) {
             if (catalog.contains(x.device())) continue;
+            if (messageRuns != null) {
+                messageRuns.add(x.device() + "\u0000" + x.birth() + "\u0000" + x.bdSeq(), () -> {
+                    ObjectNode n = Json.object().put("edge", x.edge()).put("device", x.device());
+                    Json.putSafe(n, "birthPublishTs", x.birth());
+                    return Json.putSafe(n, "bdSeq", x.bdSeq());
+                }, x.seq(), x.publishTs(), unknownDevice);
+                continue;
+            }
             ObjectNode id = (ObjectNode) Json.read(x.key().getBytes(java.nio.charset.StandardCharsets.UTF_8));
             id.remove("metric");
             entry(out, id, "ot.messages").with("parts").set("message", outcome("rejected", "unknown-device"));

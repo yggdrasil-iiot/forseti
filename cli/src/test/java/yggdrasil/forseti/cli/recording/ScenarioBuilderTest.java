@@ -45,6 +45,7 @@ class ScenarioBuilderTest {
     static List<String> handMade() throws IOException {
         try (Stream<Path> s = Files.list(SCENARIOS)) {
             return s.map(p -> p.getFileName().toString()).filter(n -> n.endsWith(".json") && !n.endsWith(".lock.json") && !n.startsWith("smoke"))
+                .filter(n -> !Json.read(SCENARIOS.resolve(n)).path("synthetic").asBoolean(false))   // the horizon scenarios are SynthesizerTest's
                 .map(n -> n.substring(0, n.length() - 5)).sorted().toList();
         }
     }

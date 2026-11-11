@@ -1,0 +1,37 @@
+{
+  "scenarioVersion": 1,
+  "name": "plc-horizon-no-end",
+  "synthetic": true,
+  "rule": {"stream": "line2-plc", "releaseId": "line2-rules-plc", "version": "1.0.0", "attributionRuleId": "line2-attribution", "attributionRuleVersion": "1.0.0"},
+  "mode": "plc-stamped",
+  "T0": 1794182400000,
+  "seed": 20261109,
+  "scanMs": 1000,
+  "edge": "edge-line2",
+  "devices": {
+    "synthetic-site:line2:station1": {"model": "station-stamped-model", "members": {"Running": "Boolean", "UnitId": "String", "VisitId": "String", "VisitPresent": "Boolean"}},
+    "synthetic-site:line2:station2": {"model": "station-model", "members": {"Running": "Boolean"}},
+    "synthetic-site:line2:station3": {"model": "station-model", "members": {"Running": "Boolean"}},
+    "synthetic-site:line2:station1:nutrunner1": {"model": "tool-stamped-model", "members": {"Torque": "Double", "Running": "Boolean", "UnitId": "String", "VisitId": "String", "VisitPresent": "Boolean"}},
+    "synthetic-site:line2:station1:nutrunner2": {"model": "tool-model", "members": {"Torque": "Double", "Running": "Boolean"}}
+  },
+  "telemetryFrom": 0,
+  "telemetryTo": 2400000,
+  "visits": [
+    {"unit": "UNIT0000000000001", "station": "synthetic-site:line2:station1", "enter": 600000, "leave": 660000, "tools": ["nutrunner1"], "visitSeq": 1},
+    {"unit": "UNIT0000000000002", "station": "synthetic-site:line2:station1", "enter": 780000, "leave": 840000, "tools": ["nutrunner2"], "visitSeq": 2},
+    {"unit": "UNIT0000000000003", "station": "synthetic-site:line2:station1", "enter": 960000, "leave": 1020000, "tools": ["nutrunner1", "nutrunner2"], "visitSeq": 3}
+  ],
+  "toolActivity": {"startAfterEnter": 5000, "endBeforeLeave": 1000, "torque": {"min": 10.0, "max": 45.0}},
+  "incidents": [],
+  "batchMs": 3600000,
+  "denseBatches": {"batchMs": 60000, "until": 2400000},
+  "tailMs": 751000,
+  "injections": [
+    {"type": "plc-identity", "station": "synthetic-site:line2:station1", "equipment": ["synthetic-site:line2:station1", "synthetic-site:line2:station1:nutrunner1"], "visitId": "V1", "unit": "UNIT0000000000001", "present": {"from": 600000, "to": 660000}},
+    {"type": "plc-identity", "station": "synthetic-site:line2:station1", "equipment": ["synthetic-site:line2:station1", "synthetic-site:line2:station1:nutrunner1"], "visitId": "V2", "unit": "UNIT0000000000002", "present": {"from": 780000, "to": 840000}},
+    {"type": "plc-identity", "station": "synthetic-site:line2:station1", "equipment": ["synthetic-site:line2:station1", "synthetic-site:line2:station1:nutrunner1"], "visitId": "V3", "unit": "UNIT0000000000003", "present": {"from": 960000, "to": 1020000}},
+    {"type": "no-visit-end", "station": "synthetic-site:line2:station1", "visitId": "V3"}
+  ],
+  "horizonDeadlines": ["V3"]
+}
