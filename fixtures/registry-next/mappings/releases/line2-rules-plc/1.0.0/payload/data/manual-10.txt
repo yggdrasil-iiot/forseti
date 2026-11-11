@@ -1,0 +1,2 @@
+Field label: nutrunner1-visit
+Line2/Station1/Nutrunner1.VisitId, String

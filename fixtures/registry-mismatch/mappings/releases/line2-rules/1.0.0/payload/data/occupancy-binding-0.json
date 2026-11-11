@@ -1,0 +1,29 @@
+{
+  "profileVersion": "0.1.0",
+  "topic": "mfg.occupancy",
+  "format": {
+    "schemaId": "urn:forseti:schema:occupancy:1.0.0",
+    "schemaSha256": "0000000000000000000000000000000000000000000000000000000000000001"
+  },
+  "identity": {
+    "scheme": "mes-unit-id",
+    "pattern": "[A-Z0-9]{17}"
+  },
+  "enter": {
+    "bizStep": "urn:epcglobal:cbv:bizstep:arriving"
+  },
+  "leave": {
+    "bizStep": "urn:epcglobal:cbv:bizstep:departing"
+  },
+  "correction": {
+    "errorDeclaration": "reissue-same-event-id",
+    "reasons": [
+      "urn:epcglobal:cbv:er:did_not_occur",
+      "urn:epcglobal:cbv:er:incorrect_data"
+    ]
+  },
+  "timestampBasis": "eventTime",
+  "sources": [
+    "mes-line2"
+  ]
+}

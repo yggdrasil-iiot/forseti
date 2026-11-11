@@ -1,0 +1,99 @@
+{
+  "kind": "mapping-set",
+  "schemaVersion": "2.12.0",
+  "id": "nutrunner2-mapping",
+  "version": "1.0.0",
+  "equipmentInstanceId": "nutrunner2",
+  "targetInstanceRef": {
+    "id": "nutrunner2",
+    "version": "1.0.0"
+  },
+  "mappings": [
+    {
+      "mappingId": "nutrunner2-torque",
+      "valueRef": {
+        "kind": "source",
+        "sourceRef": {
+          "id": "nutrunner2-torque",
+          "version": "1.0.0"
+        }
+      },
+      "memberPath": [
+        {
+          "kind": "member",
+          "memberId": "torque"
+        }
+      ],
+      "transform": [
+        {
+          "op": "cast",
+          "to": "Double",
+          "rounding": "exact",
+          "overflow": "error"
+        }
+      ],
+      "outputUnit": {
+        "status": "known",
+        "code": "N.m"
+      },
+      "invalidValuePolicy": "bad-quality",
+      "evidenceRefs": [
+        {
+          "artifactId": "manual-nutrunner2-torque",
+          "locator": {
+            "kind": "text-line",
+            "line": 1
+          }
+        }
+      ],
+      "temporalPolicy": {
+        "timestampBasis": "source",
+        "maxAgeMs": 5000,
+        "maxSkewMs": 0,
+        "uncertainInput": "reject",
+        "missingInput": "reject",
+        "badInput": "propagate",
+        "assembly": "latest"
+      }
+    },
+    {
+      "mappingId": "nutrunner2-running",
+      "valueRef": {
+        "kind": "source",
+        "sourceRef": {
+          "id": "nutrunner2-running",
+          "version": "1.0.0"
+        }
+      },
+      "memberPath": [
+        {
+          "kind": "member",
+          "memberId": "running"
+        }
+      ],
+      "transform": [],
+      "outputUnit": {
+        "status": "not-applicable"
+      },
+      "invalidValuePolicy": "bad-quality",
+      "evidenceRefs": [
+        {
+          "artifactId": "manual-nutrunner2-running",
+          "locator": {
+            "kind": "text-line",
+            "line": 1
+          }
+        }
+      ],
+      "temporalPolicy": {
+        "timestampBasis": "source",
+        "maxAgeMs": 5000,
+        "maxSkewMs": 0,
+        "uncertainInput": "reject",
+        "missingInput": "reject",
+        "badInput": "propagate",
+        "assembly": "latest"
+      }
+    }
+  ]
+}

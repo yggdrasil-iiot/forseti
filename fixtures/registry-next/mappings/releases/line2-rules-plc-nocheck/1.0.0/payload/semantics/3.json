@@ -1,0 +1,72 @@
+{
+  "kind": "semantic-definition",
+  "schemaVersion": "2.12.0",
+  "id": "tool-stamped-model",
+  "version": "1.0.0",
+  "members": [
+    {
+      "memberId": "torque",
+      "name": "Torque",
+      "semanticId": "urn:bifrost:sem:Tool/Torque",
+      "description": "Tightening torque",
+      "valueType": "Double",
+      "unit": {
+        "status": "known",
+        "code": "N.m"
+      },
+      "role": "measurement",
+      "range": {
+        "low": "0",
+        "high": "100"
+      }
+    },
+    {
+      "memberId": "running",
+      "name": "Running",
+      "semanticId": "urn:bifrost:sem:Tool/Running",
+      "description": "Tool is working",
+      "valueType": "Boolean",
+      "unit": {
+        "status": "not-applicable"
+      },
+      "role": "status",
+      "range": null
+    },
+    {
+      "memberId": "unit",
+      "name": "UnitId",
+      "semanticId": "urn:bifrost:sem:Tool/UnitId",
+      "description": "Unit present at the tool, as the controller stamps it",
+      "valueType": "String",
+      "unit": {
+        "status": "not-applicable"
+      },
+      "role": "status",
+      "range": null
+    },
+    {
+      "memberId": "visit",
+      "name": "VisitId",
+      "semanticId": "urn:bifrost:sem:Tool/VisitId",
+      "description": "Producer visit id of the present unit",
+      "valueType": "String",
+      "unit": {
+        "status": "not-applicable"
+      },
+      "role": "status",
+      "range": null
+    },
+    {
+      "memberId": "present",
+      "name": "VisitPresent",
+      "semanticId": "urn:bifrost:sem:Tool/VisitPresent",
+      "description": "True while a unit is present",
+      "valueType": "Boolean",
+      "unit": {
+        "status": "not-applicable"
+      },
+      "role": "status",
+      "range": null
+    }
+  ]
+}

@@ -1,0 +1,116 @@
+{
+  "kind": "equipment-hierarchy",
+  "schemaVersion": "2.23.0",
+  "id": "line2-plant",
+  "version": "1.0.0",
+  "label": "Synthetic plant, line 2",
+  "levelVocabulary": "opc-10030-1.00-isa95-equipment-element-level-enum",
+  "nodes": [
+    {
+      "equipmentInstanceId": "synthetic-site",
+      "label": "Synthetic site",
+      "equipmentLevel": "SITE_1",
+      "parentEquipmentInstanceId": null,
+      "evidenceRefs": [
+        {
+          "artifactId": "hierarchy-plant-register",
+          "locator": {
+            "kind": "text-line",
+            "line": 2
+          }
+        }
+      ]
+    },
+    {
+      "equipmentInstanceId": "line2",
+      "label": "Line 2",
+      "equipmentLevel": "PRODUCTIONLINE_5",
+      "parentEquipmentInstanceId": "synthetic-site",
+      "evidenceRefs": [
+        {
+          "artifactId": "hierarchy-plant-register",
+          "locator": {
+            "kind": "text-line",
+            "line": 3
+          }
+        }
+      ]
+    },
+    {
+      "equipmentInstanceId": "station1",
+      "label": "Station 1",
+      "equipmentLevel": "WORKCELL_6",
+      "parentEquipmentInstanceId": "line2",
+      "evidenceRefs": [
+        {
+          "artifactId": "hierarchy-plant-register",
+          "locator": {
+            "kind": "text-line",
+            "line": 4
+          }
+        }
+      ]
+    },
+    {
+      "equipmentInstanceId": "station2",
+      "label": "Station 2",
+      "equipmentLevel": "WORKCELL_6",
+      "parentEquipmentInstanceId": "line2",
+      "evidenceRefs": [
+        {
+          "artifactId": "hierarchy-plant-register",
+          "locator": {
+            "kind": "text-line",
+            "line": 5
+          }
+        }
+      ]
+    },
+    {
+      "equipmentInstanceId": "nutrunner1",
+      "label": "Nutrunner 1",
+      "equipmentLevel": "WORKUNIT_11",
+      "parentEquipmentInstanceId": "station1",
+      "evidenceRefs": [
+        {
+          "artifactId": "hierarchy-plant-register",
+          "locator": {
+            "kind": "text-line",
+            "line": 6
+          }
+        }
+      ]
+    },
+    {
+      "equipmentInstanceId": "nutrunner2",
+      "label": "Nutrunner 2",
+      "equipmentLevel": "WORKUNIT_11",
+      "parentEquipmentInstanceId": "station1",
+      "evidenceRefs": [
+        {
+          "artifactId": "hierarchy-plant-register",
+          "locator": {
+            "kind": "text-line",
+            "line": 7
+          }
+        }
+      ]
+    },
+    {
+      "equipmentInstanceId": "station3",
+      "label": "Station 3",
+      "equipmentLevel": "WORKCELL_6",
+      "parentEquipmentInstanceId": "line2",
+      "evidenceRefs": [
+        {
+          "artifactId": "hierarchy-plant-register",
+          "locator": {
+            "kind": "text-line",
+            "line": 8
+          }
+        }
+      ]
+    }
+  ],
+  "evidenceRefs": []
+}
