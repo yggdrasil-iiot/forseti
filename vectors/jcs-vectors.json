@@ -1,0 +1,101 @@
+{
+  "vectorsVersion": 1,
+  "vectors": [
+    {
+      "id": "empty-object",
+      "inputText": "{}",
+      "canonical": "{}",
+      "sha256": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
+    },
+    {
+      "id": "empty-array",
+      "inputText": "[]",
+      "canonical": "[]",
+      "sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+    },
+    {
+      "id": "key-order-utf16",
+      "inputText": "{\"b\":1,\"a\":2,\"\\u00e9\":3,\"B\":4,\"aa\":5,\"\\ud83d\\ude00\":6}",
+      "canonical": "{\"B\":4,\"a\":2,\"aa\":5,\"b\":1,\"é\":3,\"😀\":6}",
+      "sha256": "bcf942577e4eb6c4fd77a53f60810a812e0fc9c520553573ca1e65309de82449"
+    },
+    {
+      "id": "integers",
+      "inputText": "[0,-0,1,-1,9007199254740991,-9007199254740991,1794182400000]",
+      "canonical": "[0,0,1,-1,9007199254740991,-9007199254740991,1794182400000]",
+      "sha256": "e4d495a48f63d7edd3c4e5c87e622eb3a7b3b6886eb6fec95aaf0446079b7514"
+    },
+    {
+      "id": "doubles-es6",
+      "inputText": "[1.0,100.0,0.1,1e21,1e-7,1.2345678901234568e20,5e-324,1.7976931348623157e308,0.30000000000000004,-0.0,2.5]",
+      "canonical": "[1,100,0.1,1e+21,1e-7,123456789012345680000,5e-324,1.7976931348623157e+308,0.30000000000000004,0,2.5]",
+      "sha256": "dc1a0d734ac298caf428fc9e588cc0d535934a29f1f630590068f57eb29b76d4"
+    },
+    {
+      "id": "strings-escapes",
+      "inputText": "[\"\\u0000\",\"\\u001f\",\"\\\"\",\"\\\\\",\"/\",\"\\b\\f\\n\\r\\t\",\"\\u007f\",\"\\u2028\",\"e\\u0301\"]",
+      "canonical": "[\"\\u0000\",\"\\u001f\",\"\\\"\",\"\\\\\",\"/\",\"\\b\\f\\n\\r\\t\",\"\",\" \",\"é\"]",
+      "sha256": "4e03c2a031a1082d6dc546bdc3257c91c7fcfcaa105ff18e5ec66094d6103685"
+    },
+    {
+      "id": "nested",
+      "inputText": "{\"z\":[{\"y\":null,\"x\":true,\"w\":false}],\"a\":{\"c\":[],\"b\":{}}}",
+      "canonical": "{\"a\":{\"b\":{},\"c\":[]},\"z\":[{\"w\":false,\"x\":true,\"y\":null}]}",
+      "sha256": "a506418716ef3b50897ebcc20cc344dee6b6db3d0578d07020ba008141c50776"
+    },
+    {
+      "id": "whitespace-ignored",
+      "inputText": "{ \"k\" : [ 1 , 2 ] , \"j\" : \"v\" }",
+      "canonical": "{\"j\":\"v\",\"k\":[1,2]}",
+      "sha256": "4812b35e65339fa48fcda7f5d1838f9e199daf6277b933f52075744dd5ef8a22"
+    },
+    {
+      "id": "work-record-shape",
+      "inputText": "{\"status\":\"complete\",\"interval\":{\"enter\":1794183000000,\"leave\":1794183060000,\"attributionEnd\":null},\"members\":[{\"mappingId\":\"nutrunner1-torque\",\"count\":55,\"min\":10.5,\"max\":42.0,\"last\":41.25}],\"insufficiencyReasons\":[]}",
+      "canonical": "{\"insufficiencyReasons\":[],\"interval\":{\"attributionEnd\":null,\"enter\":1794183000000,\"leave\":1794183060000},\"members\":[{\"count\":55,\"last\":41.25,\"mappingId\":\"nutrunner1-torque\",\"max\":42,\"min\":10.5}],\"status\":\"complete\"}",
+      "sha256": "356b2bf6913d92e59131dbf013d6f74f887171c006d52858f5b7057ab0699221"
+    }
+  ],
+  "refusals": [
+    {
+      "id": "integer-above-safe",
+      "inputText": "[9007199254740992]",
+      "reason": "integer-domain"
+    },
+    {
+      "id": "integer-below-safe",
+      "inputText": "[-9007199254740992]",
+      "reason": "integer-domain"
+    },
+    {
+      "id": "nan-literal",
+      "inputText": "[NaN]",
+      "reason": "non-finite"
+    },
+    {
+      "id": "infinity-literal",
+      "inputText": "[Infinity]",
+      "reason": "non-finite"
+    },
+    {
+      "id": "duplicate-key",
+      "inputText": "{\"a\":1,\"a\":2}",
+      "reason": "not-json"
+    },
+    {
+      "id": "lone-surrogate",
+      "inputText": "[\"\\ud83d\"]",
+      "reason": "not-json"
+    },
+    {
+      "id": "truncated",
+      "inputText": "{\"a\":",
+      "reason": "not-json"
+    },
+    {
+      "id": "two-values",
+      "inputText": "{} {}",
+      "reason": "not-json"
+    }
+  ]
+}
