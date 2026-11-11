@@ -120,6 +120,31 @@
       "id": "S-DETERMINISM",
       "pr": 2,
       "description": "on both recordings, the default run and two --shuffle runs with seeds 7 and 20261110: journal and quarantine lines equal once value.envelope.pins.job.runId is removed, cuts.json equal byte for byte, run.json equal but for runId, pins.job.runId, seed, shuffle and command"
+    },
+    {
+      "id": "T-PROGRESS-TRACKER",
+      "pr": 3,
+      "description": "on fixtures/recordings/smoke-incident: forseti.affected and forseti.affected-sets carry one stage-2 progress per cut and station after both stage-1 progresses of the cut (stage1ProgressRefs) with the six incident barriers of the batch manifest (incidentOffsets count 6), W2 == W1 in cuts.json and = min of the two stage-1 W1, rows stamped with W2; the stage-2 ledger progress per cut on the station partitions and partition 6, barriers the six incident partitions"
+    },
+    {
+      "id": "T-SMOKE-INCIDENT",
+      "pr": 3,
+      "description": "on fixtures/recordings/smoke-incident at the last cut: one live assessment, UNIT0000000000001 affected-candidate equipment-activity, one live affected set with units of one, coverage.settled true and coverage.status complete"
+    },
+    {
+      "id": "T-CASCADE",
+      "pr": 3,
+      "description": "a smoke-incident-cascade variant written by the gate (an error declaration did_not_occur of occ-1 in the last batch): the assessment becomes not-affected-within-scope basis-retracted-error-declaration in the cut the work record is retracted, citing the retracted digest; J-BASIS-CURRENT holds at every cut on smoke-incident and the variant"
+    },
+    {
+      "id": "T-DELETE",
+      "pr": 3,
+      "description": "a smoke-incident-narrow variant written by the gate (incident suspectFrom T+30 s, the visit open, a late departure at T+20 s delivered at cut 30): the unit row ends with a delete at cut 30 superseding the last digest, revisions contiguous, JournalFold violations empty, the set has no units"
+    },
+    {
+      "id": "T-LEDGER-2",
+      "pr": 3,
+      "description": "on smoke-incident and a variant with an incident on station2: one forseti.dispositions-stage2 disposition per incident delivery (inc-1 accepted on station1 partition 0, the station2 incident rejected outside-incident-scope on partition 6), stage-2 ledger progress per cut on partitions 0-2 and 6"
     }
   ]
 }

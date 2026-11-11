@@ -143,7 +143,8 @@ final class Stage1Assertions {
         for (JsonNode n : l) {
             JsonNode v = n.get("value");
             if (isProgress(n)) e.add(Progress.fromJson(v));
-            else if (topic.equals(LEDGER)) {
+            else if (v.path("delete").isObject()) e.add(Delete.fromJson(v.get("delete")));   // stage 2's forseti.affected only
+            else if (topic.equals(LEDGER) || topic.equals(Stage2Assertions.LEDGER2)) {
                 ObjectNode d = Json.object();
                 d.set("key", n.get("key")); d.set("body", v.get("body")); d.set("revision", v.get("revision"));
                 e.add(Disposition.fromJson(d));

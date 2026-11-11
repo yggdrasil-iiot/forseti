@@ -25,7 +25,8 @@ import yggdrasil.forseti.core.stage1.QuarantineRecord;
  *  disposition {@code {"key": <delivery key>, "headers": {...}, "value": {"body", "revision"}}}; a quarantine record
  *  {@code {"key": <input origin>, "headers": {...}, "value": <the raw bytes record>}}. */
 final class JournalFiles implements AutoCloseable {
-    static final String JOURNALS = "journals", QUARANTINE = "quarantine", DISPOSITIONS = "forseti.dispositions-stage1";
+    static final String JOURNALS = "journals", QUARANTINE = "quarantine", DISPOSITIONS = "forseti.dispositions-stage1",
+        DISPOSITIONS2 = "forseti.dispositions-stage2";
 
     private final Path out;
     private final Map<Path, OutputStream> open = new TreeMap<>();
@@ -58,14 +59,16 @@ final class JournalFiles implements AutoCloseable {
         write(journal(out, topic, partition), n);
     }
 
-    void disposition(Disposition d, int partition) {
+    void disposition(Disposition d, int partition) { disposition(DISPOSITIONS, d, partition); }
+
+    void disposition(String topic, Disposition d, int partition) {
         ObjectNode n = Json.object();
         n.set("key", d.key().toJson());
         n.set("headers", headers(d.generation()));
         ObjectNode v = n.putObject("value");
         v.set("body", d.body().toJson());
         Json.putSafe(v, "revision", d.revision());
-        write(journal(out, DISPOSITIONS, partition), n);
+        write(journal(out, topic, partition), n);
     }
 
     void quarantine(QuarantineRecord q, int partition) {
