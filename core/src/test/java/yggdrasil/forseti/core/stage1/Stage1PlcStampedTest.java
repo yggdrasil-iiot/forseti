@@ -230,6 +230,34 @@ class Stage1PlcStampedTest {
         assertEquals(T + 60_000, b.get("interval").get("leave").longValue());
     }
 
+    /** 11c as the scenario builds it: the mixed message's identity members repeat the previous coherent scan (same sourceTs, same
+     *  values), so each is one observation delivered twice, attributed through the coherent message and incoherent in the mixed one. An
+     *  observation that serves two judgements appears once in the digest: the later incoherent delivery does not remove it. */
+    @Test void anIncoherentRedeliveryKeepsTheObservationsContribution() {
+        long at = T + 30_000;
+        Driver a = plc(), b = plc();
+        Stage1PlcStampedTest ta = new Stage1PlcStampedTest(), tb = new Stage1PlcStampedTest();
+        for (long t = T; t < T + 60_000; t += 1000) {
+            ta.msg(a, S1, t, "V1", U1, true);
+            tb.msg(b, S1, t, "V1", U1, true);
+            if (t == at) {
+                ta.msg(a, NR1, t, "V1", U1, true, tweak(NR1, "VisitId", m -> { Json.putSafe(m, "sourceTs", at - 500); Json.putSafe(m, "serverTs", at - 490); }));
+                Consumer<ObjectNode> previous = m -> { Json.putSafe(m, "sourceTs", at - 1000); Json.putSafe(m, "serverTs", at - 990); };
+                tb.msg(b, NR1, t, "V1", U1, true, tweak(NR1, "UnitId", previous), tweak(NR1, "VisitId", previous), tweak(NR1, "VisitPresent", previous));
+            } else {
+                ta.msg(a, NR1, t, "V1", U1, true);
+                tb.msg(b, NR1, t, "V1", U1, true);
+            }
+        }
+        ta.scans(a, T + 60_000, T + 62_000, "V1", U1, false);
+        tb.scans(b, T + 60_000, T + 62_000, "V1", U1, false);
+        a.cut(T + 60_000 + L);
+        b.cut(T + 60_000 + L);
+        JsonNode wa = workRecord(a, "V1"), wb = workRecord(b, "V1");
+        assertEquals(evidence(wa, NR1).get("samplesDigest").asText(), evidence(wb, NR1).get("samplesDigest").asText(), "nutrunner1's samplesDigest");
+        assertEquals(wa.get("samplesDigest").asText(), wb.get("samplesDigest").asText(), "the visit's samplesDigest");
+    }
+
     @Test void crossCheckMarksIdentityMismatchWithoutChangingAttribution() {
         Driver a = baseline(plc()), b = baseline(plc());
         Inputs.InputRecord arr = a.input(OCC, arrival("occ-1", T + 20_000, U2, S1));

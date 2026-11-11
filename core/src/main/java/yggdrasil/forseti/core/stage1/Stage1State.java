@@ -40,6 +40,10 @@ public final class Stage1State {
     final TreeMap<String, String> messages = new TreeMap<>();
     final TreeMap<String, Session> sessions = new TreeMap<>();
     final TreeMap<String, Snapshot> snapshots = new TreeMap<>();
+    /** The occupancy visits as they stood at the last committed progress, by {@code source NUL arrivalEventId}: S3 admission and the
+     *  {@code late-after-settlement} test (S4) judge an occupancy input against them, not against the visit as earlier inputs of the
+     *  same cut changed it. Set at every cut close. */
+    final TreeMap<String, Admitted> admissionVisits = new TreeMap<>();
     /** Origins of messages and session events whose raw bytes went to the quarantine already. */
     final TreeSet<String> quarantined = new TreeSet<>();
     DeadlineIndex deadlines = new DeadlineIndex();
@@ -120,6 +124,8 @@ public final class Stage1State {
     }
     /** A visit whose online state expired: what a later window needs, and the deadline the S3 test compares with. */
     record Expired(ObjectNode visitRef, long enter, Long leave, Long attributionEnd, boolean retracted, long onlineExpiresAt) {}
+    /** One visit at the last committed progress: its valid leave (or null) and its {@code onlineExpiresAt}. */
+    record Admitted(Long leave, long onlineExpiresAt) {}
 
     /** One sample by sampleId. {@code value} is the parsed binary64, Boolean or String; {@code active} the S9 value. */
     static final class Sample {
@@ -194,6 +200,8 @@ public final class Stage1State {
             e.put("retracted", v.retracted());
             Json.putSafe(e, "onlineExpiresAt", v.onlineExpiresAt());
         });
+        ObjectNode av = n.putObject("admissionVisits");
+        admissionVisits.forEach((k, v) -> { ObjectNode e = av.putObject(k); putLong(e, "leave", v.leave()); Json.putSafe(e, "onlineExpiresAt", v.onlineExpiresAt()); });
         ObjectNode s = n.putObject("samples");
         samples.forEach((k, x) -> {
             ObjectNode e = s.putObject(k);
@@ -277,6 +285,8 @@ public final class Stage1State {
             st.expired.put(e.getKey(), new Expired((ObjectNode) v.get("visitRef"), Json.safeLong(v.get("enter"), "enter", Json.ANY), getLong(v, "leave"),
                 getLong(v, "attributionEnd"), v.get("retracted").booleanValue(), Json.safeLong(v.get("onlineExpiresAt"), "onlineExpiresAt", Json.ANY)));
         });
+        n.get("admissionVisits").fields().forEachRemaining(e -> st.admissionVisits.put(e.getKey(),
+            new Admitted(getLong(e.getValue(), "leave"), Json.safeLong(e.getValue().get("onlineExpiresAt"), "onlineExpiresAt", Json.ANY))));
         n.get("samples").fields().forEachRemaining(e -> {
             JsonNode v = e.getValue();
             Sample x = new Sample((ObjectNode) v.get("sampleId"), Json.text(v, "device"), Json.text(v, "metric"), Json.text(v, "memberKey"), getLong(v, "sourceTs"),
