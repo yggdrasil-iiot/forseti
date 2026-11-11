@@ -1,0 +1,31 @@
+{
+  "expectedVersion": 1,
+  "scope": "minimal",
+  "visits": [
+    {
+      "visitRef": "visit-1",
+      "unitId": "UNIT0000000000001",
+      "station": "synthetic-site:line2:station1",
+      "enter": 1794183000000,
+      "leave": 1794183060000,
+      "toolsUsed": [
+        "synthetic-site:line2:station1:nutrunner1"
+      ]
+    }
+  ],
+  "plcVisits": [
+    {
+      "visitId": "V1",
+      "unitId": "UNIT0000000000001",
+      "station": "synthetic-site:line2:station1",
+      "equipment": [
+        "synthetic-site:line2:station1",
+        "synthetic-site:line2:station1:nutrunner1"
+      ],
+      "enter": 1794183000000,
+      "leave": 1794183060000
+    }
+  ],
+  "incidents": [],
+  "settleTargetW": 1794183780000
+}

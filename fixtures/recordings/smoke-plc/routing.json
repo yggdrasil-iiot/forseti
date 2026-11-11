@@ -1,0 +1,58 @@
+{
+  "partitions": 6,
+  "stations": {
+    "synthetic-site:line2:station1": 0,
+    "synthetic-site:line2:station2": 1,
+    "synthetic-site:line2:station3": 2
+  },
+  "devices": {
+    "synthetic-site:line2:station1": {
+      "station": "synthetic-site:line2:station1",
+      "rawPartition": 4
+    },
+    "synthetic-site:line2:station1:nutrunner1": {
+      "station": "synthetic-site:line2:station1",
+      "rawPartition": 1
+    },
+    "synthetic-site:line2:station1:nutrunner2": {
+      "station": "synthetic-site:line2:station1",
+      "rawPartition": 5
+    },
+    "synthetic-site:line2:station2": {
+      "station": "synthetic-site:line2:station2",
+      "rawPartition": 2
+    },
+    "synthetic-site:line2:station3": {
+      "station": "synthetic-site:line2:station3",
+      "rawPartition": 1
+    }
+  },
+  "subscribed": {
+    "ot.messages": [
+      1,
+      2,
+      4,
+      5
+    ],
+    "ot.sessions": [
+      1,
+      2,
+      4,
+      5
+    ],
+    "mfg.occupancy": [
+      0,
+      1,
+      2
+    ],
+    "quality.incidents": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5
+    ]
+  },
+  "routingDigest": "6e9ea0970eac8a1762834d63133b0de77fd7f11315667977afd14ef4a352f952"
+}

@@ -1,0 +1,28 @@
+{
+  "scenarioVersion": 1,
+  "name": "smoke",
+  "rule": {"stream": "line2", "releaseId": "line2-rules", "version": "1.0.0", "attributionRuleId": "line2-attribution", "attributionRuleVersion": "1.0.0"},
+  "mode": "occupancy-join",
+  "T0": 1794182400000,
+  "seed": 20261109,
+  "scanMs": 1000,
+  "edge": "edge-line2",
+  "temporal": {"outOfOrdernessMs": 30000, "allowedLatenessMs": 720000},
+  "devices": {
+    "synthetic-site:line2:station1": {"model": "station-model", "members": {"Running": "Boolean"}},
+    "synthetic-site:line2:station2": {"model": "station-model", "members": {"Running": "Boolean"}},
+    "synthetic-site:line2:station3": {"model": "station-model", "members": {"Running": "Boolean"}},
+    "synthetic-site:line2:station1:nutrunner1": {"model": "tool-model", "members": {"Torque": "Double", "Running": "Boolean"}},
+    "synthetic-site:line2:station1:nutrunner2": {"model": "tool-model", "members": {"Torque": "Double", "Running": "Boolean"}}
+  },
+  "telemetryFrom": 600000,
+  "telemetryTo": 660000,
+  "visits": [
+    {"unit": "UNIT0000000000001", "station": "synthetic-site:line2:station1", "enter": 600000, "leave": 660000, "tools": ["nutrunner1"], "visitSeq": 1}
+  ],
+  "toolActivity": {"startAfterEnter": 5000, "endBeforeLeave": 1000, "torque": {"min": 10.0, "max": 45.0}},
+  "incidents": [],
+  "batchMs": 30000,
+  "tailMs": 751000,
+  "injections": []
+}
