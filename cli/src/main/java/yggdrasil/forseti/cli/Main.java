@@ -1,5 +1,6 @@
 package yggdrasil.forseti.cli;
 
+import com.fasterxml.jackson.databind.node.ObjectNode;
 import java.io.IOException;
 import java.io.PrintStream;
 import java.io.UncheckedIOException;
@@ -7,12 +8,15 @@ import java.nio.file.*;
 import java.util.*;
 import java.util.stream.Stream;
 import yggdrasil.forseti.cli.gate.CoreGate;
+import yggdrasil.forseti.cli.harness.ReferenceEngine;
 import yggdrasil.forseti.cli.recording.Recording;
 import yggdrasil.forseti.cli.recording.ScenarioBuilder;
 import yggdrasil.forseti.core.Json;
+import yggdrasil.forseti.core.canon.Canonical;
 
 /** {@code forseti <command> <verb> [--flag value | --switch]...}. Exit codes: 0 done, 1 a check failed, 2 usage or input error.
- *  Commands are dispatched by name; {@code gate} takes its flags from the second argument on ({@code forseti gate --engine core ...}). */
+ *  Commands are dispatched by name; {@code gate} and {@code run} take their flags from the second argument on
+ *  ({@code forseti gate --engine core ...}, {@code forseti run --engine core ...}). */
 public final class Main {
     private Main() {}
 
@@ -23,6 +27,11 @@ public final class Main {
             Args flags;
             try { flags = Args.parse(args, 1, Set.of()); } catch (IllegalArgumentException e) { err.println(e.getMessage()); return usage(err); }
             return CoreGate.main(flags, String.join(" ", args), out, err);
+        }
+        if (args.length >= 1 && args[0].equals("run")) {
+            Args flags;
+            try { flags = Args.parse(args, 1, Set.of("shuffle")); } catch (IllegalArgumentException e) { err.println(e.getMessage()); return usage(err); }
+            return run(flags, "forseti " + String.join(" ", args), out, err);
         }
         if (args.length < 2) return usage(err);
         Args flags;
@@ -44,7 +53,64 @@ public final class Main {
         err.println("usage: forseti recordings build --scenario <file> --out <dir> [--lock]");
         err.println("       forseti recordings verify --scenario <file> --out <dir>");
         err.println("       forseti gate --engine core [--out <dir>] [--python <interpreter>] [--negative-control <name>] [--seed <n>]");
+        err.println("       forseti run --engine core --recording <dir> --registry <dir> --state <dir> --generation <n> --out <run dir>");
+        err.println("                   [--seed <n>] [--shuffle] [--subscribe <topic>=<p,p>[;<topic>=<p,p>]] [--artifact-sha256 <hex>]");
         return 2;
+    }
+
+    /** {@code forseti run --engine core ...}: the reference harness. Prints {@code {runId, generation, cuts, out}} (exit 0), a refusal
+     *  {@code {"refusal": <code>, ...evidence}} (exit 1), or a usage or input error (exit 2). */
+    private static int run(Args f, String command, PrintStream out, PrintStream err) {
+        ReferenceEngine.Options o;
+        try {
+            f.only(Set.of("engine", "recording", "registry", "state", "generation", "out", "seed", "shuffle", "subscribe", "artifact-sha256"));
+            if (!"core".equals(f.required("engine"))) throw new IllegalArgumentException("--engine core is the only engine of this step");
+            long generation = number(f.required("generation"), "--generation", 1);
+            long seed = number(f.get("seed", Long.toString(ReferenceEngine.DEFAULT_SEED)), "--seed", 0);
+            String artifact = f.get("artifact-sha256").orElse(null);
+            if (artifact != null && !artifact.matches("[0-9a-f]{64}")) throw new IllegalArgumentException("--artifact-sha256 is 64 lowercase hex digits");
+            o = new ReferenceEngine.Options(Path.of(f.required("recording")), Path.of(f.required("registry")), Path.of(f.required("state")), generation,
+                Path.of(f.required("out")), seed, f.has("shuffle"), subscribe(f.get("subscribe").orElse(null)), artifact, command);
+        } catch (IllegalArgumentException e) { err.println(e.getMessage()); return usage(err); }
+        try {
+            ReferenceEngine.Result r = ReferenceEngine.run(o);
+            ObjectNode n = Json.object().put("runId", r.runId());
+            Json.putSafe(n, "generation", o.generation());
+            Json.putSafe(n, "cuts", r.cuts());
+            out.println(Canonical.utf8(Canonical.bytes(n.put("out", r.out().toString()))));
+            return 0;
+        } catch (ReferenceEngine.Refused e) {
+            out.println(Canonical.utf8(Canonical.bytes(e.toJson())));
+            return 1;
+        } catch (IllegalArgumentException | IllegalStateException | UncheckedIOException e) {
+            err.println(e.getMessage());
+            return 2;
+        }
+    }
+
+    private static long number(String text, String flag, long min) {
+        long v;
+        try { v = Long.parseLong(text); } catch (NumberFormatException e) { throw new IllegalArgumentException(flag + " is an integer"); }
+        if (v < min || v > Json.MAX_SAFE) throw new IllegalArgumentException(flag + " out of range");
+        return v;
+    }
+
+    /** {@code <topic>=<p,p>[;<topic>=<p,p>]}; an empty partition list unsubscribes the topic. */
+    static Map<String, List<Integer>> subscribe(String text) {
+        Map<String, List<Integer>> m = new LinkedHashMap<>();
+        if (text == null) return m;
+        for (String entry : text.split(";", -1)) {
+            int eq = entry.indexOf('=');
+            if (eq <= 0) throw new IllegalArgumentException("--subscribe " + entry + ": <topic>=<p,p>");
+            String topic = entry.substring(0, eq), list = entry.substring(eq + 1);
+            List<Integer> ps = new ArrayList<>();
+            if (!list.isEmpty()) for (String p : list.split(",", -1)) {
+                if (!p.matches("0|[1-9][0-9]{0,8}")) throw new IllegalArgumentException("--subscribe " + entry + ": partition " + p);
+                ps.add(Integer.parseInt(p));
+            }
+            if (m.put(topic, ps) != null) throw new IllegalArgumentException("--subscribe names " + topic + " twice");
+        }
+        return m;
     }
 
     private static int build(Args f, PrintStream out) {
