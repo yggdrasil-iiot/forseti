@@ -36,6 +36,7 @@ import yggdrasil.forseti.core.rules.RuleSet;
 class ReferenceEngineTest {
     static final Path ROOT = Path.of("..").toAbsolutePath().normalize();
     static final Path FIXTURES = ROOT.resolve("fixtures"), SMOKE = FIXTURES.resolve("recordings/smoke"), REGISTRY = FIXTURES.resolve("registry");
+    static final Path SMOKE_PLC = FIXTURES.resolve("recordings/smoke-plc");
     static final String S1 = "synthetic-site:line2:station1", NR1 = S1 + ":nutrunner1";
     static final long T = 1794183000000L, OUT_OF_ORDERNESS = 30000;
     static final String WR = "forseti.work-records", SAMPLES = "forseti.samples", LEDGER = "forseti.dispositions-stage1";
@@ -423,6 +424,68 @@ class ReferenceEngineTest {
         assertTrue(attributed >= 3, "three sample rows, each attributed: " + attributed);
     }
 
+    /** A plc-stamped rule with crossCheck none reads no occupancy: the harness does not subscribe the topic, so no occupancy input
+     *  reaches the core and none is left without a disposition; subscribing it explicitly is refused. */
+    @Test void aCrossCheckNoneRuleReadsNoOccupancy() throws IOException {
+        Path rec = tmp.resolve("smoke-plc-nocheck");
+        copyTree(SMOKE_PLC, rec);
+        ObjectNode manifest = (ObjectNode) Json.read(rec.resolve("manifest.json"));
+        ((ObjectNode) manifest.get("rule")).put("stream", "line2-plc-nocheck").put("releaseId", "line2-rules-plc-nocheck").put("version", "1.0.0").put("attributionRuleVersion", "1.0.1");
+        Json.write(rec.resolve("manifest.json"), manifest);
+        Path state = Files.createDirectories(tmp.resolve("state-nocheck"));
+        register(state, 1, REGISTRY, rec, null);
+        Path out = tmp.resolve("out-nocheck");
+        ReferenceEngine.run(options(rec, REGISTRY, state, 1, out));
+        int ledger = 0;
+        for (int p : new int[] {0, 1, 2, 6}) for (JsonNode n : lines(out, "forseti.dispositions-stage1", p)) if (!isProgress(n)) {
+            ledger++;
+            assertNotEquals("mfg.occupancy", n.path("key").path("inputTopic").asText(), "no occupancy input was read");
+        }
+        assertTrue(ledger > 0);
+        JsonNode run = Json.read(out.resolve("run.json"));
+        JsonNode occ = run.path("offsetRanges").path("mfg.occupancy");
+        for (JsonNode r : occ) assertEquals(r.get(0), r.get(1), "no occupancy offset was consumed: " + occ);
+        assertEquals(0, run.path("subscribed").path("mfg.occupancy").size(), "occupancy is not subscribed");
+        JsonNode last = null;
+        for (JsonNode n : lines(out, WR, 0)) if (!isProgress(n)) last = n.path("value").get("body");
+        assertNotNull(last);
+        assertEquals("complete", last.get("status").asText());
+        ReferenceEngine.Options explicit = new ReferenceEngine.Options(rec, REGISTRY, state, 1, tmp.resolve("out-nocheck-2"), 20261109L, false,
+            Map.of("mfg.occupancy", List.of(0)), null, "test");
+        assertThrows(IllegalArgumentException.class, () -> ReferenceEngine.run(explicit));
+    }
+
+    @Test void runsThePlcSmokeRecording() throws IOException {
+        Path state = Files.createDirectories(tmp.resolve("state-plc"));
+        register(state, 1, REGISTRY, SMOKE_PLC, null);
+        Path out = tmp.resolve("out-plc");
+        ReferenceEngine.run(options(SMOKE_PLC, REGISTRY, state, 1, out));
+        ObjectNode ref = Json.object().put("mode", "plc-stamped").put("namespace", "urn:line2:visits").put("station", S1).put("visitId", "V1");
+        Set<String> keys = new TreeSet<>();
+        JsonNode last = null;
+        for (int p = 0; p < 3; p++) for (JsonNode n : lines(out, WR, p)) if (!isProgress(n)) {
+            keys.add(Canonical.utf8(Canonical.bytes(n.get("key"))));
+            if (n.get("key").equals(ref)) { assertEquals(0, p, "the station1 work record partition"); last = n.path("value").get("body"); }
+        }
+        assertEquals(Set.of(Canonical.utf8(Canonical.bytes(ref))), keys, "one visit, keyed by the plc-stamped visitRef");
+        assertNotNull(last);
+        assertEquals("complete", last.get("status").asText());
+        assertEquals("plc-stamped", last.get("attributionMode").asText());
+        assertEquals("UNIT0000000000001", last.get("unitId").asText());
+        assertEquals(S1, last.get("readPoint").asText());
+        assertTrue(last.get("visitSeq").isNull());
+        assertEquals(T, last.get("interval").get("enter").longValue());
+        assertEquals(T + 60_000, last.get("interval").get("leave").longValue());
+        assertEquals(0, last.get("insufficiencyReasons").size());
+        JsonNode torque = member(last, "nutrunner1-torque");
+        assertEquals(60, torque.get("observedPeriods").longValue());
+        assertEquals(0, torque.get("missingPeriods").longValue());
+        // crossCheck occupancy: the smoke occupant is the same unit, so no sample carries identity-mismatch; occupancy has its dispositions
+        for (JsonNode n : lines(out, SAMPLES, 0)) if (!isProgress(n)) assertNotEquals("identity-mismatch", n.path("value").path("body").path("reason").asText());
+        assertEquals("accepted", disposition(out, "mfg.occupancy", 0, 0, "event").get("disposition").asText());
+        assertEquals("accepted", disposition(out, "mfg.occupancy", 0, 1, "event").get("disposition").asText());
+    }
+
     // ============================================================================================================ helpers
 
     static ReferenceEngine.Options options(Path recording, Path registry, Path state, long generation, Path out) {
@@ -441,14 +504,19 @@ class ReferenceEngineTest {
     /** Appends the {@code registered} row of generation {@code n} and its initial recovery declaration, as {@code generation new} will:
      *  the head verified at its signedAt + 60 s, the release read, the rule set loaded with the smoke definitions. */
     static void register(Path state, long n, Path registry, String rulesDigestOverride) throws IOException {
+        register(state, n, registry, SMOKE, rulesDigestOverride);
+    }
+
+    /** The same for the rule and definitions of {@code recording}'s manifest. */
+    static void register(Path state, long n, Path registry, Path recording, String rulesDigestOverride) throws IOException {
         Path m = registry.resolve("mappings");
-        JsonNode rule = Json.read(SMOKE.resolve("manifest.json")).get("rule");
+        JsonNode rule = Json.read(recording.resolve("manifest.json")).get("rule");
         String stream = rule.get("stream").asText();
         JsonNode statement = Json.read(Base64.getDecoder().decode(Json.read(m.resolve("head-attestations/" + stream + ".dsse.json")).get("payload").asText()));
         long now = Instant.parse(statement.path("predicate").path("signedAt").asText()).toEpochMilli() + 60_000;
         HeadVerifier.Head h = HeadVerifier.verify(m, stream, TrustedKeys.load(FIXTURES.resolve("trusted-keys.jsonl")), new FloorStore(state), now);
         RuleSet rules = RuleSet.load(ReleaseReader.read(m, h), rule.get("attributionRuleId").asText(), rule.get("attributionRuleVersion").asText(),
-            Json.read(SMOKE.resolve("manifest.json")).get("definitions"));
+            Json.read(recording.resolve("manifest.json")).get("definitions"));
         ObjectNode head = Json.object().put("stream", h.stream()).put("releaseId", h.releaseId()).put("version", h.version()).put("releaseSha256", h.releaseSha256())
             .put("headFile", h.headFile()).put("headSha256", h.headSha256()).put("attestationFile", h.attestationFile()).put("attestationSha256", h.attestationSha256())
             .put("statementSha256", h.statementSha256());
@@ -469,7 +537,7 @@ class ReferenceEngineTest {
         append(state.resolve("generations.jsonl"), line);
         ObjectNode decl = Json.putSafe(Json.object(), "generation", n);
         decl.putNull("injectionId").put("stage", 1).putNull("epochBefore").put("targetEpoch", 0).put("lastWrittenCutId", 0)
-            .put("routingDigest", Recording.open(SMOKE).routing().routingDigest());
+            .put("routingDigest", Recording.open(recording).routing().routingDigest());
         append(state.resolve("recovery-control.jsonl"), decl);
     }
 

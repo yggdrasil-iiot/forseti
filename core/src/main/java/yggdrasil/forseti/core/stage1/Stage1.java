@@ -17,7 +17,9 @@ import yggdrasil.forseti.core.journal.*;
 import yggdrasil.forseti.core.rules.MemberCatalog;
 import yggdrasil.forseti.core.rules.RuleSet;
 
-/** The stage-1 decision function for {@code occupancy-join} (rule sheet S2-S11). {@link #decide} reads only its arguments, the rule set
+/** The stage-1 decision function (rule sheet S2-S11; {@code plc-stamped} adds P1-P3 through {@link PlcStamped}: the visits are the
+ *  stamped lifecycles instead of the occupancy joins, and under {@code crossCheck: none} an occupancy input is not read, so it has no
+ *  output and changes no state). {@link #decide} reads only its arguments, the rule set
  *  and the negative controls it was constructed with: no clock, random, file, environment or static mutable state. It takes the state
  *  object, updates it and returns it with the outputs: {@link Row} (work records and samples; the envelope's {@code pins} and
  *  {@code eventTimeAt} are the adapter's, see {@link #stamp}), {@link Disposition}, {@link QuarantineRecord}, {@link Progress.Stage1} and
@@ -34,12 +36,16 @@ public final class Stage1 {
     final long P, L, H, O, tolE, tolL, maxMissing;
     final double maxBadShare;
     final boolean propagate;
+    final String mode;
+    /** Non-null under {@code plc-stamped}. */
+    final PlcStamped plc;
     private final Map<String, MemberCatalog.Resolved> byDeviceMetric = new HashMap<>();
     private final Map<String, List<String>> equipmentByStation = new HashMap<>();
     private final List<String> stations;
 
     public Stage1(RuleSet rules, NegativeControls controls) {
-        if (!"occupancy-join".equals(rules.attribution().mode())) throw new IllegalArgumentException("Stage1 decides occupancy-join; the rule is " + rules.attribution().mode());
+        this.mode = rules.attribution().mode();
+        if (!VisitClaim.MODE.equals(mode) && !PlcStamped.MODE.equals(mode)) throw new IllegalArgumentException("Stage1 decides occupancy-join and plc-stamped; the rule is " + mode);
         this.rules = rules;
         this.controls = Objects.requireNonNull(controls);
         this.catalog = rules.members();
@@ -57,6 +63,7 @@ public final class Stage1 {
         List<String> st = new ArrayList<>(a.stations());
         Collections.sort(st);
         this.stations = List.copyOf(st);
+        this.plc = PlcStamped.MODE.equals(mode) ? new PlcStamped(rules) : null;
     }
 
     MemberCatalog.Resolved member(String device, String metric) { return byDeviceMetric.get(device + "\u0000" + metric); }
@@ -66,7 +73,7 @@ public final class Stage1 {
     public Stage1State newState(long generation, String station) {
         int p = stations.indexOf(station);
         if (p < 0) throw new IllegalArgumentException("not a station of the rule: " + station);
-        return new Stage1State(generation, station, p);
+        return new Stage1State(generation, station, p, mode);
     }
 
     /** {@code watermark}: admissionW for {@link Events.Admit} (null before the first progress), W1 for timers and the cut close. */
@@ -142,6 +149,7 @@ public final class Stage1 {
 
     private void admit(Stage1State s, Inputs.InputRecord r, Long admissionW, List<Object> out) {
         String topic = r.origin().topic();
+        if (plc != null && !plc.crossCheck && InputParser.OCCUPANCY.equals(topic)) return;   // P3: crossCheck none reads no occupancy
         ObjectNode cause = Json.object().put("kind", "input").put("inputKind", Events.inputKind(topic));
         cause.set("identity", Events.identity(r));
         Ctx c = new Ctx(s, out, cause, new Envelope.Trigger(topic, r.origin().partition(), r.origin().offset()), null);
@@ -293,6 +301,13 @@ public final class Stage1 {
         String originKey = Stage1State.originKey(r.origin());
         Set<String> touched = new TreeSet<>();
         boolean full = false;
+        // P1: the message's snapshot; a new valid one that changes a lifecycle (P2) re-decides every sample of the station
+        Stage1State.Snapshot snap = plc == null ? null : plc.snapshot(m, r.origin(), digest, rule, this::acceptedQuality);
+        String snapKey = snap == null ? null : PlcStamped.messageKey(m);
+        if (snap != null && (s.snapshots.containsKey(snapKey) || (snap.coherent() && snap.sourceTs() != null && aw != null && snap.sourceTs() < aw - H))) snap = null;
+        String before = snap != null && snap.valid() ? plc.derive(s).signature : null;
+        if (snap != null) s.snapshots.put(snapKey, snap);
+        if (before != null && !before.equals(plc.derive(s).signature)) full = true;
         for (Inputs.Member x : m.members()) {
             ObjectNode sampleId = Ids.sampleId(m, x.metric());
             String key = VisitClaim.text(sampleId), part = Disposition.Part.member(x.metric());
@@ -356,7 +371,7 @@ public final class Stage1 {
         if (!s.deadlines.remove(t.deadline(), t.key(), t.purpose())) return;   // cancelled or replaced meanwhile
         ObjectNode cause = Json.putSafe(Json.object().put("kind", "timer"), "deadline", t.deadline());
         Ctx c = new Ctx(s, out, cause, null, w);
-        if (DeadlineIndex.EXPIRY.equals(t.purpose())) expire(s, t.key());
+        if (DeadlineIndex.EXPIRY.equals(t.purpose())) { if (plc != null) expirePlc(s, t.key()); else expire(s, t.key()); }
         recompute(c, w, null);
     }
 
@@ -370,6 +385,22 @@ public final class Stage1 {
         String arrivalId = v.arrivalEventId, source = v.source;
         s.deliveries.values().removeIf(o -> o.source.equals(source) && (o.eventId.equals(arrivalId)
             || o.list.stream().allMatch(d -> !d.arriving() && arrivalId.equals(d.content.path("arrivalEventId").asText()))));
+        s.deadlines.cancelAll(visitRef);
+        dropSamples(s, x -> {
+            Stage1State.Measurement m = x.sourceTs == null ? null : s.measurements.get(measurementKey(x.device, x.metric, x.sourceTs));
+            return (x.row != null && visitRef.equals(x.row.get("attributedTo"))) || (m != null && key.equals(m.coverageVisit));
+        });
+    }
+
+    /** S3 under plc-stamped: the visit's summary is kept so its lifecycle is never rebuilt; its snapshots and samples are dropped. */
+    private void expirePlc(Stage1State s, JsonNode visitRef) {
+        String key = VisitClaim.keyOf(visitRef);
+        VisitClaim v = null;
+        for (VisitClaim x : plc.derive(s).visits) if (x.key.equals(key)) v = x;
+        if (v == null) return;
+        s.expired.put(key, new Stage1State.Expired(v.visitRef, v.enter, v.leave, v.leave == null ? v.attributionEnd : null, v.retracted(), v.onlineExpiresAt(H, L)));
+        String visitId = visitRef.path("visitId").asText();
+        s.snapshots.values().removeIf(x -> x.valid() && visitId.equals(x.visitId()) && s.station.equals(plc.stationOf(x.device())));
         s.deadlines.cancelAll(visitRef);
         dropSamples(s, x -> {
             Stage1State.Measurement m = x.sourceTs == null ? null : s.measurements.get(measurementKey(x.device, x.metric, x.sourceTs));
@@ -405,6 +436,7 @@ public final class Stage1 {
             boolean claimed = (x.row != null && !x.row.get("attributedTo").isNull()) || (m != null && m.coverageVisit != null);
             return !claimed && (x.sourceTs == null || x.sourceTs + tolE + H + L <= w);
         });
+        if (plc != null) prunePlc(s, w);
         List<Progress.BarrierRef> refs = new ArrayList<>();
         for (JsonNode b : cc.barrierRefs())
             refs.add(new Progress.BarrierRef(Json.safeLong(b.get("cutId"), "barrierRefs.cutId", Json.NON_NEGATIVE),
@@ -418,20 +450,46 @@ public final class Stage1 {
         s.progressCount++;
     }
 
+    /** Under plc-stamped, at the cut close: snapshots of no online visit leave with their unclaimed samples (same bound), and the
+     *  occupancy read for the cross-check leaves at its onlineExpiresAt (no summary: only an online occupant can mark a sample). */
+    private void prunePlc(Stage1State s, long w) {
+        Set<String> online = new HashSet<>();
+        for (VisitClaim v : plc.derive(s).visits) online.add(v.visitRef.path("visitId").asText());
+        s.snapshots.values().removeIf(x -> (x.visitId() == null || !online.contains(x.visitId())) && x.sourceTs() != null && x.sourceTs() + tolE + H + L <= w);
+        if (!plc.crossCheck) return;
+        Set<String> gone = new HashSet<>();
+        for (VisitClaim v : VisitClaim.derive(s)) if (v.online() && v.onlineExpiresAt(H, L) <= w) gone.add(v.source + "\u0000" + v.arrivalEventId);
+        Set<String> arrivals = new HashSet<>();
+        s.deliveries.values().forEach(o -> { if (o.hasArrivingVariant()) arrivals.add(o.source + "\u0000" + o.eventId); });
+        s.deliveries.values().removeIf(o -> {
+            if (gone.contains(o.source + "\u0000" + o.eventId)) return true;
+            for (Stage1State.OccDelivery d : o.list) {
+                if (d.arriving()) return false;
+                String a = o.source + "\u0000" + d.content.path("arrivalEventId").asText();
+                if (gone.contains(a)) continue;
+                if (arrivals.contains(a) || Json.safeLong(d.content.get("eventTime"), "eventTime", Json.NON_NEGATIVE) + H + L > w) return false;
+            }
+            return true;
+        });
+    }
+
     // ===================================================================================================== recomputation
 
     /** Recomputes sample rows and work record bodies and emits those whose digest changed. {@code scope}: the sample keys a message added
      *  (only they and the visits whose J contains them can change), or null for everything (then the deadlines are re-registered). */
     private void recompute(Ctx c, Long w, Set<String> scope) {
         Stage1State s = c.s;
-        List<VisitClaim> visits = VisitClaim.derive(s);
-        Attribution att = new Attribution(visits, tolE, tolL);
+        PlcStamped.Frame frame = plc == null ? null : plc.derive(s);
+        List<VisitClaim> visits = frame == null ? VisitClaim.derive(s) : frame.visits;
+        Attribution att = frame == null ? new Attribution(visits, tolE, tolL) : null;
+        List<VisitClaim> occupants = frame != null && plc.crossCheck ? VisitClaim.derive(s) : List.of();
+        if (frame != null) identityConflicts(c, frame);
         Sessions.View view = Sessions.view(s, w);
         Collection<String> keys = scope == null ? new ArrayList<>(s.samples.keySet()) : scope;
         Set<String> affected = scope == null ? null : new HashSet<>();
         for (String k : keys) {
             Stage1State.Sample x = s.samples.get(k);
-            SampleRow.Outcome o = classify(s, x, att, view);
+            SampleRow.Outcome o = classify(s, x, att, frame, occupants, view);
             if (x.sourceTs != null && !x.replay) {
                 Stage1State.Measurement m = s.measurements.get(measurementKey(x.device, x.metric, x.sourceTs));
                 if (m != null && !x.idConflict) m.coverageVisit = o.coverageVisit();
@@ -448,6 +506,21 @@ public final class Stage1 {
             c.row(WORK_RECORDS, v.visitRef, WorkRecord.build(this, v, w, view, observations(s, v.key)), s.workRecords);
         }
         if (scope == null) for (VisitClaim v : visits) if (v.online()) register(s, v, w);
+    }
+
+    /** P2: the same VisitId with another UnitId gives every identity sample of that visit's snapshots {@code conflict identity-conflict}
+     *  (a new disposition revision when it was accepted), with the message's raw bytes in the quarantine. */
+    private void identityConflicts(Ctx c, PlcStamped.Frame frame) {
+        Stage1State s = c.s;
+        for (List<Stage1State.Snapshot> l : frame.conflicting.values()) for (Stage1State.Snapshot x : l) {
+            String ok = Stage1State.originKey(x.origin());
+            ObjectNode refs = c.quarantine(x.origin(), s.messages.get(ok), Disposition.Reason.IDENTITY_CONFLICT, s.quarantined.contains(ok));
+            if (s.messages.containsKey(ok)) s.quarantined.add(ok);
+            for (Iterator<Map.Entry<String, JsonNode>> it = x.identitySamples().fields(); it.hasNext();) {
+                Map.Entry<String, JsonNode> e = it.next();
+                c.disposition(x.origin(), Disposition.Part.member(e.getKey()), "message", e.getValue(), x.payloadDigest(), x.digestRule(), Disposition.Reason.IDENTITY_CONFLICT, refs);
+            }
+        }
     }
 
     private void register(Stage1State s, VisitClaim v, Long w) {
@@ -471,22 +544,30 @@ public final class Stage1 {
         return l;
     }
 
-    /** S9 in order: no sourceTs, conflict, non-finite, quality, session, then the window rule. */
-    private SampleRow.Outcome classify(Stage1State s, Stage1State.Sample x, Attribution att, Sessions.View view) {
+    /** S9 in order: no sourceTs, conflict, (plc-stamped: incoherent snapshot), non-finite, quality, session, then the window rule, or
+     *  under plc-stamped the equipment's lifecycle spans (P3) with the cross-check diagnostic. */
+    private SampleRow.Outcome classify(Stage1State s, Stage1State.Sample x, Attribution att, PlcStamped.Frame frame, List<VisitClaim> occupants, Sessions.View view) {
         if (x.replay) return SampleRow.Outcome.of(SampleRow.REPLAY_REQUIRED, "beyond-horizon");
         if (x.sourceTs == null) return SampleRow.Outcome.of(SampleRow.UNATTRIBUTED, "no-source-timestamp");
         if (x.idConflict) return SampleRow.Outcome.of(SampleRow.QUARANTINED, "measurement-conflict");
         Stage1State.Measurement m = s.measurements.get(measurementKey(x.device, x.metric, x.sourceTs));
         if (m != null && variants(s, m).size() > 1) return SampleRow.Outcome.of(SampleRow.QUARANTINED, "measurement-conflict");
+        if (frame != null) {
+            Stage1State.Snapshot snap = frame.snapshotOf(x);
+            if (snap != null && !snap.coherent()) return SampleRow.Outcome.of(SampleRow.UNATTRIBUTED, "incoherent-snapshot");
+        }
         if (!x.finite()) return SampleRow.Outcome.of(SampleRow.UNATTRIBUTED, "non-finite");
         long t = x.sourceTs;
-        Attribution.Candidate cand = att.candidate(t);
+        Attribution.Candidate cand = frame != null ? frame.candidate(x.device, t) : att.candidate(t);
         String blind = cand.kind() == Attribution.Kind.ATTRIBUTED ? cand.visit().key : null;
         if (StatusCodes.bad(x.status) || (StatusCodes.uncertain(x.status) && !propagate)) return new SampleRow.Outcome(SampleRow.UNATTRIBUTED, "bad-quality", null, blind);
         if (Sessions.inside(view.down(x.device), t)) return SampleRow.Outcome.of(SampleRow.UNATTRIBUTED, "outside-session");
         if (Sessions.inside(view.unknown(x.device), t)) return SampleRow.Outcome.of(SampleRow.UNATTRIBUTED, "session-ambiguous");
         switch (cand.kind()) {
-            case ATTRIBUTED: return new SampleRow.Outcome(SampleRow.ATTRIBUTED, null, cand.visit().visitRef.deepCopy(), blind);
+            case ATTRIBUTED: {
+                String reason = frame != null && PlcStamped.Frame.mismatch(cand.visit(), t, occupants) ? "identity-mismatch" : null;
+                return new SampleRow.Outcome(SampleRow.ATTRIBUTED, reason, cand.visit().visitRef.deepCopy(), blind);
+            }
             case AMBIGUOUS: return SampleRow.Outcome.of(SampleRow.UNATTRIBUTED, "ambiguous");
             default: return SampleRow.Outcome.of(SampleRow.UNATTRIBUTED, "no-occupancy");
         }

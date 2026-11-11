@@ -106,9 +106,14 @@ public final class ReferenceEngine {
             Optional<String> s = rules.hierarchy().stationOf(rules.attribution().stations(), d);
             if (s.isEmpty() || !s.get().equals(routing.stationOf(d))) throw new IllegalArgumentException("malformed recording: routing places " + d + " at " + routing.stationOf(d) + ", the rule at " + s.orElse(null));
         }
+        // A plc-stamped rule with crossCheck none does not read the occupancy stream (spec Task 12 P3, injection 11b): its partitions
+        // are not subscribed, so no occupancy input reaches the core without a disposition.
+        boolean occupancyRead = !(rules.attribution().mode().equals("plc-stamped") && rules.attribution().crossCheck().equals("none"));
+        if (!occupancyRead && !o.subscribe().getOrDefault(InputParser.OCCUPANCY, List.of()).isEmpty())
+            throw new IllegalArgumentException("--subscribe " + InputParser.OCCUPANCY + ": a plc-stamped rule with crossCheck none does not read occupancy");
         Map<String, List<Integer>> subscribed = new LinkedHashMap<>();
         for (String t : STAGE1_TOPICS) {
-            List<Integer> have = routing.subscribed(t), want = o.subscribe().getOrDefault(t, have);
+            List<Integer> have = routing.subscribed(t), want = o.subscribe().getOrDefault(t, t.equals(InputParser.OCCUPANCY) && !occupancyRead ? List.of() : have);
             for (int p : want) if (!have.contains(p)) throw new IllegalArgumentException("--subscribe " + t + "=" + p + ": the recording has no such partition");
             List<Integer> sorted = new ArrayList<>(new TreeSet<>(want));
             subscribed.put(t, List.copyOf(sorted));

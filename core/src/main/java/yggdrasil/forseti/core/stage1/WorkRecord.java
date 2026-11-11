@@ -9,7 +9,8 @@ import yggdrasil.forseti.core.canon.Canonical;
 import yggdrasil.forseti.core.rules.MemberCatalog;
 import yggdrasil.forseti.core.stage1.Coverage.Interval;
 
-/** The work record body of an occupancy-join visit (spec 337-358 as serialized by the Task 1 insertion at line 353; rule sheet S5, S6).
+/** The work record body of a visit (spec 337-358 as serialized by the Task 1 insertion at line 353; rule sheet S5, S6, and P2 for
+ *  {@code plc-stamped}, whose visits add {@code missing-visit-close} and {@code inconsistent-visit-boundary}).
  *  Key: {@code visitRef}. Body fields: {@code unitId, readPoint, visitSeq, status, retraction (only when retracted), insufficiencyReasons,
  *  interval {enter, leave, attributionEnd}, members, equipmentEvidence, samplesDigest, coverage, attributionMode, rulesDigest}. */
 final class WorkRecord {
@@ -126,8 +127,11 @@ final class WorkRecord {
                 for (Interval u : view.unknown(q)) if (u.overlaps(enter, end)) reasons.add("session-ambiguous");
             }
         }
-        if (v.leave == null && w != null && w >= v.enter + cfg.H) reasons.add("missing-departure");
+        // P2: missing-departure only when neither a VisitPresent=false nor a VisitId change closed the visit
+        if (v.leave == null && !v.missingVisitClose && w != null && w >= v.enter + cfg.H) reasons.add("missing-departure");
         if (v.correctionConflict) reasons.add("correction-conflict");
+        if (v.missingVisitClose) reasons.add("missing-visit-close");
+        if (v.inconsistentBoundary) reasons.add("inconsistent-visit-boundary");
 
         boolean settled = v.leave != null && w != null && w >= v.leave + cfg.L;
         String retraction = v.retractionReason();
@@ -150,7 +154,7 @@ final class WorkRecord {
         Json.putSafe(cov, "missingPeriods", vMissing);
         Json.putSafe(cov, "badSlots", vBad);
         Json.putSafe(cov, "sessionGaps", vGaps);
-        b.put("attributionMode", VisitClaim.MODE);
+        b.put("attributionMode", v.mode);
         b.put("rulesDigest", cfg.rulesDigest);
         return b;
     }

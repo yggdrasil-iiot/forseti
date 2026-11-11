@@ -20,6 +20,8 @@ import yggdrasil.forseti.core.journal.Revisions;
  *  <li>{@code expired}: the frozen summary of a visit whose online state the expiry timer dropped (S3), still a window candidate;</li>
  *  <li>{@code samples} by sampleId, {@code measurements} by {@code (device, metric, sourceTs)}, {@code messages} (raw bytes of the
  *      admitted messages, for a later quarantine), {@code sessions} by session event identity;</li>
+ *  <li>{@code snapshots} (plc-stamped, rule sheet P1): one summary per admitted message of an identified equipment, by message
+ *      identity; the lifecycle (P2) is derived from it;</li>
  *  <li>{@code quarantined}: origins already written to the quarantine;</li>
  *  <li>{@code deadlines}, the three revision chains (work records, samples, dispositions), {@code lastW1}, {@code admissionW},
  *      {@code progressCount} and the init evidence of the next first progress.</li></ul> */
@@ -29,12 +31,15 @@ public final class Stage1State {
     final long generation;
     final String station;
     final int partition;
+    /** The rule's attribution mode, {@code occupancy-join} or {@code plc-stamped}. */
+    final String mode;
     final TreeMap<String, Occupancy> deliveries = new TreeMap<>();
     final TreeMap<String, Expired> expired = new TreeMap<>();
     final TreeMap<String, Sample> samples = new TreeMap<>();
     final TreeMap<String, Measurement> measurements = new TreeMap<>();
     final TreeMap<String, String> messages = new TreeMap<>();
     final TreeMap<String, Session> sessions = new TreeMap<>();
+    final TreeMap<String, Snapshot> snapshots = new TreeMap<>();
     /** Origins of messages and session events whose raw bytes went to the quarantine already. */
     final TreeSet<String> quarantined = new TreeSet<>();
     DeadlineIndex deadlines = new DeadlineIndex();
@@ -43,9 +48,9 @@ public final class Stage1State {
     long progressCount;
     Progress.InitEvidence pendingInit;
 
-    Stage1State(long generation, String station, int partition) {
+    Stage1State(long generation, String station, int partition, String mode) {
         if (generation < 1) throw new IllegalArgumentException("generation >= 1");
-        this.generation = generation; this.station = station; this.partition = partition;
+        this.generation = generation; this.station = station; this.partition = partition; this.mode = Objects.requireNonNull(mode);
     }
 
     /** The writer's initialization (spec 408): the init evidence its first progress after this initialization carries. */
@@ -59,8 +64,17 @@ public final class Stage1State {
     /** The station's W1 at its last committed progress (null before the first): the admission bound of the next cut. */
     public Long admissionW() { return admissionW; }
     public long progressCount() { return progressCount; }
-    /** Visits with online state: arrivals whose deliveries are stored. */
-    public int onlineVisits() { return (int) deliveries.values().stream().filter(Occupancy::hasArrivingVariant).count(); }
+    /** Visits with online state: arrivals whose deliveries are stored ({@code occupancy-join}); under {@code plc-stamped} the visit IDs
+     *  with a valid {@code VisitPresent=true} snapshot whose visit did not expire. */
+    public int onlineVisits() {
+        if (PlcStamped.MODE.equals(mode)) {
+            Set<String> gone = new HashSet<>(), ids = new TreeSet<>();
+            expired.values().forEach(x -> { if (PlcStamped.MODE.equals(x.visitRef().path("mode").asText())) gone.add(x.visitRef().path("visitId").asText()); });
+            snapshots.values().forEach(x -> { if (x.valid() && Boolean.TRUE.equals(x.present()) && !gone.contains(x.visitId())) ids.add(x.visitId()); });
+            return ids.size();
+        }
+        return (int) deliveries.values().stream().filter(Occupancy::hasArrivingVariant).count();
+    }
     public int onlineSamples() { return samples.size(); }
     /** The occupancy identities whose content arrives (the visits' arrivals), by canonical key. */
     public Set<String> visits() { TreeSet<String> s = new TreeSet<>(); deliveries.forEach((k, o) -> { if (o.hasArrivingVariant()) s.add(k); }); return s; }
@@ -143,6 +157,12 @@ public final class Stage1State {
         JsonNode payload() { return list.get(0).payload(); }
     }
     record SessionDelivery(Inputs.Origin origin, JsonNode payload, String content, String payloadDigest, String digestRule, String raw) {}
+    /** One message of an identified equipment (rule sheet P1): {@code sourceTs} is the common sourceTs of a coherent message, else its
+     *  largest member sourceTs; {@code valid} when coherent with a String {@code UnitId} and {@code VisitId} and a Boolean
+     *  {@code VisitPresent} of accepted quality, and only then the three values are set. {@code identitySamples} maps each identity
+     *  member's metric to its sampleId, for the identity-conflict dispositions (P2). */
+    record Snapshot(String device, Long sourceTs, boolean coherent, boolean valid, String unitId, String visitId, Boolean present,
+                    Inputs.Origin origin, String payloadDigest, String digestRule, ObjectNode identitySamples) {}
 
     static String originKey(Inputs.Origin o) { return o.topic() + "/" + o.partition() + "/" + o.offset(); }
 
@@ -151,7 +171,7 @@ public final class Stage1State {
     public ObjectNode toJson() {
         ObjectNode n = Json.object().put("stateVersion", VERSION);
         Json.putSafe(n, "generation", generation);
-        n.put("station", station).put("partition", partition);
+        n.put("station", station).put("partition", partition).put("attributionMode", mode);
         ObjectNode d = n.putObject("deliveries");
         deliveries.forEach((k, o) -> {
             ObjectNode e = d.putObject(k).put("source", o.source).put("eventId", o.eventId);
@@ -210,6 +230,15 @@ public final class Stage1State {
                 z.put("content", y.content()).put("payloadDigest", y.payloadDigest()).put("digestRule", y.digestRule()).put("raw", y.raw());
             }
         });
+        ObjectNode sn = n.putObject("snapshots");
+        snapshots.forEach((k, x) -> {
+            ObjectNode e = sn.putObject(k).put("device", x.device());
+            putLong(e, "sourceTs", x.sourceTs());
+            e.put("coherent", x.coherent()).put("valid", x.valid()).put("unitId", x.unitId()).put("visitId", x.visitId()).put("present", x.present());
+            e.set("origin", origin(x.origin()));
+            e.put("payloadDigest", x.payloadDigest()).put("digestRule", x.digestRule());
+            e.set("identitySamples", x.identitySamples());
+        });
         ArrayNode q = n.putArray("quarantined");
         quarantined.forEach(q::add);
         n.set("deadlines", deadlines.toJson());
@@ -230,7 +259,8 @@ public final class Stage1State {
 
     public static Stage1State fromJson(JsonNode n) {
         if (n.path("stateVersion").intValue() != VERSION) throw new IllegalArgumentException("stage-1 state version " + n.path("stateVersion") + " is not " + VERSION);
-        Stage1State st = new Stage1State(Json.safeLong(n.get("generation"), "generation", Json.NON_NEGATIVE), Json.text(n, "station"), n.get("partition").intValue());
+        Stage1State st = new Stage1State(Json.safeLong(n.get("generation"), "generation", Json.NON_NEGATIVE), Json.text(n, "station"), n.get("partition").intValue(),
+            Json.text(n, "attributionMode"));
         n.get("deliveries").fields().forEachRemaining(e -> {
             JsonNode o = e.getValue();
             Occupancy occ = new Occupancy(Json.text(o, "source"), Json.text(o, "eventId"));
@@ -270,6 +300,13 @@ public final class Stage1State {
             for (JsonNode y : v.get("list"))
                 x.list.add(new SessionDelivery(origin(y.get("origin")), y.get("payload"), Json.text(y, "content"), Json.text(y, "payloadDigest"), Json.text(y, "digestRule"), Json.text(y, "raw")));
             st.sessions.put(e.getKey(), x);
+        });
+        n.get("snapshots").fields().forEachRemaining(e -> {
+            JsonNode v = e.getValue();
+            st.snapshots.put(e.getKey(), new Snapshot(Json.text(v, "device"), getLong(v, "sourceTs"), v.get("coherent").booleanValue(), v.get("valid").booleanValue(),
+                v.get("unitId").isNull() ? null : v.get("unitId").textValue(), v.get("visitId").isNull() ? null : v.get("visitId").textValue(),
+                v.get("present").isNull() ? null : v.get("present").booleanValue(), origin(v.get("origin")), Json.text(v, "payloadDigest"), Json.text(v, "digestRule"),
+                (ObjectNode) longs(v.get("identitySamples"))));
         });
         n.get("quarantined").forEach(k -> st.quarantined.add(k.textValue()));
         st.deadlines = DeadlineIndex.fromJson(n.get("deadlines"));

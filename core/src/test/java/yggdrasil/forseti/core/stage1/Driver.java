@@ -177,7 +177,7 @@ final class Driver {
         Json.putSafe(n, "seq", seq);
         Json.putSafe(n, "publishTs", ts + 50);
         Json.putSafe(n, "bridgeReceivedAt", ts + 120);
-        n.put("definitionSha256", Fixtures.DEFINITIONS.get(device).get("sha256").asText());
+        n.put("definitionSha256", rules.pins().get("definitions").get(device).get("sha256").asText());
         n.putArray("members").addAll(List.of(members));
         return n;
     }

@@ -15,13 +15,16 @@ import yggdrasil.forseti.core.release.*;
 import yggdrasil.forseti.core.rules.RuleSet;
 
 /** The fixture rule sets of the stage-1 tests: {@code line2-rules} 1.0.0 (occupancy-join) as released, and copies with an edited rule or
- *  occupancy profile, re-signed with fresh keys. {@code definitions} are the smoke recording's, so the rulesDigest is the harness's. */
+ *  occupancy profile, re-signed with fresh keys. {@code definitions} are the smoke recording's, so the rulesDigest is the harness's.
+ *  The plc-stamped streams {@code line2-plc} ({@code crossCheck: occupancy}) and {@code line2-plc-nocheck} ({@code crossCheck: none})
+ *  load with the smoke-plc recording's definitions. */
 final class Fixtures {
     static final Path FIXTURES = TestKeys.FIXTURES;
     static final String S1 = "synthetic-site:line2:station1", S2 = "synthetic-site:line2:station2", S3 = "synthetic-site:line2:station3";
     static final String NR1 = S1 + ":nutrunner1", NR2 = S1 + ":nutrunner2";
     static final JsonNode DEFINITIONS = Json.read(FIXTURES.resolve("recordings/smoke/manifest.json")).get("definitions");
-    private static RuleSet line2;
+    static final JsonNode PLC_DEFINITIONS = Json.read(FIXTURES.resolve("recordings/smoke-plc/manifest.json")).get("definitions");
+    private static RuleSet line2, plc, plcNoCheck;
 
     private Fixtures() {}
 
@@ -37,9 +40,22 @@ final class Fixtures {
         return line2;
     }
 
-    private static RuleSet load(Path mappings, TrustedKeys keys) {
-        HeadVerifier.Head h = HeadVerifier.verify(mappings, "line2", keys, new FloorStore(tmp("floor")), TestKeys.signedAtMs(mappings, "line2") + 60_000);
-        return RuleSet.load(ReleaseReader.read(mappings, h), "line2-attribution", "1.0.0", DEFINITIONS);
+    /** line2-plc: plc-stamped, crossCheck occupancy, identity on station1 and nutrunner1. */
+    static synchronized RuleSet plc() {
+        if (plc == null) plc = load(TestKeys.copy("registry", tmp("registry-plc")), "line2-plc", "1.0.0", PLC_DEFINITIONS, TestKeys.fixtureKeys());
+        return plc;
+    }
+    /** line2-plc-nocheck: the same rule as version 1.0.1 with crossCheck none. */
+    static synchronized RuleSet plcNoCheck() {
+        if (plcNoCheck == null) plcNoCheck = load(TestKeys.copy("registry", tmp("registry-plc-nocheck")), "line2-plc-nocheck", "1.0.1", PLC_DEFINITIONS, TestKeys.fixtureKeys());
+        return plcNoCheck;
+    }
+
+    private static RuleSet load(Path mappings, TrustedKeys keys) { return load(mappings, "line2", "1.0.0", DEFINITIONS, keys); }
+
+    private static RuleSet load(Path mappings, String stream, String ruleVersion, JsonNode definitions, TrustedKeys keys) {
+        HeadVerifier.Head h = HeadVerifier.verify(mappings, stream, keys, new FloorStore(tmp("floor")), TestKeys.signedAtMs(mappings, stream) + 60_000);
+        return RuleSet.load(ReleaseReader.read(mappings, h), "line2-attribution", ruleVersion, definitions);
     }
 
     /** A re-signed copy of line2-rules 1.0.0 with the attribution rule and the occupancy profile edited. */

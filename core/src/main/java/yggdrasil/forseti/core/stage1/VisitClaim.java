@@ -8,11 +8,13 @@ import yggdrasil.forseti.core.canon.Canonical;
 
 /** One visit of the station as derived from the stored occupancy deliveries (rule sheet S4, S5 retractions, S7 overlap): the arrival
  *  gives {@code visitRef}, {@code enter} and the unit; valid leave claims give {@code leave}; declarations and content conflicts give the
- *  retraction cause. Derivation reads only the stored deliveries, so it does not depend on arrival order. */
+ *  retraction cause. Derivation reads only the stored deliveries, so it does not depend on arrival order. A {@code plc-stamped} visit
+ *  (rule sheet P2) is built by {@link PlcStamped} through {@link #plc}: it has no source, arrival or visitSeq, and may carry the two
+ *  lifecycle reasons {@code missing-visit-close} and {@code inconsistent-visit-boundary}. */
 final class VisitClaim {
     static final String MODE = "occupancy-join";
 
-    final String key;
+    final String key, mode;
     final ObjectNode visitRef;
     final String source, arrivalEventId, unitId, readPoint;
     final Long visitSeq;
@@ -20,16 +22,22 @@ final class VisitClaim {
     final Stage1State.Expired frozen;   // non-null: online state expired, kept as a window candidate only
     Long leave;
     boolean arrivalDeclared, inputConflict, correctionConflict, overlap;
+    /** plc-stamped (P2): closed by a VisitId change instead of a VisitPresent=false; equipment or a later true disagree on a boundary. */
+    boolean missingVisitClose, inconsistentBoundary;
     String errorReason;
     Long attributionEnd;
 
     private VisitClaim(ObjectNode visitRef, String source, String arrivalEventId, String unitId, String readPoint, Long visitSeq, long enter, Stage1State.Expired frozen) {
-        this.visitRef = visitRef; this.key = keyOf(visitRef); this.source = source; this.arrivalEventId = arrivalEventId; this.unitId = unitId;
+        this.visitRef = visitRef; this.key = keyOf(visitRef); this.mode = visitRef.path("mode").asText(); this.source = source; this.arrivalEventId = arrivalEventId; this.unitId = unitId;
         this.readPoint = readPoint; this.visitSeq = visitSeq; this.enter = enter; this.frozen = frozen;
     }
 
     static ObjectNode visitRef(String source, String arrivalEventId) {
         return Json.object().put("mode", MODE).put("source", source).put("arrivalEventId", arrivalEventId);
+    }
+    /** A plc-stamped visit (P2): {@code visitRef = {mode, namespace, station, visitId}}, readPoint the station path, visitSeq null. */
+    static VisitClaim plc(ObjectNode visitRef, String unitId, String station, long enter) {
+        return new VisitClaim(visitRef, null, null, unitId, station, null, enter, null);
     }
     static String keyOf(JsonNode visitRef) { return Canonical.utf8(Canonical.bytes(visitRef)); }
     static String text(JsonNode n) { return Canonical.utf8(Canonical.bytes(n)); }
@@ -89,6 +97,7 @@ final class VisitClaim {
         }
         for (Map.Entry<String, Stage1State.Expired> e : s.expired.entrySet()) {
             Stage1State.Expired x = e.getValue();
+            if (!MODE.equals(x.visitRef().path("mode").asText())) continue;   // a plc-stamped visit's summary is PlcStamped's
             VisitClaim c = new VisitClaim(x.visitRef(), x.visitRef().get("source").asText(), x.visitRef().get("arrivalEventId").asText(), null, s.station, null, x.enter(), x);
             c.leave = x.leave();
             c.attributionEnd = x.attributionEnd();
