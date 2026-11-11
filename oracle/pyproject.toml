@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "forseti-oracle"
+version = "0.1.0"
+description = "Independent oracle for forseti: recomputes every journal row body per cut by sort-and-sweep; shares no code with forseti-core"
+requires-python = ">=3.11"
+license = "Apache-2.0"
+dependencies = ["rfc8785==0.1.4", "jsonschema==4.26.0"]
+
+[project.optional-dependencies]
+dev = ["pytest==8.3.5"]
+
+[project.scripts]
+forseti-oracle = "forseti_oracle.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
