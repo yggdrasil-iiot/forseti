@@ -6,21 +6,27 @@ import java.io.UncheckedIOException;
 import java.nio.file.*;
 import java.util.*;
 import java.util.stream.Stream;
+import yggdrasil.forseti.cli.gate.CoreGate;
 import yggdrasil.forseti.cli.recording.Recording;
 import yggdrasil.forseti.cli.recording.ScenarioBuilder;
 import yggdrasil.forseti.core.Json;
 
 /** {@code forseti <command> <verb> [--flag value | --switch]...}. Exit codes: 0 done, 1 a check failed, 2 usage or input error.
- *  Commands are dispatched by name, so a later command (Task 9: {@code gate}) is one more case. */
+ *  Commands are dispatched by name; {@code gate} takes its flags from the second argument on ({@code forseti gate --engine core ...}). */
 public final class Main {
     private Main() {}
 
     public static void main(String[] args) { System.exit(run(args, System.out, System.err)); }
 
     public static int run(String[] args, PrintStream out, PrintStream err) {
+        if (args.length >= 1 && args[0].equals("gate")) {
+            Args flags;
+            try { flags = Args.parse(args, 1, Set.of()); } catch (IllegalArgumentException e) { err.println(e.getMessage()); return usage(err); }
+            return CoreGate.main(flags, String.join(" ", args), out, err);
+        }
         if (args.length < 2) return usage(err);
-        Map<String, String> flags;
-        try { flags = flags(Arrays.copyOfRange(args, 2, args.length)); }
+        Args flags;
+        try { flags = Args.parse(args, 2, Set.of("lock")); }
         catch (IllegalArgumentException e) { err.println(e.getMessage()); return usage(err); }
         try {
             switch (args[0] + " " + args[1]) {
@@ -37,43 +43,24 @@ public final class Main {
     private static int usage(PrintStream err) {
         err.println("usage: forseti recordings build --scenario <file> --out <dir> [--lock]");
         err.println("       forseti recordings verify --scenario <file> --out <dir>");
+        err.println("       forseti gate --engine core [--out <dir>] [--python <interpreter>] [--negative-control <name>] [--seed <n>]");
         return 2;
     }
 
-    /** {@code --name value} pairs; {@code --lock} alone is a switch. */
-    static Map<String, String> flags(String[] a) {
-        Map<String, String> m = new LinkedHashMap<>();
-        for (int i = 0; i < a.length; i++) {
-            if (!a[i].startsWith("--")) throw new IllegalArgumentException("unexpected argument " + a[i]);
-            String name = a[i].substring(2);
-            if (name.equals("lock")) { m.put(name, "true"); continue; }
-            if (i + 1 >= a.length) throw new IllegalArgumentException("--" + name + " needs a value");
-            if (m.put(name, a[++i]) != null) throw new IllegalArgumentException("--" + name + " given twice");
-        }
-        return m;
-    }
-
-    private static String required(Map<String, String> f, String name, Set<String> allowed) {
-        for (String k : f.keySet()) if (!allowed.contains(k)) throw new IllegalArgumentException("unknown flag --" + k);
-        String v = f.get(name);
-        if (v == null) throw new IllegalArgumentException("--" + name + " is required");
-        return v;
-    }
-
-    private static int build(Map<String, String> f, PrintStream out) {
-        Set<String> allowed = Set.of("scenario", "out", "lock");
-        Path scenario = Path.of(required(f, "scenario", allowed)), dir = Path.of(required(f, "out", allowed));
+    private static int build(Args f, PrintStream out) {
+        f.only(Set.of("scenario", "out", "lock"));
+        Path scenario = Path.of(f.required("scenario")), dir = Path.of(f.required("out"));
         ScenarioBuilder.Built b = ScenarioBuilder.build(scenario, dir);
-        if (f.containsKey("lock")) Json.write(ScenarioBuilder.lockOf(scenario).toAbsolutePath(), b.lock());
+        if (f.has("lock")) Json.write(ScenarioBuilder.lockOf(scenario).toAbsolutePath(), b.lock());
         out.println(summary(b));
         return 0;
     }
 
     /** Rebuilds the scenario into a temporary directory, compares it byte for byte with {@code --out}, and compares the rebuilt lock
      *  with the committed one; then opens {@code --out} and verifies its digests and batches. */
-    private static int verify(Map<String, String> f, PrintStream out, PrintStream err) {
-        Set<String> allowed = Set.of("scenario", "out");
-        Path scenario = Path.of(required(f, "scenario", allowed)), dir = Path.of(required(f, "out", allowed));
+    private static int verify(Args f, PrintStream out, PrintStream err) {
+        f.only(Set.of("scenario", "out"));
+        Path scenario = Path.of(f.required("scenario")), dir = Path.of(f.required("out"));
         Path tmp;
         try { tmp = Files.createTempDirectory("forseti-verify-"); } catch (IOException e) { throw new UncheckedIOException(e); }
         List<String> problems = new ArrayList<>();
