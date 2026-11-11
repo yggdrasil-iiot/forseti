@@ -1,5 +1,6 @@
 package yggdrasil.forseti.core;
 
+import com.fasterxml.jackson.core.JsonGenerator;
 import com.fasterxml.jackson.core.JsonParser;
 import com.fasterxml.jackson.core.util.DefaultIndenter;
 import com.fasterxml.jackson.core.util.DefaultPrettyPrinter;
@@ -48,9 +49,26 @@ public final class Json {
     public static ObjectNode object() { return JSON.createObjectNode(); }
     public static byte[] pretty(JsonNode n) {
         DefaultIndenter two = new DefaultIndenter("  ", "\n");
-        DefaultPrettyPrinter pp = new DefaultPrettyPrinter().withObjectIndenter(two).withArrayIndenter(two)
-            .withSeparators(Separators.createDefaultInstance().withObjectFieldValueSpacing(Separators.Spacing.AFTER));
+        DefaultPrettyPrinter pp = new TyrShape(new DefaultPrettyPrinter().withObjectIndenter(two).withArrayIndenter(two)
+            .withSeparators(Separators.createDefaultInstance().withObjectFieldValueSpacing(Separators.Spacing.AFTER)));
         try { return (JSON.writer(pp).writeValueAsString(n) + "\n").getBytes(StandardCharsets.UTF_8); } catch (IOException e) { throw new IllegalStateException(e); }
+    }
+
+    /** Python's json.dumps(indent=2), the shape Tyr writes, prints an empty array as [] and an empty object as {}; Jackson's
+     *  default printer puts a space inside both. */
+    static final class TyrShape extends DefaultPrettyPrinter {
+        TyrShape(DefaultPrettyPrinter base) { super(base); }
+        @Override public DefaultPrettyPrinter createInstance() { return new TyrShape(this); }
+        @Override public void writeEndArray(JsonGenerator g, int nrOfValues) throws IOException {
+            if (nrOfValues > 0) { super.writeEndArray(g, nrOfValues); return; }
+            if (!_arrayIndenter.isInline()) --_nesting;
+            g.writeRaw(']');
+        }
+        @Override public void writeEndObject(JsonGenerator g, int nrOfEntries) throws IOException {
+            if (nrOfEntries > 0) { super.writeEndObject(g, nrOfEntries); return; }
+            if (!_objectIndenter.isInline()) --_nesting;
+            g.writeRaw('}');
+        }
     }
     public static void write(Path p, JsonNode n) { try { Files.createDirectories(p.getParent()); Files.write(p, pretty(n)); } catch (IOException e) { throw new IllegalStateException(p.toString(), e); } }
     public static String text(JsonNode n, String k) { JsonNode v = n.path(k); if (!v.isTextual()) throw new IllegalArgumentException("missing text field " + k); return v.asText(); }
