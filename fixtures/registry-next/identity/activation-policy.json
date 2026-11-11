@@ -1,0 +1,54 @@
+{
+  "version": "1.0.0",
+  "default": "deny",
+  "rules": [
+    {
+      "id": "publish-line2",
+      "principal": "proposer",
+      "action": "publish",
+      "target": "mapping-publication",
+      "kind": "mapping-release",
+      "ref": "line2"
+    },
+    {
+      "id": "approve-line2",
+      "principal": "approver",
+      "action": "approve",
+      "target": "mapping-publication",
+      "kind": "mapping-release",
+      "ref": "line2"
+    },
+    {
+      "id": "publish-line2-plc",
+      "principal": "proposer",
+      "action": "publish",
+      "target": "mapping-publication",
+      "kind": "mapping-release",
+      "ref": "line2-plc"
+    },
+    {
+      "id": "approve-line2-plc",
+      "principal": "approver",
+      "action": "approve",
+      "target": "mapping-publication",
+      "kind": "mapping-release",
+      "ref": "line2-plc"
+    },
+    {
+      "id": "publish-line2-plc-nocheck",
+      "principal": "proposer",
+      "action": "publish",
+      "target": "mapping-publication",
+      "kind": "mapping-release",
+      "ref": "line2-plc-nocheck"
+    },
+    {
+      "id": "approve-line2-plc-nocheck",
+      "principal": "approver",
+      "action": "approve",
+      "target": "mapping-publication",
+      "kind": "mapping-release",
+      "ref": "line2-plc-nocheck"
+    }
+  ]
+}

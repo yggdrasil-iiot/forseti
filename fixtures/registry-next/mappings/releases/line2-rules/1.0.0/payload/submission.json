@@ -1,0 +1,76 @@
+{
+  "kind": "mapping-submission",
+  "schemaVersion": "2.9.0",
+  "id": "attribution-fixture",
+  "streamId": "line2",
+  "version": "1.0.0",
+  "workspaceSha256": "fc5ccb9a1508d95aac0eebe28ecdd9e58582671355cc965c481937c7cf9cec0f",
+  "proposalSha256": "36ae3761b0616dbc2e032ee08dec9fbd29a0e25564ff34359fb872af605554ce",
+  "baseRelease": null,
+  "proposedBy": "proposer",
+  "execution": "excluded",
+  "context": {
+    "equipment": [
+      {
+        "id": "synthetic-site",
+        "label": "Synthetic site"
+      },
+      {
+        "id": "line2",
+        "label": "Line 2"
+      },
+      {
+        "id": "station1",
+        "label": "Station 1"
+      },
+      {
+        "id": "station2",
+        "label": "Station 2"
+      },
+      {
+        "id": "nutrunner1",
+        "label": "Nutrunner 1"
+      },
+      {
+        "id": "nutrunner2",
+        "label": "Nutrunner 2"
+      },
+      {
+        "id": "station3",
+        "label": "Station 3"
+      }
+    ],
+    "connections": [
+      {
+        "id": "sim-opcua-station1",
+        "label": "Bifrost OPC-UA sim",
+        "equipmentInstanceId": "station1",
+        "accessProfileRef": "s7-1500-opcua-v1"
+      },
+      {
+        "id": "sim-opcua-station2",
+        "label": "Bifrost OPC-UA sim",
+        "equipmentInstanceId": "station2",
+        "accessProfileRef": "s7-1500-opcua-v1"
+      },
+      {
+        "id": "sim-opcua-nutrunner1",
+        "label": "Bifrost OPC-UA sim",
+        "equipmentInstanceId": "nutrunner1",
+        "accessProfileRef": "s7-1500-opcua-v1"
+      },
+      {
+        "id": "sim-opcua-nutrunner2",
+        "label": "Bifrost OPC-UA sim",
+        "equipmentInstanceId": "nutrunner2",
+        "accessProfileRef": "s7-1500-opcua-v1"
+      },
+      {
+        "id": "sim-opcua-station3",
+        "label": "Bifrost OPC-UA sim",
+        "equipmentInstanceId": "station3",
+        "accessProfileRef": "s7-1500-opcua-v1"
+      }
+    ]
+  }
+}

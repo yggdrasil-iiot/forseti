@@ -1,0 +1,7 @@
+target/
+build/
+oracle/.pytest_cache/
+oracle/**/__pycache__/
+oracle/src/*.egg-info/
+.venv/
+*.key

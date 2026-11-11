@@ -1,0 +1,2 @@
+Field label: nutrunner1-running
+Nutrunner1 running: nsu=urn:bifrost:opcua:sim;s=Line2/Station1/Nutrunner1.Running, Boolean

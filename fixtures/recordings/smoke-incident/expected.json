@@ -1,0 +1,21 @@
+{
+  "expectedVersion": 1,
+  "scope": "minimal",
+  "visits": [
+    {
+      "visitRef": "visit-1",
+      "unitId": "UNIT0000000000001",
+      "station": "synthetic-site:line2:station1",
+      "enter": 1794183000000,
+      "leave": 1794183060000,
+      "toolsUsed": [
+        "synthetic-site:line2:station1:nutrunner1"
+      ]
+    }
+  ],
+  "plcVisits": [],
+  "incidents": [
+    "inc-1"
+  ],
+  "settleTargetW": 1794183780000
+}

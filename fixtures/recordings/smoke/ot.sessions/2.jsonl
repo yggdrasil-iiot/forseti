@@ -1,0 +1,1 @@
+{"offset":0,"timestamp":null,"key":"synthetic-site:line2:station2","headers":{},"value":{"edge":"edge-line2","device":"synthetic-site:line2:station2","birthPublishTs":1794182400000,"bdSeq":0,"kind":"session-up","atSeq":1,"payload":{"at":1794182400000,"rebirth":false}}}

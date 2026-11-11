@@ -1,0 +1,21 @@
+{
+  "kind": "target-instance",
+  "schemaVersion": "2.0.0",
+  "id": "nutrunner2",
+  "version": "1.0.0",
+  "equipmentInstanceId": "nutrunner2",
+  "label": "Nutrunner 2",
+  "semanticDefinitionRef": {
+    "id": "tool-model",
+    "version": "1.0.0"
+  },
+  "evidenceRefs": [
+    {
+      "artifactId": "manual-nutrunner2-torque",
+      "locator": {
+        "kind": "text-line",
+        "line": 1
+      }
+    }
+  ]
+}

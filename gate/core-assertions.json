@@ -1,0 +1,95 @@
+{
+  "engine": "core",
+  "assertions": [
+    {
+      "id": "F-JCS-JAVA",
+      "pr": 1,
+      "description": "the shared vector file through Canonical: every vector's canonical text and SHA-256 as pinned"
+    },
+    {
+      "id": "F-JCS-PY",
+      "pr": 1,
+      "description": "python -I -m pytest -q oracle/tests/test_jcs_vectors.py exits 0 (the gate's --python)"
+    },
+    {
+      "id": "F-JCS-REFUSALS",
+      "pr": 1,
+      "description": "the eight refusal vectors are refused on both sides: Java in-process, and python -I -m forseti_oracle.cli canon-check vectors/jcs-vectors.json exits 0"
+    },
+    {
+      "id": "F-SCHEMA-COPIES",
+      "pr": 1,
+      "description": "schemas/*.json bytes equal the core resources; their digests equal fixtures/registry.lock.json, the literals e97cd7c97b1ab5e2d63d5b06e6057415945b82cff6d2ca0345106d2daf9d29dc (occupancy) and 7141c3115d90812f16b22049c66bfaa64942ebacf854b343fb99b3dce168fb34 (incident), and format.schemaSha256 of both profiles in each bundle of fixtures/upstream"
+    },
+    {
+      "id": "F-UPSTREAM-UNTOUCHED",
+      "pr": 1,
+      "description": "every file of fixtures/upstream/{bundle,plc-stamped-bundle} matches fixtures/upstream/manifest.json (108 files), and every payload file of line2-rules 1.0.0 and line2-rules-plc 1.0.0 in fixtures/registry has the digest the manifest records for the same bundle path"
+    },
+    {
+      "id": "F-JOURNAL-REDUCERS",
+      "pr": 1,
+      "description": "Revisions, Disposition and JournalFold on inline journals: first revision 1, unchanged body emits nothing, delete continuity, reappearance, a conflict revision under the same delivery key, the four fold violations detected"
+    },
+    {
+      "id": "F-HEAD-OK",
+      "pr": 1,
+      "description": "the three heads of fixtures/registry and registry-next's version 2 verify at signedAt + 60 s with fixtures/trusted-keys.jsonl"
+    },
+    {
+      "id": "F-HEAD-SIGNATURE",
+      "pr": 1,
+      "description": "untrusted keys, a forged keyid and a payload changed after signing are head-unverified (signature), in a temp copy"
+    },
+    {
+      "id": "F-HEAD-SAME-KEY",
+      "pr": 1,
+      "description": "two signatures from one key are head-unverified (same-key), in a temp copy"
+    },
+    {
+      "id": "F-HEAD-SUBJECT",
+      "pr": 1,
+      "description": "a changed head file and a statement naming another release.json are head-unverified (subject), in a temp copy"
+    },
+    {
+      "id": "F-HEAD-FUTURE",
+      "pr": 1,
+      "description": "a statement signed after now is head-unverified (signed-in-future) and raises no floor, in a temp copy"
+    },
+    {
+      "id": "F-HEAD-ROLLBACK",
+      "pr": 1,
+      "description": "a head version below the floor and the same version with another statement are head-rollback"
+    },
+    {
+      "id": "F-HEAD-EXPIRED",
+      "pr": 1,
+      "description": "a head read at its expires instant is head-expired and raises no floor"
+    },
+    {
+      "id": "F-RELEASE-DIGEST",
+      "pr": 1,
+      "description": "a changed release.json byte is provenance-mismatch (release-digest), in a temp copy"
+    },
+    {
+      "id": "F-PAYLOAD-DIGEST",
+      "pr": 1,
+      "description": "a changed payload byte is provenance-mismatch (release-file), in a temp copy"
+    },
+    {
+      "id": "F-RULES-LOAD-OJ",
+      "pr": 1,
+      "description": "RuleSet.load on line2-rules 1.0.0 (occupancy-join): counts and roles as in RuleSetTest; rulesDigest equals the oracle's rules-digest"
+    },
+    {
+      "id": "F-RULES-LOAD-PLC",
+      "pr": 1,
+      "description": "RuleSet.load on line2-rules-plc 1.0.0 (plc-stamped): counts and roles as in RuleSetTest; rulesDigest equals the oracle's rules-digest"
+    },
+    {
+      "id": "F-BINDING-SCHEMA-MISMATCH",
+      "pr": 1,
+      "description": "on fixtures/registry-mismatch the head verifies and the release reads, then RuleSet.load is refused with binding.schema-mismatch (approved 0000000000000000000000000000000000000000000000000000000000000001)"
+    }
+  ]
+}

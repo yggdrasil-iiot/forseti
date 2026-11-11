@@ -1,0 +1,19 @@
+{
+  "kind": "evidence-artifact",
+  "schemaVersion": "1.1.0",
+  "id": "occupancy-binding-line2",
+  "version": "1.0.0",
+  "origin": "synthetic",
+  "file": {
+    "path": "data/occupancy-binding-0.json",
+    "sha256": "149dc29ea119f4bd8987f3b12afe2d8d4d91f90e91416d70ff9c1145b2d80e6b",
+    "mediaType": "application/vnd.forseti.occupancy-binding+json"
+  },
+  "capturedAt": "2026-11-07T00:00:00Z",
+  "product": null,
+  "scope": [
+    "station1",
+    "station2",
+    "station3"
+  ]
+}
