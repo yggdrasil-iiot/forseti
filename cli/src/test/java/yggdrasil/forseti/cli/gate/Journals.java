@@ -31,6 +31,7 @@ final class Journals {
     static String rulesDigest(ObjectNode pins) { ObjectNode w = pins.deepCopy(); w.remove("job"); return Canonical.digest(w); }
 
     static ObjectNode key(String id) { return Json.object().put("arrivalEventId", id).put("mode", "occupancy-join").put("source", "mes-line2"); }
+    static String keyText(String id) { return Canonical.utf8(Canonical.bytes(key(id))); }
     static ObjectNode body(String status) { return Json.object().put("status", status).put("rulesDigest", RULES_DIGEST); }
 
     /** A row of {@code topic} triggered by {@code ot.messages/1/<offset>}. */
@@ -87,14 +88,41 @@ final class Journals {
         return f;
     }
 
-    /** An oracle cut file {@code {key -> {body, bodyDigest}}}. */
-    static void oracle(Path cutDir, String topic, Map<JsonNode, JsonNode> rows, Map<JsonNode, String> digests) throws IOException {
+    /** One oracle table of one cut in the oracle's encoding ({@code table_text}): {@code upserts} with their {@code reported} digest
+     *  (the body's own when absent), {@code deletes}, and the whole set's {@code count} and {@code setHash} as given. */
+    static void oracleTable(Path cutDir, String table, long cutId, Long previous, Map<String, JsonNode> upserts, List<String> deletes, long count, String setHash,
+                            Map<String, String> reported) throws IOException {
         ObjectNode o = Json.object();
-        for (Map.Entry<JsonNode, JsonNode> e : rows.entrySet()) {
-            ObjectNode v = o.putObject(Canonical.utf8(Canonical.bytes(e.getKey())));
-            v.set("body", e.getValue());
-            v.put("bodyDigest", digests.getOrDefault(e.getKey(), Canonical.digest(e.getValue())));
+        Json.putSafe(o, "cutId", cutId);
+        if (previous == null) o.putNull("previousCutId"); else Json.putSafe(o, "previousCutId", previous);
+        o.put("table", table).put("mode", previous == null ? "snapshot" : "delta");
+        Json.putSafe(o, "count", count);
+        o.put("setHash", setHash);
+        ArrayNode d = o.putArray("deletes");
+        deletes.forEach(d::add);
+        ObjectNode u = o.putObject("upserts");
+        for (Map.Entry<String, JsonNode> e : upserts.entrySet())
+            u.putObject(e.getKey()).<ObjectNode>set("body", e.getValue()).put("bodyDigest", reported.getOrDefault(e.getKey(), Canonical.digest(e.getValue())));
+        Json.write(cutDir.resolve(table + ".json"), o);
+    }
+
+    /** The setHash of a full set {@code key -> body}. */
+    static String setHash(Map<String, JsonNode> rows) {
+        TreeMap<String, String> m = new TreeMap<>(Comparison::codePointOrder);
+        rows.forEach((k, v) -> m.put(k, Canonical.digest(v)));
+        return Comparison.setHash(m);
+    }
+
+    /** A whole oracle cut directory: every table the snapshot of {@code now} ({@code previous} null) or its delta against
+     *  {@code before}, with the correct count and setHash; a table absent from a map is empty. */
+    static void oracleCut(Path cutDir, long cutId, Long previous, Map<String, Map<String, JsonNode>> before, Map<String, Map<String, JsonNode>> now) throws IOException {
+        for (String table : Comparison.TABLES) {
+            Map<String, JsonNode> b = previous == null ? Map.of() : before.getOrDefault(table, Map.of()), n = now.getOrDefault(table, Map.of());
+            Map<String, JsonNode> up = new TreeMap<>();
+            n.forEach((k, v) -> { if (!b.containsKey(k) || !Canonical.digest(b.get(k)).equals(Canonical.digest(v))) up.put(k, v); });
+            List<String> del = new ArrayList<>();
+            for (String k : b.keySet()) if (!n.containsKey(k)) del.add(k);
+            oracleTable(cutDir, table, cutId, previous, up, del, n.size(), setHash(n), Map.of());
         }
-        Json.write(cutDir.resolve(topic + ".json"), o);
     }
 }

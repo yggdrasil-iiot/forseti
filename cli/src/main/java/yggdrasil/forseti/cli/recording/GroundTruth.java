@@ -313,7 +313,8 @@ final class GroundTruth {
             long end = ends.iterator().next();
             c.inconsistent = starts.size() > 1 || ends.size() > 1;
             c.leave = ends.size() == 1 && end >= 0 ? end : null;
-            if (c.leave == null && change != null) { c.missingVisitClose = true; c.boundedAt = change; }
+            // P2: a VisitId change while present leaves the earlier visit open, missing-visit-close, attributionEnd = the change snapshot's sourceTs
+            if (c.leave == null && change != null) { c.missingVisitClose = true; c.boundedAt = change; c.attributionEnd = change; }
             c.lo = c.enter; c.hi = c.leave != null ? c.leave : Long.MAX_VALUE;
             byVisit.put(c.ref, c);
         }
@@ -573,7 +574,7 @@ final class GroundTruth {
             for (Map.Entry<Sample, Outcome> o : fin.outcomes().entrySet()) ss.set(o.getKey().key(), expectation(o.getValue()));
         }
         ExpectedSamples.Builder messageRuns = runStepMs > 0 ? new ExpectedSamples.Builder(runStepMs, "messageId", "disposition") : null;
-        e.set("dispositions", dispositions(last, messageRuns));
+        e.set("dispositions", dispositions(last, messageRuns, fin));
         if (messageRuns != null) e.set("messageDispositionRuns", messageRuns.toJson());
         ObjectNode md = e.putObject("messageMemberDispositions");
         md.put("topic", "ot.messages").put("part", "member:<metric>").put("disposition", "accepted").put("reason", "accepted");
@@ -639,14 +640,15 @@ final class GroundTruth {
     // ---------------------------------------------------------------- dispositions
 
     /** {@code messageRuns} non-null: the unknown-device message dispositions go there as runs instead of into the object. */
-    private ObjectNode dispositions(int last, ExpectedSamples.Builder messageRuns) {
+    private ObjectNode dispositions(int last, ExpectedSamples.Builder messageRuns, Eval fin) {
         TreeMap<String, ObjectNode> out = new TreeMap<>();
         for (Delivery d : sessions) {
             ObjectNode v = d.value(), id = Json.object().put("edge", v.get("edge").asText()).put("device", v.get("device").asText());
             Json.putSafe(id, "birthPublishTs", v.get("birthPublishTs").longValue());
             Json.putSafe(id, "bdSeq", v.get("bdSeq").longValue()).put("kind", v.get("kind").asText());
             Json.putSafe(id, "atSeq", v.get("atSeq").longValue());
-            entry(out, id, "ot.sessions").with("parts").set("event", outcome("accepted", "accepted"));
+            // S1: a session event of a device outside the rule's catalog is rejected unknown-device, as its messages are
+            entry(out, id, "ot.sessions").with("parts").set("event", catalog.contains(v.get("device").asText()) ? outcome("accepted", "accepted") : outcome("rejected", "unknown-device"));
         }
         // Occupancy: per eventId, the original's part and the declaration's part; differing contents are a conflict of every delivery.
         Map<String, List<Delivery>> byEvent = new LinkedHashMap<>();
@@ -699,6 +701,12 @@ final class GroundTruth {
             Json.putSafe(e, "duplicates", n);
             out.put(key, e);
         });
+        // S3: a sample with sourceTs < admissionW - H is replay-required beyond-horizon, its member part too
+        for (Map.Entry<Sample, Outcome> x : fin.outcomes().entrySet()) {
+            if (!"replay-required".equals(x.getValue().state())) continue;
+            ObjectNode e = out.computeIfAbsent(x.getKey().key(), k -> Json.object().put("topic", "ot.messages"));
+            e.with("parts").set("member", outcome("replay-required", x.getValue().reason()));
+        }
         ObjectNode o = Json.object();
         out.forEach(o::set);
         return o;

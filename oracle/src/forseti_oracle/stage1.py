@@ -32,6 +32,28 @@ def key_text(key) -> str:
     return canon.canonical_bytes(key).decode("utf-8")
 
 
+# --- cross-cut memos -----------------------------------------------------------------------------------------------------------
+
+
+class NoMemo(dict):
+    """A memo that keeps nothing (``--no-memo``): every lookup misses and every store is dropped, so each value is computed again
+    wherever it is used."""
+
+    def __setitem__(self, key, value) -> None:
+        pass
+
+    def get(self, key, default=None):
+        return default
+
+
+MEMO = True   # False under --no-memo: every memo created from then on is a NoMemo
+
+
+def new_memo() -> dict:
+    """A memo kept across the evaluated cuts (on a delivery, or on a Stage2), or a NoMemo when the memos are disabled."""
+    return {} if MEMO else NoMemo()
+
+
 # --- deliveries ---------------------------------------------------------------------------------------------------------------
 
 
@@ -46,7 +68,7 @@ class Delivery:
     read: inputs.Read
     # values that are functions of this delivered record alone (its contract key, the canonical text of its identities, the
     # canonical bytes of its observations), computed once per run instead of once per evaluated cut; never compared
-    memo: dict = field(default_factory=dict, repr=False, compare=False)
+    memo: dict = field(default_factory=new_memo, repr=False, compare=False)
 
     @property
     def origin(self) -> dict:
@@ -396,7 +418,7 @@ class Sample:
     conflict: bool = False          # measurement conflict
     row: dict | None = None
     candidate: object = None        # the quality-blind candidate Visit (or None)
-    memo: dict = field(default_factory=dict, repr=False, compare=False)   # its delivery's memo
+    memo: dict = field(default_factory=new_memo, repr=False, compare=False)   # its delivery's memo
 
     @property
     def ts(self):

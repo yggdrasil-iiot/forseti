@@ -137,11 +137,114 @@ def test_all_writes_every_cut_of_the_cut_log(tmp_path):
     names = sorted(p.name for p in (tmp_path / "out" / "cut-3").iterdir())
     assert names == ["dispositions-stage1.json", "dispositions-stage2.json", "forseti.affected-sets.json", "forseti.affected.json",
                      "forseti.samples.json", "forseti.work-records.json"]
-    wr = json.loads((tmp_path / "out" / "cut-3" / "forseti.work-records.json").read_text())
-    (v,) = wr.values()
+    folded = fold_cuts(tmp_path / "out", [1, 2, 3])
+    (v,) = folded[3]["forseti.work-records"].values()
     assert v["body"]["status"] == "provisional" and len(v["bodyDigest"]) == 64
     meta = json.loads((tmp_path / "out" / "oracle-run.json").read_text())
     assert meta["cuts"] == [1, 2, 3] and meta["rulesDigest"] == "de19f15a65f26fa6d75813c1f834df5c6b3a2b335f32e002e9ee6e97a929ab6a"
+
+
+def fold_cuts(out, cut_ids):
+    """The full table sets of every cut, folded from the cut files (a snapshot replaces the set, a delta applies to the previous cut's),
+    each checked against its count and setHash with every body digest recomputed."""
+    from forseti_oracle import canon
+    state, previous, folded = {}, None, {}
+    for k in cut_ids:
+        folded[k] = {}
+        for f in sorted((out / f"cut-{k}").iterdir()):
+            doc = json.loads(f.read_text(encoding="utf-8"))
+            assert doc["cutId"] == k and doc["table"] == f.stem
+            if doc["mode"] == "snapshot":
+                assert doc["previousCutId"] is None and doc["deletes"] == []
+                rows = {}
+            else:
+                assert doc["previousCutId"] == previous
+                rows = dict(state[f.stem])
+                for key in doc["deletes"]:
+                    del rows[key]
+            for key, v in doc["upserts"].items():
+                assert v["bodyDigest"] == canon.digest(v["body"])
+                rows[key] = v
+            assert doc["count"] == len(rows)
+            assert doc["setHash"] == cli.set_hash({key: canon.digest(v["body"]) for key, v in rows.items()})
+            state[f.stem] = folded[k][f.stem] = rows
+        previous = k
+    return folded
+
+
+def _all(tmp_path, smoke, out, *extra):
+    argv = ["all", "--recording", str(smoke), "--cuts", str(tmp_path / "cuts.json"), "--mappings", str(REGISTRY),
+            "--release", "line2-rules@1.0.0", "--rule", "line2-attribution@1.0.0", "--definitions", str(smoke / "manifest.json"),
+            "--out", str(out), *extra]
+    return run(argv)
+
+
+def test_the_delta_stream_folds_to_the_snapshots_at_every_cut_and_no_memo_changes_no_byte(tmp_path):
+    from forseti_oracle import recording as recmod
+    smoke = ROOT / "fixtures" / "recordings" / "smoke-incident"
+    rec = recmod.open_recording(smoke)
+    doc = _cut_log(rec, len(rec.batches()))
+    (tmp_path / "cuts.json").write_text(json.dumps(doc))
+    ids = [c["cutId"] for c in doc["cuts"]]
+    assert _all(tmp_path, smoke, tmp_path / "delta")[0] == 0
+    assert _all(tmp_path, smoke, tmp_path / "snap", "--snapshots")[0] == 0
+    assert _all(tmp_path, smoke, tmp_path / "nomemo", "--no-memo")[0] == 0
+    deltas, snaps = fold_cuts(tmp_path / "delta", ids), {}
+    for k in ids:
+        snaps[k] = fold_cuts(tmp_path / "snap", [k])[k]
+        assert deltas[k] == snaps[k], k
+    assert any(json.loads((tmp_path / "delta" / f"cut-{ids[-1]}" / f"{t}.json").read_text())["mode"] == "delta" for t in cli.TABLES)
+    assert sum(len(v) for v in snaps[ids[-1]].values()) > 0
+    for k in ids:
+        for t in cli.TABLES:
+            assert (tmp_path / "delta" / f"cut-{k}" / f"{t}.json").read_bytes() == (tmp_path / "nomemo" / f"cut-{k}" / f"{t}.json").read_bytes()
+    # --cut-ids recomputes only the cuts asked for, as snapshots equal to the folded stream's
+    assert _all(tmp_path, smoke, tmp_path / "some", "--snapshots", "--cut-ids", f"{ids[1]},{ids[-1]}")[0] == 0
+    assert sorted(p.name for p in (tmp_path / "some").iterdir() if p.is_dir()) == sorted([f"cut-{ids[1]}", f"cut-{ids[-1]}"])
+    assert fold_cuts(tmp_path / "some", [ids[-1]])[ids[-1]] == deltas[ids[-1]]
+
+
+class Consumer:
+    """The gate's side of --stream: reads each announced cut, deletes it and acknowledges; ``stop_after`` closes the stream early."""
+
+    def __init__(self, out, announced, stop_after=None):
+        self.out, self.announced, self.stop_after, self.seen = out, announced, stop_after, []
+
+    def readline(self):
+        k = int(self.announced.getvalue().splitlines()[-1].split()[1])
+        if self.stop_after is not None and len(self.seen) >= self.stop_after:
+            return ""
+        assert sorted(p.name for p in self.out.iterdir() if p.name.startswith("cut-")) == [f"cut-{k}"]   # one cut on disk
+        import shutil
+        shutil.rmtree(self.out / f"cut-{k}")
+        self.seen.append(k)
+        return f"ok {k}\n"
+
+
+def test_the_stream_holds_one_cut_on_disk_and_stops_when_the_consumer_does(tmp_path):
+    from forseti_oracle import recording as recmod
+    smoke = ROOT / "fixtures" / "recordings" / "smoke-incident"
+    rec = recmod.open_recording(smoke)
+    (tmp_path / "cuts.json").write_text(json.dumps(_cut_log(rec, 4)))
+    a = cli.parse(["all", "--recording", str(smoke), "--cuts", str(tmp_path / "cuts.json"), "--mappings", str(REGISTRY),
+                   "--release", "line2-rules@1.0.0", "--rule", "line2-attribution@1.0.0", "--definitions", str(smoke / "manifest.json"),
+                   "--out", str(tmp_path / "s"), "--stream"])
+    announced, err = io.StringIO(), io.StringIO()
+    c = Consumer(tmp_path / "s", announced)
+    assert cli.run(a, announced, err, c) == 0, err.getvalue()
+    assert c.seen == [1, 2, 3, 4] and [x for x in announced.getvalue().splitlines() if x.startswith("cut ")] == ["cut 1", "cut 2", "cut 3", "cut 4"]
+    assert not [p for p in (tmp_path / "s").iterdir() if p.name.startswith("cut-")]
+    a.out = tmp_path / "t"
+    announced, err = io.StringIO(), io.StringIO()
+    assert cli.run(a, announced, err, Consumer(tmp_path / "t", announced, stop_after=2)) == 1
+    assert '"refusal": "stream"' in err.getvalue()
+
+
+def test_cut_ids_need_snapshots():
+    with pytest.raises(SystemExit) as e:
+        cli.parse(["all", "--recording", "r", "--cuts", "c", "--mappings", "m", "--release", "a@1", "--rule", "b@1", "--definitions", "d",
+                   "--out", "o", "--cut-ids", "1"])
+    assert e.value.code == 2
 
 
 def test_all_refuses_a_cut_log_that_differs_from_the_batches(tmp_path):

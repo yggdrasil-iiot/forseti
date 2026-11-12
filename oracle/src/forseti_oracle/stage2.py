@@ -18,7 +18,7 @@ from dataclasses import dataclass, field
 from forseti_oracle import canon, inputs
 from forseti_oracle.inputs import INCIDENTS
 from forseti_oracle.rules import RuleSet, station_of
-from forseti_oracle.stage1 import Delivery, Disposition, _refs, key_text
+from forseti_oracle.stage1 import Delivery, Disposition, _refs, key_text, new_memo
 
 AFFECTED, AFFECTED_SETS = "forseti.affected", "forseti.affected-sets"
 RELATED, POSSIBLY, UNRELATED = "related", "possibly-related", "unrelated"
@@ -92,7 +92,7 @@ class Stage2:
         self.rs = rs
         self.rules_digest = rules_digest
         self.evidence_range = dict(evidence_range)
-        self._device_metric: dict[str, tuple] = {}   # sample key JSON -> (device, metric): a function of the key text alone
+        self._device_metric: dict[str, tuple] = new_memo()   # sample key JSON -> (device, metric): a function of the key text alone
         a, i = rs.attribution, rs.impact
         self.L = a["temporal"]["allowedLatenessMs"]
         self.P = a["coverage"]["expectedPeriodMs"]

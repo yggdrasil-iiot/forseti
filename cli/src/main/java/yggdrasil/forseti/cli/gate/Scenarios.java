@@ -2,6 +2,7 @@ package yggdrasil.forseti.cli.gate;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import java.io.BufferedReader;
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
@@ -25,14 +26,18 @@ import yggdrasil.forseti.core.rules.RuleSet;
  *  scenario into {@code build/recordings/<name>/} and checked against its committed lock before anything runs (the three smoke
  *  recordings are checked in place under {@code fixtures/recordings/}); a generation is registered by hand in a fresh temporary state
  *  ({@link Stage1Assertions#register}); the harness runs as a child JVM ({@code forseti run --engine core}, its own heap); the oracle runs
- *  on the harness's cut log ({@code --python}); the journals are folded cut by cut and compared with the oracle at every cut
- *  ({@link Comparison}), the integrity checks recorded ({@link RunFold}, {@link Integrity}) and the ground truth asserted
- *  ({@link Expectations}). The run and oracle directories are deleted once folded; what the assertions read stays in memory.
+ *  on the harness's cut log ({@code --python}) and hands its cuts over one at a time ({@code --stream}, {@link Comparison#consume}): the
+ *  journals are folded cut by cut and compared with the oracle at every cut as it arrives ({@link Comparison}), so the oracle's output
+ *  on disk stays at one cut; the integrity checks are recorded ({@link RunFold}, {@link Integrity}) and the ground truth asserted
+ *  ({@link Expectations}). On a difference the oracle is rerun on the first differing cuts with {@code --snapshots} for the diff files.
+ *  The run and oracle directories are deleted once folded; what the assertions read stays in memory.
  *
  *  <p>Parallelism: {@code -Dforseti.gate.parallel=<n>} hand-made scenarios at a time (default half the processors, at most 4), the
  *  five horizon recordings one at a time beside them (each harness gets {@code -Dforseti.gate.horizonXmx}, default 6g). {@code -Dforseti.gate.skipHorizon=true} (or
  *  {@code FORSETI_GATE_SKIP_HORIZON=true}) leaves the horizon scenarios out for local iteration; every assertion that needs one then
- *  fails as not run, so a gate run that skips them never passes. */
+ *  fails as not run, so a gate run that skips them never passes. {@code -Dforseti.gate.only=<name,name>} runs only the named scenarios
+ *  (and their shuffled runs), with the same consequence for every other one; {@code -Dforseti.gate.oracleNoMemo=true} runs the oracle
+ *  with {@code --no-memo}. */
 final class Scenarios {
     private Scenarios() {}
 
@@ -48,6 +53,12 @@ final class Scenarios {
     static boolean skipHorizon() {
         return Boolean.getBoolean("forseti.gate.skipHorizon") || "true".equalsIgnoreCase(System.getenv("FORSETI_GATE_SKIP_HORIZON"));
     }
+    /** The scenarios {@code -Dforseti.gate.only} names, null when unset. */
+    static Set<String> only() {
+        String v = System.getProperty("forseti.gate.only", "");
+        return v.isBlank() ? null : new TreeSet<>(Arrays.asList(v.split(",")));
+    }
+    static boolean selected(String name) { Set<String> o = only(); return o == null || o.contains(name); }
     static List<String> all() { List<String> l = new ArrayList<>(HAND_MADE); l.addAll(HORIZON); l.addAll(SMOKE); return l; }
 
     /** One scenario, run and compared. */
@@ -137,10 +148,10 @@ final class Scenarios {
             int n = Math.max(1, Integer.getInteger("forseti.gate.parallel", Math.min(4, Runtime.getRuntime().availableProcessors() / 2)));
             pool = Executors.newFixedThreadPool(n, daemon("forseti-gate-scenario"));
             heavy = Executors.newSingleThreadExecutor(daemon("forseti-gate-horizon"));
-            for (String s : HAND_MADE) runs.put(s, pool.submit(() -> run(s)));
-            if (!skipHorizon()) for (String s : HORIZON) runs.put(s, heavy.submit(() -> run(s)));
-            for (String s : SMOKE) runs.put(s, pool.submit(() -> run(s)));
-            for (String s : SHUFFLED) for (long seed : SHUFFLE_SEEDS) shuffled.put(s + "@" + seed, pool.submit(() -> shuffle(s, seed)));
+            for (String s : HAND_MADE) if (selected(s)) runs.put(s, pool.submit(() -> run(s)));
+            if (!skipHorizon()) for (String s : HORIZON) if (selected(s)) runs.put(s, heavy.submit(() -> run(s)));
+            for (String s : SMOKE) if (selected(s)) runs.put(s, pool.submit(() -> run(s)));
+            for (String s : SHUFFLED) if (selected(s)) for (long seed : SHUFFLE_SEEDS) shuffled.put(s + "@" + seed, pool.submit(() -> shuffle(s, seed)));
             pool.shutdown();
             heavy.shutdown();
         }
@@ -156,11 +167,19 @@ final class Scenarios {
             Future<Run> f = runs.get(name);
             if (f == null) {
                 if (HORIZON.contains(name) && skipHorizon()) throw new IllegalStateException("not run: the horizon scenarios are skipped (-Dforseti.gate.skipHorizon=true)");
+                if (!selected(name) && all().contains(name)) {
+                    for (Future<Run> x : runs.values()) x.get();   // the named scenarios finish (and log) before the gate reports
+                    throw new IllegalStateException("not run: -Dforseti.gate.only=" + System.getProperty("forseti.gate.only"));
+                }
                 throw new IllegalArgumentException("no scenario " + name);
             }
             return f.get();
         }
-        Shuffled shuffled(String name, long seed) throws Exception { return shuffled.get(name + "@" + seed).get(); }
+        Shuffled shuffled(String name, long seed) throws Exception {
+            Future<Shuffled> f = shuffled.get(name + "@" + seed);
+            if (f == null) throw new IllegalStateException("not run: -Dforseti.gate.only=" + System.getProperty("forseti.gate.only"));
+            return f.get();
+        }
 
         private Run run(String name) {
             Run r = new Run();
@@ -174,18 +193,16 @@ final class Scenarios {
                 harness(r, state, out, null);
                 r.ms.put("harness", ms(t));
                 Path oracle = dir(name + "-oracle").resolve("out");
-                t = System.nanoTime();
-                oracle(r, out, oracle);
-                r.ms.put("oracle", ms(t));
-                t = System.nanoTime();
                 fold(r, out, oracle);
-                r.ms.put("compare", ms(t));
                 CoreGate.delete(oracle.getParent());
                 CoreGate.delete(out.getParent());
                 CoreGate.delete(state);
             } catch (Exception | Error e) {
                 r.failure = "crashed: " + e;
             }
+            try {
+                Files.writeString(c.logs.resolve("scenario-" + name + ".log"), r.summary() + "\n" + r.ms + "\n", StandardCharsets.UTF_8);
+            } catch (Exception | Error e) { /* the log is for reading, not a gate result */ }
             return r;
         }
 
@@ -251,7 +268,8 @@ final class Scenarios {
             r.runJson = Json.read(out.resolve("run.json"));
         }
 
-        private void oracle(Run r, Path run, Path out) throws IOException, InterruptedException {
+        /** {@code python -I -m forseti_oracle.cli all} on the harness's cut log, the recording's rule and subscription. */
+        private List<String> oracleCommand(Run r, Path run, Path out) {
             JsonNode rule = r.manifest.path("rule");
             List<String> cmd = new ArrayList<>(List.of(c.python, "-I", "-m", "forseti_oracle.cli", "all", "--recording", r.recording.toString(),
                 "--cuts", run.resolve("cuts.json").toString(), "--mappings", registry.resolve("mappings").toString(),
@@ -264,26 +282,64 @@ final class Scenarios {
                 cmd.add("--subscribe");
                 cmd.add(e.getKey() + "=" + String.join(",", ps));
             });
-            Proc p = Proc.run(c.root, c.logs.resolve("oracle-" + r.name + ".log"), Duration.ofHours(r.synthetic ? 6 : 1), cmd);
-            if (p.exit() != 0) throw new IllegalStateException("oracle exit " + p.exit() + ": " + p.lastLine());
+            if (Boolean.getBoolean("forseti.gate.oracleNoMemo")) cmd.add("--no-memo");
+            return cmd;
         }
 
-        private void fold(Run r, Path out, Path oracle) throws IOException {
+        /** The oracle with {@code --stream} beside the fold: each cut it announces is folded, compared and deleted before it writes the
+         *  next ({@link Comparison#consume}). Then the integrity checks and the ground truth; on a difference, the diff files from a
+         *  {@code --snapshots} rerun of the first differing cuts. Timings: {@code oracle} (the oracle process, start to exit),
+         *  {@code compare} (the gate's fold and comparison of the announced cuts); {@code oracleCutBytesPeak}, the largest cut on disk. */
+        private void fold(Run r, Path out, Path oracle) throws IOException, InterruptedException {
             r.rules = ruleSet(r);
             r.tally = new Comparison.Tally();
             Map<String, Integer> stations = Recording.open(r.recording).routing().stations();
+            Files.createDirectories(oracle);
+            Path log = c.logs.resolve("oracle-" + r.name + ".log");
+            Files.createDirectories(log.getParent());
+            List<String> cmd = oracleCommand(r, out, oracle);
+            cmd.add("--stream");
+            Duration timeout = Duration.ofHours(r.synthetic ? 6 : 1);
+            Map<Long, JsonNode> entries = new HashMap<>();
+            for (JsonNode cut : r.cutLog.path("cuts")) entries.put(cut.path("cutId").asLong(), cut);
+            Comparison.OracleFold of = new Comparison.OracleFold();
+            List<String> trailing = new ArrayList<>();
+            long[] compareNs = {0};
+            long started = System.nanoTime();
+            Process p = new ProcessBuilder(cmd).directory(c.root.toFile()).redirectError(log.toFile()).start();
+            Thread watchdog = new Thread(() -> {
+                try { if (!p.waitFor(timeout.toMillis(), TimeUnit.MILLISECONDS)) p.destroyForcibly(); } catch (InterruptedException e) { p.destroyForcibly(); }
+            }, "forseti-gate-oracle-watchdog-" + r.name);
+            watchdog.setDaemon(true);
+            watchdog.start();
             try (RunFold f = new RunFold(out, r.rulesDigest, 1, !r.synthetic)) {
                 r.fold = f;
-                for (JsonNode cut : r.cutLog.path("cuts")) {
-                    long k = cut.path("cutId").asLong();
-                    f.advance(k);
-                    Comparison.compareCut(f, k, oracle.resolve("cut-" + k), r.name, diffs, cut, r.tally);
-                    Set<String> open = new TreeSet<>();
-                    for (Map.Entry<String, RunFold.Rev> e : f.live(RunFold.WR).entrySet()) {
-                        JsonNode b = e.getValue().node();
-                        if (b.path("interval").path("leave").isNull() && !"retracted".equals(b.path("status").asText())) open.add(b.path("readPoint").asText());
-                    }
-                    r.open.put(k, open);
+                String broken;
+                try (BufferedReader announced = new BufferedReader(new java.io.InputStreamReader(p.getInputStream(), StandardCharsets.UTF_8));
+                     java.io.Writer acks = new java.io.OutputStreamWriter(p.getOutputStream(), StandardCharsets.UTF_8)) {
+                    broken = Comparison.consume(announced, acks, oracle, r.cutIds(), trailing, (k, dir) -> {
+                        long s = System.nanoTime();
+                        f.advance(k);
+                        Comparison.compareCut(f, k, dir, of, r.name, entries.get(k), r.tally);
+                        Set<String> open = new TreeSet<>();
+                        for (Map.Entry<String, RunFold.Rev> e : f.live(RunFold.WR).entrySet()) {
+                            JsonNode b = e.getValue().node();
+                            if (b.path("interval").path("leave").isNull() && !"retracted".equals(b.path("status").asText())) open.add(b.path("readPoint").asText());
+                        }
+                        r.open.put(k, open);
+                        compareNs[0] += System.nanoTime() - s;
+                    });
+                }
+                if (!p.waitFor(timeout.toMillis(), TimeUnit.MILLISECONDS)) p.destroyForcibly();
+                int exit = p.waitFor();
+                r.ms.put("oracle", ms(started));
+                r.ms.put("compare", compareNs[0] / 1_000_000);
+                r.ms.put("oracleCutBytesPeak", of.diskPeak);
+                Files.write(log, (String.join("\n", trailing) + "\noracle " + r.ms.get("oracle") + " ms, compare " + r.ms.get("compare") + " ms, largest cut on disk "
+                    + of.diskPeak + " bytes, upserts " + of.upserts + ", deletes " + of.deletes + "\n").getBytes(StandardCharsets.UTF_8), StandardOpenOption.APPEND);
+                if (broken != null || exit != 0) {
+                    String[] lines = Files.readString(log, StandardCharsets.UTF_8).strip().split("\\R");
+                    throw new IllegalStateException("oracle exit " + exit + (broken != null ? ", " + broken : "") + ": " + (lines.length > 1 ? lines[lines.length - 2] : ""));
                 }
                 f.finish();
                 Map<String, List<Integer>> subscribed = new HashMap<>();
@@ -291,7 +347,26 @@ final class Scenarios {
                 r.measures = Integrity.check(f, r.recording, r.cutLog, subscribed, r.rules, r.manifest.path("definitions"), stations);
                 r.outcome = Expectations.check(f, r.expected, r::perStation);
                 if (r.synthetic) f.compact();
+            } finally {
+                if (p.isAlive()) p.destroyForcibly();
             }
+            if (!r.tally.pending.isEmpty()) diagnose(r, out);
+        }
+
+        /** The diff files of the first differing cuts, from an oracle rerun with {@code --snapshots --cut-ids} on the original inputs. */
+        private void diagnose(Run r, Path run) throws IOException {
+            Path snapshots = dir(r.name + "-oracle-diag").resolve("out");
+            String failure = null;
+            try {
+                List<String> cmd = oracleCommand(r, run, snapshots);
+                cmd.addAll(List.of("--snapshots", "--cut-ids", String.join(",", r.tally.pendingCuts().stream().map(String::valueOf).toList())));
+                Proc p = Proc.run(c.root, c.logs.resolve("oracle-" + r.name + "-diagnostic.log"), Duration.ofHours(r.synthetic ? 6 : 1), cmd);
+                if (p.exit() != 0) failure = "exit " + p.exit() + ": " + p.lastLine();
+            } catch (Exception e) {
+                failure = e.toString();
+            }
+            Comparison.writeDiffs(r.tally, diffs, r.name, 1, failure == null ? snapshots : null, failure);
+            CoreGate.delete(snapshots.getParent());
         }
 
         /** The rule set the recording names, from its release in the fixture registry (head verified at its signedAt + 60 s). */

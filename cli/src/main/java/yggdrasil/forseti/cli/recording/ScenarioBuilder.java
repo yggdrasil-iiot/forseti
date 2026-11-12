@@ -634,7 +634,13 @@ public final class ScenarioBuilder {
                 facts.put(st.visitId(), new GroundTruth.VisitFacts(st.visitId(), null, tools));
             }
             List<GroundTruth.Delivery> occD = new ArrayList<>(), sesD = new ArrayList<>(), incD = new ArrayList<>();
-            for (Map.Entry<String, List<Item>> e : byPartition.entrySet()) for (Item it : e.getValue()) switch (it.topic()) {
+            // An input the run does not consume is in the recording but has no disposition and no effect: a partition the scenario's
+            // run does not subscribe ("subscribed", plc-held-back: "mfg.occupancy": []), and occupancy under a plc-stamped rule with
+            // crossCheck none, which does not read the occupancy stream (P3, injection 11b; the harness subscribes none of it).
+            JsonNode runSubscribed = s.path("subscribed");
+            boolean occupancyRead = !(rule.mode().equals("plc-stamped") && rule.crossCheck().equals("none"));
+            for (Map.Entry<String, List<Item>> e : byPartition.entrySet()) for (Item it : e.getValue())
+                if (consumed(runSubscribed, it.topic(), it.partition()) && (occupancyRead || !it.topic().equals("mfg.occupancy"))) switch (it.topic()) {
                 case "mfg.occupancy" -> occD.add(new GroundTruth.Delivery(it.topic(), it.value(), it.batch()));
                 case "ot.sessions" -> sesD.add(new GroundTruth.Delivery(it.topic(), it.value(), it.batch()));
                 case "quality.incidents" -> incD.add(new GroundTruth.Delivery(it.topic(), it.value(), it.batch()));
@@ -706,6 +712,13 @@ public final class ScenarioBuilder {
         all.put(Recording.MANIFEST, Canonical.digestOf(manifestBytes));
         all.forEach(lf::put);
         return new Built(messages, samples, sessions, occCount, incidents, boundaries.size(), lock);
+    }
+
+    /** Whether the run consumes {@code topic/partition}: every partition unless the scenario's {@code subscribed} names the topic. */
+    static boolean consumed(JsonNode subscribed, String topic, int partition) {
+        if (!subscribed.has(topic)) return true;
+        for (JsonNode p : subscribed.get(topic)) if (p.asInt() == partition) return true;
+        return false;
     }
 
     private static void applyOccupancyOverlays(Overlays ov, List<Occ> occ, Map<String, Visit> visitOf, long t0, long recordDelay) {

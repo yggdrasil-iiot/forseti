@@ -18,8 +18,8 @@
     5
   ],
   "files": {
-    "expected.json": "2125f086b3bfff76e36141a9f475aa84f1978ebb85867769274701b5ea4fef4b",
-    "manifest.json": "c0c0cd555080153904d75a12af11d3c525fc745d88c72f56f107d4bb72c3e6fd",
+    "expected.json": "a492e3826965207e0bf87d4bf2a84c742a2b4c6cefc2889d977dea357f5d8800",
+    "manifest.json": "538f61b3178351ab56c31ce055ef7f6d49c08ecd7564da9941ec0012b36a7db2",
     "mfg.occupancy/0.jsonl": "359934b790f7c2e2f53cb6af61c844a17acb0c09f6e83d7065e771138685ed2e",
     "mfg.occupancy/1.jsonl": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
     "mfg.occupancy/2.jsonl": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",

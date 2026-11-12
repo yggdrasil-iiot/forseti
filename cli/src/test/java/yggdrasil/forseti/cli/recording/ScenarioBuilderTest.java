@@ -100,6 +100,32 @@ class ScenarioBuilderTest {
         }
     }
 
+    @Test void thePlcGroundTruthFollowsS1P2AndTheRunsSubscriptions() throws IOException {
+        Map<String, JsonNode> stamped = new HashMap<>(), held = new HashMap<>();
+        ScenarioBuilder.build(SCENARIOS.resolve("plc-stamped.json"), REGISTRY, tmp.resolve("ps"));
+        ScenarioBuilder.build(SCENARIOS.resolve("plc-held-back.json"), REGISTRY, tmp.resolve("hb"));
+        JsonNode es = Recording.open(tmp.resolve("ps")).expected(), eh = Recording.open(tmp.resolve("hb")).expected();
+        ExpectedSamples.forEachDisposition(es, stamped::put);
+        ExpectedSamples.forEachDisposition(eh, held::put);
+        // S1: the session events of devices outside the plc rule's catalog are rejected unknown-device
+        for (Map<String, JsonNode> d : List.of(stamped, held)) {
+            Map<String, String> sessions = new TreeMap<>();
+            d.forEach((k, v) -> { if (v.path("topic").asText().equals("ot.sessions")) sessions.put(Json.read(k.getBytes(StandardCharsets.UTF_8)).path("device").asText(),
+                v.path("parts").path("event").path("disposition").asText() + " " + v.path("parts").path("event").path("reason").asText()); });
+            assertEquals(Map.of(S1, "accepted accepted", NR1, "accepted accepted", NR2, "rejected unknown-device", "synthetic-site:line2:station2", "rejected unknown-device",
+                "synthetic-site:line2:station3", "rejected unknown-device"), sessions);
+        }
+        // P2: the ID change while present gives V7 attributionEnd = the change snapshot's sourceTs (id-change-without-false at 1710000)
+        assertEquals(T0 + 1_710_000, visit(es, "V7").path("attributionEnd").longValue());
+        // P3, injection 11b: crossCheck none reads no occupancy (plc-nocheck, plc-held-back), so no occupancy disposition; plc-stamped
+        // (crossCheck occupancy) reads it
+        ScenarioBuilder.build(SCENARIOS.resolve("plc-nocheck.json"), REGISTRY, tmp.resolve("nc"));
+        Map<String, JsonNode> nocheck = new HashMap<>();
+        ExpectedSamples.forEachDisposition(Recording.open(tmp.resolve("nc")).expected(), nocheck::put);
+        assertTrue(stamped.values().stream().anyMatch(v -> v.path("topic").asText().equals("mfg.occupancy")));
+        for (Map<String, JsonNode> d : List.of(held, nocheck)) assertTrue(d.values().stream().noneMatch(v -> v.path("topic").asText().equals("mfg.occupancy")));
+    }
+
     @Test void freshSmokeBuildsEqualTheCommittedRecordings() throws IOException {
         for (String n : List.of("smoke", "smoke-plc", "smoke-incident")) {
             ScenarioBuilder.Built b = ScenarioBuilder.build(SCENARIOS.resolve(n + ".json"), REGISTRY, tmp.resolve(n));

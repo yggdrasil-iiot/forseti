@@ -179,6 +179,17 @@ class SynthesizerTest {
             states.add(e.path("state").asText() + " " + e.path("reason").asText() + " " + e.path("attributedTo").asText());
         }
         assertEquals(List.of("attributed null visit-3", "attributed null visit-3", "replay-required beyond-horizon null"), states);
+        // S3: the third one's member disposition is replay-required beyond-horizon; the first two default to accepted
+        Map<String, JsonNode> disp = new HashMap<>();
+        ExpectedSamples.forEachDisposition(r.expected(), disp::put);
+        List<String> parts = new ArrayList<>();
+        for (int j = 1; j <= 3; j++) {
+            JsonNode v = afterCut.get(j);
+            JsonNode d = disp.get(ScenarioBuilder.sampleKey(v.get("edge").asText(), NR1, v.get("birthPublishTs").longValue(), "Torque", v.get("bdSeq").longValue(),
+                v.get("seq").longValue(), v.get("publishTs").longValue()));
+            parts.add(d == null ? "unlisted" : d.path("parts").path("member").path("disposition").asText() + " " + d.path("parts").path("member").path("reason").asText());
+        }
+        assertEquals(List.of("unlisted", "unlisted", "replay-required beyond-horizon"), parts);
         JsonNode visit3 = null;
         for (JsonNode v : r.expected().path("visits")) if (v.path("visitRef").asText().equals("visit-3")) visit3 = v;
         assertEquals(0, visit3.path("equipmentEvidence").path(NR1).path("members").path("nutrunner1-torque").path("missingPeriods").longValue());

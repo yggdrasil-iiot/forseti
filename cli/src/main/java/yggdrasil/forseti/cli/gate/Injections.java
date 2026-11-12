@@ -296,10 +296,15 @@ final class Injections {
         JsonNode v8 = last(r, "visit-8");
         p.equal("insufficient", status(v8), "visit-8 final status");
         p.require(reasons(v8).contains("missing-departure") && !reasons(v8).contains("overlap"), "visit-8 final reasons " + reasons(v8));
-        p.require(v8 != null && (v8.path("retraction").isNull() || v8.path("retraction").isMissingNode()), "visit-8 retraction " + (v8 == null ? null : v8.path("retraction")));
+        p.require(noRetraction(v8), "visit-8 retraction " + (v8 == null ? null : v8.path("retraction")));
         return p.result("visit-8 provisional at cut " + a + " (W1 " + r.w1(a, S1) + ", missingPeriods 0, reasons []) -> insufficient missing-departure at cut " + bb
             + " (W1 " + r.w1(bb, S1) + " >= enter + H = T0 + 88260000); visits 1-7 digests = baseline's (" + same + "/7); " + ref(v9) + " [88500000, 88560000) " + st9
             + ", complete at its settlement cut " + t9.path("cutB").asLong() + " (T0 + 89280000); visit-8 final " + status(v8) + " " + reasons(v8));
+    }
+
+    /** A work record body without a retraction: the field absent or null (the core writes no field; a null is the same). */
+    static boolean noRetraction(JsonNode body) {
+        return body != null && (body.path("retraction").isNull() || body.path("retraction").isMissingNode());
     }
 
     static Result i7(Context c) throws Exception {
@@ -496,24 +501,41 @@ final class Injections {
         List<Disp> decl = occupancy(r, lc.path("departureEventId").asText(), "errorDeclaration"), dep = occupancy(r, lc.path("newDepartureEventId").asText(), "event");
         p.equal("[accepted late-after-settlement]", judged(decl), lc.path("departureEventId").asText() + " errorDeclaration");
         p.equal("[accepted late-after-settlement]", judged(dep), lc.path("newDepartureEventId").asText() + " event");
+        // Spec 648 (injection 10f): "Next revision; disposition accepted (late-after-settlement)". The plan's further step, provisional
+        // at a cut boundary between two completes, cannot occur in this scenario: when the correction is delivered, W1 is already past
+        // the new leave + L, so the visit goes from complete to its next complete revision directly. Asserted: that next revision.
+        Long corrected = null;
+        List<Disp> both = new ArrayList<>(decl);
+        both.addAll(dep);
+        for (Disp d : both) {
+            Long k = cutOf(r, d);
+            if (k == null) p.list.add("the cut delivering " + d.identity() + " " + d.part() + " not found");
+            else corrected = corrected == null ? k : Math.max(corrected, k);
+        }
         List<String> seq = new ArrayList<>();
-        long finalCut = -1;
+        long after = 0;
         for (Rev x : history(r, "visit-6")) {
             JsonNode b = x.node();
-            String s = status(b) + (reasons(b).isEmpty() ? "" : " " + reasons(b)) + "@" + x.cut();
-            if (seq.isEmpty() || !seq.get(seq.size() - 1).replaceAll("@.*", "").equals(s.replaceAll("@.*", ""))) seq.add(s);
-            finalCut = x.cut();
+            seq.add((x.deleted() ? "deleted" : status(b) + (reasons(b).isEmpty() ? "" : " " + reasons(b))) + "@" + x.cut());
+            if (corrected != null && x.cut() >= corrected) after++;
         }
-        List<String> plain = new ArrayList<>();
-        for (String x : seq) plain.add(x.replaceAll(" \\[.*", "").replaceAll("@.*", ""));
-        int i = plain.indexOf("complete");
-        p.require(i >= 0 && plain.subList(i, plain.size()).equals(List.of("complete", "provisional", "complete")), "visit-6 statuses " + seq + ", expected complete -> provisional -> complete");
+        p.require(corrected != null && after >= 1, "visit-6 has no revision at or after the correction's cut " + corrected + ": " + seq);
         JsonNode v = last(r, "visit-6");
-        long L = r.rules.attribution().allowedLatenessMs();
-        p.equal(r.t0() + 1_565_000, v.path("interval").path("leave").asLong(), "visit-6 leave");
-        p.require(r.w1(finalCut, S1) >= r.t0() + 1_565_000 + L, "the final complete at cut " + finalCut + " has W1 " + r.w1(finalCut, S1) + " < leave + L");
-        return p.result("declaration " + judged(decl) + ", corrective departure " + judged(dep) + "; visit-6 " + seq + ", leave T0 + 1565000, final complete at cut " + finalCut
-            + " (W1 " + r.w1(finalCut, S1) + " >= leave + L " + (r.t0() + 1_565_000 + L) + ")");
+        long L = r.rules.attribution().allowedLatenessMs(), lastW = r.w1(r.lastCut(), S1);
+        p.equal("complete", status(v), "visit-6 status at the last cut");
+        p.equal(r.t0() + 1_565_000, v == null ? null : v.path("interval").path("leave").asLong(), "visit-6 leave");
+        p.require(lastW >= r.t0() + 1_565_000 + L, "the last cut " + r.lastCut() + " has W1 " + lastW + " < leave + L");
+        return p.result("declaration " + judged(decl) + ", corrective departure " + judged(dep) + " (delivered by cut " + corrected + "); visit-6 revisions " + seq + ", "
+            + after + " at or after the correction; last cut " + r.lastCut() + " " + status(v) + ", leave T0 + 1565000, W1 " + lastW + " >= leave + L " + (r.t0() + 1_565_000 + L));
+    }
+
+    /** The cut whose {@code offsetRanges} include the delivery {@code d}. */
+    static Long cutOf(Run r, Disp d) {
+        for (JsonNode cut : r.cutLog.path("cuts")) {
+            JsonNode rg = cut.path("offsetRanges").path(d.topic()).path(Integer.toString(d.partition()));
+            if (rg.isArray() && d.offset() >= rg.get(0).asLong() && d.offset() < rg.get(1).asLong()) return cut.path("cutId").asLong();
+        }
+        return null;
     }
 
     static Result i11(Context c) throws Exception {
@@ -671,17 +693,24 @@ final class Injections {
         JsonNode s = set(r, "inc-3");
         Map<String, JsonNode> u = units(s);
         p.require(!u.isEmpty(), "inc-3 has no units");
-        for (Map.Entry<String, JsonNode> e : u.entrySet()) p.equal("not-affected-within-scope incident-withdrawn", sr(e.getValue()), "inc-3 " + e.getKey());
+        String want = ("insufficient".equals(r.rules.impact().onWithdrawn()) ? "insufficient-evidence" : "not-affected-within-scope") + " incident-withdrawn";
+        for (Map.Entry<String, JsonNode> e : u.entrySet()) p.equal(want, sr(e.getValue()), "inc-3 " + e.getKey());
         p.equal("withdrawn", s == null ? null : s.path("resolution").asText(null), "inc-3 resolution");
         p.equal(false, s == null ? null : s.path("coverage").path("open").asBoolean(true), "inc-3 open");
         p.equal(true, s == null ? null : s.path("coverage").path("settled").asBoolean(false), "inc-3 settled");
+        // Spec 657: the units per onWithdrawn and resolution withdrawn. Revision 1 is a closed incident whose set may settle complete before
+        // the withdrawal arrives; "never complete" holds from the cut that applies the withdrawn revision 2 on.
         List<String> st = new ArrayList<>();
+        Long withdrawnAt = null;
         for (Rev x : r.fold.history(RunFold.SETS, setKey("inc-3"))) {
             JsonNode b = x.node();
+            if (b == null) { st.add("deleted@" + x.cut()); continue; }
             st.add(b.path("coverage").path("status").asText() + (b.path("resolution").isNull() ? "" : " " + b.path("resolution").asText()) + "@" + x.cut());
-            p.require(!"complete".equals(b.path("coverage").path("status").asText()), "inc-3 coverage complete at cut " + x.cut());
+            if (withdrawnAt == null && b.path("incident").path("revision").asLong() >= 2) withdrawnAt = x.cut();
+            if (withdrawnAt != null) p.require(!"complete".equals(b.path("coverage").path("status").asText()), "inc-3 coverage complete at cut " + x.cut() + ", at or after revision 2 (cut " + withdrawnAt + ")");
         }
-        return p.result(u.size() + " inc-3 units not-affected-within-scope incident-withdrawn; resolution withdrawn, open false, settled true; coverage per set revision " + st);
+        p.require(withdrawnAt != null, "no inc-3 set revision applies revision 2");
+        return p.result(u.size() + " inc-3 units " + want + "; resolution withdrawn, open false, settled true; revision 2 applied at cut " + withdrawnAt + ", coverage per set revision " + st);
     }
 
     static Result i16(Context c) throws Exception {
@@ -851,19 +880,9 @@ final class Injections {
         for (String s : Scenarios.HORIZON) {
             Run r = p.use(run(c, s));
             if (r.failure != null) continue;
-            long H = r.rules.attribution().horizonMs(), L = r.rules.attribution().allowedLatenessMs();
-            long need = Long.MIN_VALUE;
-            String station = S1;
-            for (JsonNode v : r.expected.path("visits")) {
-                if (!v.path("leave").isNull()) continue;
-                long e = v.path("enter").asLong() + H + L;
-                if (e > need) { need = e; station = v.path("station").asText(); }
-            }
-            String what = "enter + H + L of the open visits";
-            if (need == Long.MIN_VALUE) {
-                for (JsonNode v : r.expected.path("visits")) { long e = v.path("leave").asLong() + H + L; if (need == Long.MIN_VALUE || e < need) { need = e; station = v.path("station").asText(); } }
-                what = "the first onlineExpiresAt (leave + H + L)";
-            }
+            Need n = afterHorizonNeed(r.expected, r.rules.attribution().horizonMs(), r.rules.attribution().allowedLatenessMs());
+            long need = n.at();
+            String station = n.station(), what = n.what();
             long lastW = r.w1(r.lastCut(), station);
             p.require(lastW >= need, s + ": last W1 " + lastW + " < " + what + " " + need);
             long maxOnline = 0, lastOnline = r.perStation(r.lastCut()).path(station).path("onlineVisits").asLong(-1);
@@ -874,6 +893,24 @@ final class Injections {
             out.add(s + " last W1 T0 + " + rel(r, lastW) + " >= " + what + " T0 + " + rel(r, need) + ", onlineVisits " + maxOnline + " -> " + lastOnline + ", " + rows + " work records remain");
         }
         return p.result(String.join("; ", out));
+    }
+
+    record Need(long at, String station, String what) {}
+
+    /** The W1 the last cut of a horizon recording must reach: the latest {@code enter + H + L} of its open visits (every open visit's
+     *  online state expired); a recording without an open visit, the first {@code onlineExpiresAt} ({@code leave + H + L}), so that at
+     *  least one visit's online state is dropped while its row stays. */
+    static Need afterHorizonNeed(JsonNode expected, long H, long L) {
+        long need = Long.MIN_VALUE;
+        String station = S1;
+        for (JsonNode v : expected.path("visits")) {
+            if (!v.path("leave").isNull()) continue;
+            long e = v.path("enter").asLong() + H + L;
+            if (e > need) { need = e; station = v.path("station").asText(); }
+        }
+        if (need != Long.MIN_VALUE) return new Need(need, station, "enter + H + L of the open visits");
+        for (JsonNode v : expected.path("visits")) { long e = v.path("leave").asLong() + H + L; if (need == Long.MIN_VALUE || e < need) { need = e; station = v.path("station").asText(); } }
+        return new Need(need, station, "the first onlineExpiresAt (leave + H + L)");
     }
 
     static Result determinism(Context c, String id, List<String> scenarios, List<String> topics) throws Exception {
@@ -919,6 +956,16 @@ final class Injections {
         return o;
     }
 
+    /** The longest lateness a recording's hold-back overlays produce, null without one. A scan held back by {@code delayMs} is delivered
+     *  with the on-time scan {@code delayMs} later; when that scan is the first of its batch, the previous cut ended one scan earlier, so
+     *  {@code admissionW = sourceTs + delayMs - scanMs - O - 1}, the longest lateness of a hold-back spanning several batches. */
+    static Long heldBackLateness(JsonNode manifest, long ooo) {
+        Long d = null;
+        for (JsonNode o : manifest.path("source").path("overlays"))
+            if ("hold-back".equals(o.path("type").asText())) d = d == null ? o.path("delayMs").asLong() : Math.max(d, o.path("delayMs").asLong());
+        return d == null ? null : d - manifest.path("scanMs").asLong() - ooo - 1;
+    }
+
     static Result reference(Context c) throws Exception {
         P p = new P();
         Run hb = p.use(run(c, "held-back-10min"));
@@ -934,12 +981,17 @@ final class Injections {
             without += r.measures.inputsWithoutDisposition();
         }
         Json.putSafe(m, "inputsWithoutDisposition", without);
+        // Lateness of an admitted, corrected-online input: admissionW - sourceTs (the definition under which injection 23's planned sample
+        // is exactly H late). A sample held back by d is admitted at most d - scanMs - O - 1 late (heldBackLateness).
+        m.put("latenessDefinition", "admissionW - sourceTs of an accepted sample");
         ObjectNode late = m.putObject("longestLatenessCorrectedOnlineMs");
         String evidence = "";
         if (hb.failure == null) {
             Json.putSafe(late, "held-back-10min", hb.measures.longestLatenessMs());
-            p.equal(600_000L, hb.measures.longestLatenessMs(), "held-back-10min longestLatenessCorrectedOnlineMs (" + hb.measures.longestAt() + ")");
-            evidence += "held-back-10min " + hb.measures.longestLatenessMs() + " (" + hb.measures.longestAt() + ")";
+            Long want = heldBackLateness(hb.manifest, hb.rules.attribution().outOfOrdernessMs());
+            if (want == null) p.list.add("held-back-10min has no hold-back overlay");
+            else p.equal(want, hb.measures.longestLatenessMs(), "held-back-10min longestLatenessCorrectedOnlineMs (" + hb.measures.longestAt() + "), delayMs - scanMs - O - 1");
+            evidence += "held-back-10min " + hb.measures.longestLatenessMs() + " = delayMs - scanMs - O - 1 = " + want + " (" + hb.measures.longestAt() + ")";
         }
         if (pl != null && pl.failure == null) {
             long H = pl.rules.attribution().horizonMs();
