@@ -142,6 +142,42 @@ class RecordingTest {
         assertTrue(e.getMessage().contains("routingDigest"), e.getMessage());
     }
 
+    @Test void theStreamingReaderReadsWhatRecordsReadsAndRefusesTheSame() throws IOException {
+        Recording r = open("smoke-incident");
+        for (String topic : RoutingManifest.TOPICS)
+            for (int p : r.routing().subscribed(topic)) {
+                List<Recording.Record> want = Recording.open(r.dir()).records(topic, p);
+                byte[] file = Files.readAllBytes(r.dir().resolve(topic).resolve(p + ".jsonl"));
+                ByteArrayOutputStream lines = new ByteArrayOutputStream();
+                int n = 0;
+                try (Recording.Reader reader = r.reader(topic, p)) {
+                    for (Recording.Line l; (l = reader.next()) != null; n++) {
+                        assertEquals(want.get(n), l.record(), topic + "/" + p + " " + n);
+                        lines.write(l.bytes());
+                        lines.write('\n');
+                    }
+                    assertEquals(want.size(), reader.read());
+                }
+                assertEquals(want.size(), n);
+                assertArrayEquals(file, lines.toByteArray(), topic + "/" + p + ": the line bytes are the file's");
+                assertEquals(want.size(), r.size(topic, p));
+            }
+
+        Path noLf = copy("smoke");
+        Path part = noLf.resolve("mfg.occupancy").resolve("0.jsonl");
+        byte[] b = Files.readAllBytes(part);
+        Files.write(part, Arrays.copyOf(b, b.length - 1));
+        IllegalArgumentException x = assertThrows(IllegalArgumentException.class, () -> Recording.open(noLf).size("mfg.occupancy", 0));
+        assertEquals("malformed recording: mfg.occupancy/0 does not end with LF", x.getMessage());
+
+        Path cr = copy("smoke");
+        Path part2 = cr.resolve("mfg.occupancy").resolve("0.jsonl");
+        Files.writeString(part2, Files.readString(part2, StandardCharsets.UTF_8).replaceFirst("\n", "\r\n"), StandardCharsets.UTF_8);
+        IllegalArgumentException y = assertThrows(IllegalArgumentException.class, () -> { try (Recording.Reader rd = Recording.open(cr).reader("mfg.occupancy", 0)) { while (rd.next() != null) { /* read */ } } });
+        assertEquals("malformed recording: mfg.occupancy/0 carries CR", y.getMessage());
+        assertThrows(IllegalArgumentException.class, () -> r.reader("mfg.occupancy", 99));
+    }
+
     @Test void aWrongDigestAndOutOfRangeOffsetsAreRefused() throws IOException {
         Path wrong = copy("smoke");
         ObjectNode m = (ObjectNode) Json.read(wrong.resolve(Recording.MANIFEST));

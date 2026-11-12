@@ -44,6 +44,9 @@ class Delivery:
     cut: int
     raw: bytes
     read: inputs.Read
+    # values that are functions of this delivered record alone (its contract key, the canonical text of its identities, the
+    # canonical bytes of its observations), computed once per run instead of once per evaluated cut; never compared
+    memo: dict = field(default_factory=dict, repr=False, compare=False)
 
     @property
     def origin(self) -> dict:
@@ -97,6 +100,13 @@ def identity_of(d: Delivery) -> dict | None:
 def contract_key(d: Delivery):
     """(cut, eventTime, kindRank, identity bytes, payloadDigest): delivery order across cuts, contract order inside a cut (spec 500).
     An input without event time sorts first; an unparsed record sorts by its origin."""
+    k = d.memo.get("contract")
+    if k is None:
+        k = d.memo["contract"] = _contract_key(d)
+    return k
+
+
+def _contract_key(d: Delivery):
     et = event_time(d)
     ident = identity_of(d)
     ib = canon.canonical_bytes(ident) if ident is not None else canon.canonical_bytes(d.origin)
@@ -118,7 +128,13 @@ class Disposition:
 
     @property
     def key(self) -> str:
-        return key_text({"inputKind": self.input_kind, "identity": self.identity, "part": self.part})
+        # the identity of a disposition is a function of its delivery, input kind and part (every construction below), so its
+        # canonical text is kept on the delivery
+        memo, mk = self.delivery.memo, ("key", self.input_kind, self.part)
+        k = memo.get(mk)
+        if k is None:
+            k = memo[mk] = key_text({"inputKind": self.input_kind, "identity": self.identity, "part": self.part})
+        return k
 
 
 def _refs(d: Delivery, check: str | None = None) -> dict:
@@ -140,6 +156,13 @@ def dispositions_by_identity(ds: list[Disposition]) -> dict:
     out = {}
     for k in sorted(groups):
         g = groups[k]
+        if len(g) == 1:   # the common case, the same entry as below without the scans
+            d = g[0]
+            entry = {"disposition": d.disposition, "reason": d.reason, "deliveries": [[d.disposition, d.reason]]}
+            if d.refs:
+                entry["refs"] = dict(d.refs)
+            out[k] = entry
+            continue
         main = next((d for d in g if (d.disposition, d.reason) != ("duplicate", "identical-redelivery")), g[0])
         entry = {"disposition": main.disposition, "reason": main.reason,
                  "deliveries": sorted([d.disposition, d.reason] for d in g)}
@@ -373,6 +396,7 @@ class Sample:
     conflict: bool = False          # measurement conflict
     row: dict | None = None
     candidate: object = None        # the quality-blind candidate Visit (or None)
+    memo: dict = field(default_factory=dict, repr=False, compare=False)   # its delivery's memo
 
     @property
     def ts(self):
@@ -385,6 +409,13 @@ class Sample:
     def observation(self) -> dict:
         m = self.member
         return inputs.measurement_id(self.device, m.metric, m.sourceTs, m.value, m.uaStatusCode)
+
+    def observation_bytes(self) -> bytes:
+        mk = ("observation", self.member.metric)
+        b = self.memo.get(mk)
+        if b is None:
+            b = self.memo[mk] = canon.canonical_bytes(self.observation())
+        return b
 
     @property
     def accepted_quality(self) -> bool:
@@ -401,6 +432,7 @@ class Result:
     dispositions: list              # Disposition
     visits: dict                    # station -> [Visit]
     quarantine: list                # Delivery of conflicting inputs
+    sample_digests: dict = field(default_factory=dict)   # key JSON -> bodyDigest of the sample row (see row_digest)
 
 
 class Stage1:
@@ -514,21 +546,32 @@ class Stage1:
         samples_by_station: dict[str, list[Sample]] = {s: [] for s in self.rs.stations}
         sample_seen: dict[str, list] = {}      # sampleId -> [(content, Disposition)]
         sample_of: dict[str, Sample] = {}
+        station_by_device: dict[str, object] = {}
         for d, m in messages:
             if (m.edge, m.device, m.birthPublishTs, m.bdSeq) in changed:
                 disps.append(Disposition(d, MESSAGES, inputs.message_id(m), "message", "rejected", "definition-mismatch", _refs(d)))
                 continue
-            station = self.station_of(m.device)
+            station = station_by_device.get(m.device)
+            if station is None:
+                station = station_by_device[m.device] = self.station_of(m.device)
             aw = admission(d.cut, station)
+            refs = _refs(d)   # the same for every member of the message (a refs dict is never changed in place)
             for metric, check in m.rejected_members:
                 disps.append(Disposition(d, MESSAGES, inputs.sample_id(m, metric), "member:" + metric, "rejected", "schema-invalid", _refs(d, check)))
             for mem in m.members:
                 sid = inputs.sample_id(m, mem.metric)
-                skey = key_text(sid)
+                skey = d.memo.get(("sample", mem.metric))
+                if skey is None:
+                    skey = d.memo[("sample", mem.metric)] = key_text(sid)
                 admitted = mem.sourceTs is None or aw is None or mem.sourceTs >= aw - self.H
-                disp = Disposition(d, MESSAGES, sid, "member:" + mem.metric, "accepted", "accepted", _refs(d))
+                disp = Disposition(d, MESSAGES, sid, "member:" + mem.metric, "accepted", "accepted", refs)
                 content = (vkey(mem.value), mem.uaStatusCode, mem.sourceTs, mem.serverTs)
-                seen = [x for x in sample_seen.setdefault(skey, []) if x[1].disposition != "replay-required"]
+                prior = sample_seen.get(skey)
+                if prior is None:
+                    prior = sample_seen[skey] = []
+                    seen = prior   # empty
+                else:
+                    seen = [x for x in prior if x[1].disposition != "replay-required"]
                 if not admitted:
                     disp.disposition, disp.reason = "replay-required", "beyond-horizon"
                 elif any(c != content for c, _ in seen):
@@ -546,7 +589,7 @@ class Stage1:
                     if skey in sample_of:
                         samples_by_station[station].remove(sample_of[skey])
                     smp = Sample(sid, skey, m.device, mem, m, admitted, self.by_metric.get((m.device, mem.metric)),
-                                 quality_class(mem.uaStatusCode, self.uncertain))
+                                 quality_class(mem.uaStatusCode, self.uncertain), memo=d.memo)
                     sample_of[skey] = smp
                     samples_by_station[station].append(smp)
         # measurement conflicts: the same (device, metric, sourceTs) with another value or status code (spec 263)
@@ -572,6 +615,7 @@ class Stage1:
         # per station: visits, sessions, attribution, bodies
         work: dict[str, dict] = {}
         rows: dict[str, dict] = {}
+        digests: dict[str, str] = {}
         visits_out: dict[str, list] = {}
         for station in self.rs.stations:
             W = w1.get(station)
@@ -599,13 +643,18 @@ class Stage1:
             else:
                 vs = occ_visits
             self.attribute(station, ss, vs, dev_sessions, occ_visits)
+            by_candidate: dict[int, list] = {}
+            ref_texts: dict[int, str] = {}
             for s in ss:
                 rows[s.skey] = s.row
+                digests[s.skey] = row_digest(s, ref_texts)
+                if s.candidate is not None:
+                    by_candidate.setdefault(id(s.candidate), []).append(s)
             for v in vs:
-                body = self.work_record_body(v, ss, dev_sessions, W)
+                body = self.work_record_body(v, by_candidate.get(id(v), []), dev_sessions, W)
                 work[key_text(v.ref)] = body
             visits_out[station] = vs
-        return Result(work, rows, disps, visits_out, quarantine)
+        return Result(work, rows, disps, visits_out, quarantine, digests)
 
     # -- occupancy sweep -------------------------------------------------------------------------------------------------------
 
@@ -761,7 +810,7 @@ class Stage1:
                 reason = "no-source-timestamp"
             elif s.conflict:
                 state, reason = "quarantined", "measurement-conflict"
-            elif s.device in self.identity_entries and not self._coherent(s.device, s.message):
+            elif s.device in self.identity_entries and not self._coherent_sample(s):
                 reason = "incoherent-snapshot"
             else:
                 found = [v for v in vs if s.device in v.per_equipment
@@ -798,6 +847,13 @@ class Stage1:
         return {"unit": self.rs.members[e["unitMemberRef"]].metric, "visit": self.rs.members[e["visitMemberRef"]].metric,
                 "present": self.rs.members[e["presentMemberRef"]].metric}
 
+    def _coherent_sample(self, s: Sample) -> bool:
+        """``_coherent`` of the sample's message, a function of that delivered message alone: kept on its delivery."""
+        c = s.memo.get("coherent")
+        if c is None:
+            c = s.memo["coherent"] = self._coherent(s.device, s.message)
+        return c
+
     def _coherent(self, device: str, m: inputs.Message) -> bool:
         names = [x.metric for x in self.rs.members.values() if x.equipment_path == device and x.role in
                  (MEASUREMENT, ACTIVITY, IDENTITY_UNIT, IDENTITY_VISIT, IDENTITY_PRESENT)]
@@ -822,7 +878,7 @@ class Stage1:
                 snaps[s.device] = {}
             if s.ts in snaps[s.device]:
                 continue
-            if not self._coherent(s.device, s.message):
+            if not self._coherent_sample(s):
                 continue
             im = self._identity_members(s.device)
             by = {x.metric: x for x in s.message.members}
@@ -1112,10 +1168,35 @@ def samples_digest(samples: list) -> str:
     """JCS SHA-256 of the distinct observations sorted by device, metric, sourceTs, then canonical bytes (spec 354, 356)."""
     seen = {}
     for s in samples:
-        o = s.observation()
-        seen.setdefault(canon.canonical_bytes(o), o)
-    ordered = sorted(seen.items(), key=lambda kv: (kv[1]["device"], kv[1]["metric"], kv[1]["sourceTs"], kv[0]))
-    return canon.digest([o for _, o in ordered])
+        seen.setdefault(s.observation_bytes(), s)
+    ordered = sorted(seen.items(), key=lambda kv: (kv[1].device, kv[1].member.metric, kv[1].member.sourceTs, kv[0]))
+    # the canonical form of an array is its elements' canonical forms joined by commas inside brackets (RFC 8785 3.2.2)
+    return canon.sha256(b"[" + b",".join(b for b, _ in ordered) + b"]")
+
+
+def row_digest(s: Sample, ref_texts: dict) -> str:
+    """``canon.digest(s.row)``, kept on the sample's delivery while the row's canonical parts stay the same: a row is
+    ``{sourceTs, state, reason, active, attributedTo}`` whose canonical form is a function of the canonical form of each part, so
+    equal parts (compared with their types, ``attributedTo`` by its canonical text) give the same digest; ``ref_texts`` holds the
+    canonical text of each visit reference of the cut."""
+    row = s.row
+    if row.keys() != {"sourceTs", "state", "reason", "active", "attributedTo"}:
+        return canon.digest(row)
+    to = row["attributedTo"]
+    if to is None:
+        to_text = None
+    else:
+        to_text = ref_texts.get(id(to))
+        if to_text is None:
+            to_text = ref_texts[id(to)] = key_text(to)
+    parts = tuple((type(row[f]), row[f]) for f in ("sourceTs", "state", "reason", "active")) + (to_text,)
+    mk = ("row", s.member.metric)
+    cached = s.memo.get(mk)
+    if cached is not None and cached[0] == parts:
+        return cached[1]
+    d = canon.digest(row)
+    s.memo[mk] = (parts, d)
+    return d
 
 
 def sample_row_body(s: Sample) -> dict:

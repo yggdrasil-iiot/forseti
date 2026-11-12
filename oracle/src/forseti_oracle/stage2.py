@@ -92,6 +92,7 @@ class Stage2:
         self.rs = rs
         self.rules_digest = rules_digest
         self.evidence_range = dict(evidence_range)
+        self._device_metric: dict[str, tuple] = {}   # sample key JSON -> (device, metric): a function of the key text alone
         a, i = rs.attribution, rs.impact
         self.L = a["temporal"]["allowedLatenessMs"]
         self.P = a["coverage"]["expectedPeriodMs"]
@@ -161,14 +162,19 @@ class Stage2:
         """``work_records``/``samples``: the oracle's stage-1 rows of the cut (key JSON -> body); ``w2``: station -> W2 = W1.
         Returns (assessments, sets, dispositions), the first two as key JSON -> body."""
         states, disps = self.classify(deliveries)
+        assessments, sets = {}, {}
+        if all(st.current() is None for st in states.values()):
+            return assessments, sets, disps   # no incident with a current revision: no row (the indexes below would go unread)
         bases_by_station: dict[str, list] = {}
         for k, body in work_records.items():
             bases_by_station.setdefault(body["readPoint"], []).append((json.loads(k), body))
         rows_by_device: dict[str, list] = {}
         for k, body in samples.items():
-            sid = json.loads(k)
-            rows_by_device.setdefault(sid["device"], []).append((sid["metric"], body))
-        assessments, sets = {}, {}
+            dm = self._device_metric.get(k)
+            if dm is None:
+                sid = json.loads(k)
+                dm = self._device_metric[k] = (sid["device"], sid["metric"])
+            rows_by_device.setdefault(dm[0], []).append((dm[1], body))
         for (source, iid), st in sorted(states.items()):
             cur = st.current()
             if cur is None:

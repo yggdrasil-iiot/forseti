@@ -90,8 +90,10 @@ def _write(path: Path, value) -> None:
     path.write_bytes(json.dumps(value, indent=2, ensure_ascii=False, sort_keys=True).encode("utf-8") + b"\n")
 
 
-def _rows(rows: dict) -> dict:
-    return {k: {"body": b, "bodyDigest": canon.digest(b)} for k, b in sorted(rows.items())}
+def _rows(rows: dict, digests: dict | None = None) -> dict:
+    """``digests``: bodyDigest per key computed with the rows (stage 1's sample rows), canon.digest otherwise."""
+    digests = digests or {}
+    return {k: {"body": b, "bodyDigest": digests.get(k) or canon.digest(b)} for k, b in sorted(rows.items())}
 
 
 def run(a, out=None, err=None) -> int:
@@ -125,7 +127,7 @@ def run(a, out=None, err=None) -> int:
         files = {}
         if a.command in ("stage1", "all"):
             files[stage1.WORK_RECORDS] = _rows(r1.work_records)
-            files[stage1.SAMPLES] = _rows(r1.samples)
+            files[stage1.SAMPLES] = _rows(r1.samples, r1.sample_digests)
             files["dispositions-stage1"] = stage1.dispositions_by_identity(r1.dispositions)
         if a.command in ("stage2", "all"):
             w2 = {s: (v.w2 if v.w2 is not None else v.w1) for s, v in c.per_station.items()}

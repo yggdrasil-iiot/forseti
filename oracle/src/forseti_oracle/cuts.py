@@ -163,7 +163,7 @@ def _value_bytes(line: bytes) -> bytes:
 
 def raw_records(recording: Recording, topic: str, partition: int) -> list[bytes]:
     """The raw value bytes of every record of one subscribed partition, by offset (the recording reader has checked the lines)."""
-    recording.records(topic, partition)   # checks offsets, LF and the line shape
+    recording.check(topic, partition)   # checks offsets, LF and the line shape
     raw = (recording.path / topic / f"{partition}.jsonl").read_bytes()
     return [] if not raw else [_value_bytes(x) for x in raw[:-1].split(b"\n")]
 
@@ -172,6 +172,7 @@ def deliveries(recording: Recording, history: History, through_index: int | None
     """Every record delivered through the history's cut ``through_index`` (all cuts when None), tagged with the index of its cut.
     ``subscribed`` overrides the routing manifest's partitions per topic (``--subscribe mfg.occupancy=`` reads no occupancy)."""
     from forseti_oracle.stage1 import make_delivery
+    import bisect
     out = []
     last = history.cuts[-1].index if through_index is None else through_index
     for topic in TOPICS:
@@ -179,9 +180,18 @@ def deliveries(recording: Recording, history: History, through_index: int | None
         if subscribed is not None and topic in subscribed:
             parts = [p for p in parts if p in subscribed[topic]]
         for p in parts:
+            # History.cut_of for every offset at once: the first cut whose through-offset reaches the offset is the first whose
+            # running maximum of through-offsets reaches it
+            highest, reach = -1, []
+            for c in history.cuts:
+                highest = max(highest, c.through.get(topic, {}).get(p, -1))
+                reach.append(highest)
             for offset, raw in enumerate(raw_records(recording, topic, p)):
-                c = history.cut_of(topic, p, offset)
-                if c is None or c > last:
+                i = bisect.bisect_left(reach, offset)
+                if i == len(reach):
+                    continue
+                c = history.cuts[i].index
+                if c > last:
                     continue
                 out.append(make_delivery(topic, p, offset, c, raw))
     return out
