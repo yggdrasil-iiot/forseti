@@ -27,6 +27,8 @@ final class Injections {
     static final List<String> STATION1_DEVICES = List.of(S1, N1, N2);
     static final List<String> J = List.of("J-DISPOSITION-COVERAGE", "J-REVISION-CONTINUITY", "J-NO-EQUAL-CONSECUTIVE", "J-PROGRESS-ORDER", "J-W1-FORMULA",
         "J-W2-EQUALS-W1", "J-BASIS-CURRENT");
+    /** The assertions over every scenario run, evaluated on {@link Summaries} (so an aggregate run over the shards can evaluate them). */
+    static final List<String> AGGREGATE = java.util.stream.Stream.concat(J.stream(), java.util.stream.Stream.of("J-AFTER-HORIZON-CUTS", "C-2-REFERENCE")).toList();
 
     static List<Check> checks() {
         List<Check> l = new ArrayList<>(List.of(
@@ -52,15 +54,19 @@ final class Injections {
     static final class P {
         final List<String> list = new ArrayList<>();
         final List<Run> runs = new ArrayList<>();
+        final List<JsonNode> summaries = new ArrayList<>();
         P(Run... rs) { for (Run r : rs) use(r); }
         Run use(Run r) { runs.add(r); return r; }
-        boolean sound() { for (Run r : runs) if (r.failure != null) return false; return true; }
+        /** A scenario run by its summary ({@link Summaries}), for the assertions an aggregate run evaluates. */
+        JsonNode use(JsonNode summary) { summaries.add(summary); return summary; }
+        boolean sound() { for (Run r : runs) if (r.failure != null) return false; for (JsonNode s : summaries) if (Summaries.failed(s)) return false; return true; }
         void require(boolean ok, String problem) { if (!ok) list.add(problem); }
         <T> void equal(T want, T have, String what) { if (!Objects.equals(want, have)) list.add(what + ": expected " + want + ", got " + have); }
         Result result(String specific) {
             boolean ok = list.isEmpty();
             StringBuilder b = new StringBuilder();
             for (Run r : runs) { ok &= r.ok(); b.append(" || ").append(r.summary()); }
+            for (JsonNode s : summaries) { ok &= s.path("ok").asBoolean(false); b.append(" || ").append(s.path("summary").asText()); }
             return new Result(ok, (list.isEmpty() ? "" : "PROBLEMS: " + String.join("; ", list) + " || ") + specific + b);
         }
     }
@@ -417,7 +423,8 @@ final class Injections {
         Run r = run(c, "corrections-10c");
         P p = new P(r);
         Run h = null;
-        if (Scenarios.skipHorizon()) p.list.add("horizon-reopened not run (-Dforseti.gate.skipHorizon=true)");
+        String why = Scenarios.notRun(c, "horizon-reopened");
+        if (why != null) p.list.add("horizon-reopened " + why);
         else h = p.use(run(c, "horizon-reopened"));
         if (!p.sound()) return p.result("");
         String k = r.key("visit-8");
@@ -831,66 +838,60 @@ final class Injections {
 
     // --- J-*, C-* --------------------------------------------------------------------------------------------------------------
 
-    static List<Run> everyRun(Context c, P p) throws Exception {
-        List<Run> l = new ArrayList<>();
-        for (String s : Scenarios.all()) {
-            if (Scenarios.HORIZON.contains(s) && Scenarios.skipHorizon()) { p.list.add(s + " not run (-Dforseti.gate.skipHorizon=true)"); continue; }
-            l.add(run(c, s));
-        }
-        return l;
-    }
-
     static Result journal(Context c, String id) throws Exception {
-        P p = new P();
-        List<Run> runs = everyRun(c, p);
+        Summaries all = Summaries.of(c);
+        List<String> bad = new ArrayList<>(all.missing);
         long checked = 0;
-        List<String> bad = new ArrayList<>();
-        for (Run r : runs) {
-            if (r.failure != null) { bad.add(r.name + ": " + r.failure); continue; }
+        for (JsonNode r : all.runs.values()) {
+            if (Summaries.failed(r)) { bad.add(r.path("name").asText() + ": " + r.path("failure").asText()); continue; }
             checked++;
-            if (r.fold.findings.count(id) > 0) bad.add(r.name + " " + r.fold.findings.describe(id));
+            if (Summaries.findingCount(r, id) > 0) bad.add(r.path("name").asText() + " " + Summaries.findingText(r, id));
         }
         long shuffled = 0;
-        for (String s : Scenarios.SHUFFLED) for (long seed : Scenarios.SHUFFLE_SEEDS) {
-            Shuffled x = Scenarios.pipeline(c).shuffled(s, seed);
-            if (x.failure() != null) { bad.add(s + " seed " + seed + ": " + x.failure()); continue; }
+        for (JsonNode x : all.shuffled.values()) {
+            String s = x.path("name").asText();
+            long seed = x.path("seed").asLong();
+            if (Summaries.failed(x)) { bad.add(s + " seed " + seed + ": " + x.path("failure").asText()); continue; }
             shuffled++;
-            if (x.findings().count(id) > 0) bad.add(s + " shuffle " + seed + " " + x.findings().describe(id));
+            if (Summaries.findingCount(x, id) > 0) bad.add(s + " shuffle " + seed + " " + Summaries.findingText(x, id));
         }
-        p.list.addAll(bad);
         String extra = "";
         if (id.equals("J-DISPOSITION-COVERAGE")) {
             long deliveries = 0, without = 0;
-            for (Run r : runs) if (r.measures != null) { deliveries += r.measures.deliveries(); without += r.measures.inputsWithoutDisposition(); }
+            for (JsonNode r : all.runs.values()) {
+                JsonNode m = r.path("measures");
+                if (m.isObject()) { deliveries += m.path("deliveries").asLong(); without += m.path("inputsWithoutDisposition").asLong(); }
+            }
             extra = "; " + deliveries + " deliveries, " + without + " without a disposition";
         }
         if (id.equals("J-REVISION-CONTINUITY") || id.equals("J-NO-EQUAL-CONSECUTIVE")) {
             long rows = 0;
-            for (Run r : runs) if (r.fold != null) for (long n : r.fold.rows().values()) rows += n;
+            for (JsonNode r : all.runs.values()) rows += Summaries.rowSum(r);
             extra = "; " + rows + " journal records";
         }
-        return new Result(p.list.isEmpty(), (p.list.isEmpty() ? "" : "PROBLEMS: " + String.join("; ", p.list) + " || ") + "0 violations over " + checked + " scenario runs and " + shuffled
+        return new Result(bad.isEmpty(), (bad.isEmpty() ? "" : "PROBLEMS: " + String.join("; ", bad) + " || ") + "0 violations over " + checked + " scenario runs and " + shuffled
             + " shuffled runs (" + Scenarios.all().size() + " scenarios)" + extra);
     }
 
     static Result afterHorizon(Context c) throws Exception {
+        Summaries all = Summaries.of(c);
         P p = new P();
-        if (Scenarios.skipHorizon()) { p.list.add("the horizon scenarios are skipped (-Dforseti.gate.skipHorizon=true)"); return p.result(""); }
         List<String> out = new ArrayList<>();
         for (String s : Scenarios.HORIZON) {
-            Run r = p.use(run(c, s));
-            if (r.failure != null) continue;
-            Need n = afterHorizonNeed(r.expected, r.rules.attribution().horizonMs(), r.rules.attribution().allowedLatenessMs());
-            long need = n.at();
-            String station = n.station(), what = n.what();
-            long lastW = r.w1(r.lastCut(), station);
+            JsonNode r = all.runs.get(s);
+            if (r == null) { p.list.add(s + " not run"); continue; }
+            p.use(r);
+            if (Summaries.failed(r)) continue;
+            JsonNode a = r.path("afterHorizon");
+            if (!a.isObject()) { p.list.add(s + ": no afterHorizon values"); continue; }
+            long need = a.path("need").asLong(), lastW = a.path("lastW1").asLong(), t0 = a.path("t0").asLong();
+            String what = a.path("what").asText();
             p.require(lastW >= need, s + ": last W1 " + lastW + " < " + what + " " + need);
-            long maxOnline = 0, lastOnline = r.perStation(r.lastCut()).path(station).path("onlineVisits").asLong(-1);
-            for (long k : r.cutIds()) maxOnline = Math.max(maxOnline, r.perStation(k).path(station).path("onlineVisits").asLong());
+            long maxOnline = a.path("maxOnlineVisits").asLong(), lastOnline = a.path("lastOnlineVisits").asLong();
             p.require(maxOnline > 0 && lastOnline < maxOnline, s + ": onlineVisits max " + maxOnline + ", last " + lastOnline);
-            int rows = r.fold.live(RunFold.WR).size();
-            p.equal(r.expected.path("visits").size(), rows, s + " work records in the fold at the last cut");
-            out.add(s + " last W1 T0 + " + rel(r, lastW) + " >= " + what + " T0 + " + rel(r, need) + ", onlineVisits " + maxOnline + " -> " + lastOnline + ", " + rows + " work records remain");
+            long rows = a.path("workRecords").asLong();
+            p.equal(a.path("visits").asLong(), rows, s + " work records in the fold at the last cut");
+            out.add(s + " last W1 T0 + " + (lastW - t0) + " >= " + what + " T0 + " + (need - t0) + ", onlineVisits " + maxOnline + " -> " + lastOnline + ", " + rows + " work records remain");
         }
         return p.result(String.join("; ", out));
     }
@@ -967,18 +968,18 @@ final class Injections {
     }
 
     static Result reference(Context c) throws Exception {
+        Summaries all = Summaries.of(c);
         P p = new P();
-        Run hb = p.use(run(c, "held-back-10min"));
-        Run pl = null;
-        if (Scenarios.skipHorizon()) p.list.add("horizon-planned-late not run (-Dforseti.gate.skipHorizon=true)");
-        else pl = p.use(run(c, "horizon-planned-late"));
-        List<Run> runs = everyRun(c, p);
+        p.list.addAll(all.missing);
+        JsonNode hb = all.runs.get("held-back-10min"), pl = all.runs.get("horizon-planned-late");
+        if (hb != null) p.use(hb);
+        if (pl != null) p.use(pl);
         ObjectNode m = Json.object(), rows = m.putObject("journalRecordsPerTopic");
         long without = 0;
-        for (Run r : runs) {
-            if (r.failure != null || r.measures == null) continue;
-            rows.set(r.name, rowsJson(r.fold.rows()));
-            without += r.measures.inputsWithoutDisposition();
+        for (JsonNode r : all.runs.values()) {
+            if (Summaries.failed(r) || !r.path("measures").isObject()) continue;
+            rows.set(r.path("name").asText(), r.path("rows").deepCopy());
+            without += r.path("measures").path("inputsWithoutDisposition").asLong();
         }
         Json.putSafe(m, "inputsWithoutDisposition", without);
         // Lateness of an admitted, corrected-online input: admissionW - sourceTs (the definition under which injection 23's planned sample
@@ -986,22 +987,25 @@ final class Injections {
         m.put("latenessDefinition", "admissionW - sourceTs of an accepted sample");
         ObjectNode late = m.putObject("longestLatenessCorrectedOnlineMs");
         String evidence = "";
-        if (hb.failure == null) {
-            Json.putSafe(late, "held-back-10min", hb.measures.longestLatenessMs());
-            Long want = heldBackLateness(hb.manifest, hb.rules.attribution().outOfOrdernessMs());
+        if (hb != null && !Summaries.failed(hb)) {
+            long have = hb.path("measures").path("longestLatenessMs").asLong();
+            String at = hb.path("measures").path("longestAt").asText();
+            Json.putSafe(late, "held-back-10min", have);
+            Long want = hb.path("heldBackWantMs").isNumber() ? hb.path("heldBackWantMs").asLong() : null;
             if (want == null) p.list.add("held-back-10min has no hold-back overlay");
-            else p.equal(want, hb.measures.longestLatenessMs(), "held-back-10min longestLatenessCorrectedOnlineMs (" + hb.measures.longestAt() + "), delayMs - scanMs - O - 1");
-            evidence += "held-back-10min " + hb.measures.longestLatenessMs() + " = delayMs - scanMs - O - 1 = " + want + " (" + hb.measures.longestAt() + ")";
+            else p.equal(want, have, "held-back-10min longestLatenessCorrectedOnlineMs (" + at + "), delayMs - scanMs - O - 1");
+            evidence += "held-back-10min " + have + " = delayMs - scanMs - O - 1 = " + want + " (" + at + ")";
         }
-        if (pl != null && pl.failure == null) {
-            long H = pl.rules.attribution().horizonMs();
-            Json.putSafe(late, "horizon-planned-late", pl.measures.longestLatenessMs());
-            p.equal(H, pl.measures.longestLatenessMs(), "horizon-planned-late longestLatenessCorrectedOnlineMs (" + pl.measures.longestAt() + ")");
-            evidence += "; horizon-planned-late " + pl.measures.longestLatenessMs() + " = H " + H + " (" + pl.measures.longestAt() + ")";
+        if (pl != null && !Summaries.failed(pl)) {
+            long H = pl.path("horizonMs").asLong(), have = pl.path("measures").path("longestLatenessMs").asLong();
+            String at = pl.path("measures").path("longestAt").asText();
+            Json.putSafe(late, "horizon-planned-late", have);
+            p.equal(H, have, "horizon-planned-late longestLatenessCorrectedOnlineMs (" + at + ")");
+            evidence += "; horizon-planned-late " + have + " = H " + H + " (" + at + ")";
         }
         p.equal(0L, without, "inputsWithoutDisposition");
         ObjectNode timings = m.putObject("scenarioMs");
-        for (Run r : runs) { ObjectNode t = timings.putObject(r.name); r.ms.forEach((k, v) -> Json.putSafe(t, k, v)); }
+        for (JsonNode r : all.runs.values()) timings.set(r.path("name").asText(), r.path("ms").deepCopy());
         c.measure("reference", m);
         return p.result("longestLatenessCorrectedOnlineMs: " + evidence + "; journal records per topic of " + rows.size() + " scenarios and inputsWithoutDisposition " + without
             + " in report.json measurements.reference");

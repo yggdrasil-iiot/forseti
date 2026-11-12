@@ -33,7 +33,8 @@ class CoreGateTest {
         return s;
     }
     static final List<String> REPORT_FIELDS = List.of("exit", "scope", "engine", "manifestSha256", "assertionsExpected", "assertionsRun", "failed",
-        "notRun", "intendedFailures", "pins", "seed", "fixtureDigests", "measurements", "startedAt", "finishedAt", "command", "error");
+        "notRun", "intendedFailures", "pins", "seed", "fixtureDigests", "measurements", "startedAt", "finishedAt", "command", "error", "shard", "shardPlanSha256",
+        "results");
 
     @TempDir Path tmp;
 

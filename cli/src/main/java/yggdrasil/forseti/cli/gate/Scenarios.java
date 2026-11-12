@@ -59,6 +59,21 @@ final class Scenarios {
         return v.isBlank() ? null : new TreeSet<>(Arrays.asList(v.split(",")));
     }
     static boolean selected(String name) { Set<String> o = only(); return o == null || o.contains(name); }
+    /** Whether this gate run makes scenario {@code name}: in a shard run ({@code --shard}) the shard's scenarios, otherwise every
+     *  scenario {@code -Dforseti.gate.only} does not leave out (the horizon scenarios also not when they are skipped). */
+    static boolean selected(Context c, String name) { return notRun(c, name) == null; }
+    /** Why scenario {@code name} is not made in this gate run, null when it is. */
+    static String notRun(Context c, String name) {
+        if (HORIZON.contains(name) && skipHorizon()) return "not run: the horizon scenarios are skipped (-Dforseti.gate.skipHorizon=true)";
+        if (c.shard != null && !c.shard.scenarios().contains(name)) return "not run: not in shard " + c.shard.name() + " (" + Shards.PLAN + ")";
+        if (!selected(name)) return "not run: -Dforseti.gate.only=" + System.getProperty("forseti.gate.only");
+        return null;
+    }
+    /** Whether this gate run makes the {@code --shuffle} runs of {@code name}: a shard run those of its {@code shuffled} list. */
+    static boolean shuffles(Context c, String name) {
+        if (!SHUFFLED.contains(name) || !selected(c, name)) return false;
+        return c.shard == null || c.shard.shuffled().contains(name);
+    }
     static List<String> all() { List<String> l = new ArrayList<>(HAND_MADE); l.addAll(HORIZON); l.addAll(SMOKE); return l; }
 
     /** One scenario, run and compared. */
@@ -148,10 +163,10 @@ final class Scenarios {
             int n = Math.max(1, Integer.getInteger("forseti.gate.parallel", Math.min(4, Runtime.getRuntime().availableProcessors() / 2)));
             pool = Executors.newFixedThreadPool(n, daemon("forseti-gate-scenario"));
             heavy = Executors.newSingleThreadExecutor(daemon("forseti-gate-horizon"));
-            for (String s : HAND_MADE) if (selected(s)) runs.put(s, pool.submit(() -> run(s)));
-            if (!skipHorizon()) for (String s : HORIZON) if (selected(s)) runs.put(s, heavy.submit(() -> run(s)));
-            for (String s : SMOKE) if (selected(s)) runs.put(s, pool.submit(() -> run(s)));
-            for (String s : SHUFFLED) if (selected(s)) for (long seed : SHUFFLE_SEEDS) shuffled.put(s + "@" + seed, pool.submit(() -> shuffle(s, seed)));
+            for (String s : HORIZON) if (selected(c, s)) runs.put(s, heavy.submit(() -> run(s)));
+            for (String s : HAND_MADE) if (selected(c, s)) runs.put(s, pool.submit(() -> run(s)));
+            for (String s : SMOKE) if (selected(c, s)) runs.put(s, pool.submit(() -> run(s)));
+            for (String s : SHUFFLED) if (shuffles(c, s)) for (long seed : SHUFFLE_SEEDS) shuffled.put(s + "@" + seed, pool.submit(() -> shuffle(s, seed)));
             pool.shutdown();
             heavy.shutdown();
         }
@@ -166,18 +181,16 @@ final class Scenarios {
         Run get(String name) throws Exception {
             Future<Run> f = runs.get(name);
             if (f == null) {
-                if (HORIZON.contains(name) && skipHorizon()) throw new IllegalStateException("not run: the horizon scenarios are skipped (-Dforseti.gate.skipHorizon=true)");
-                if (!selected(name) && all().contains(name)) {
-                    for (Future<Run> x : runs.values()) x.get();   // the named scenarios finish (and log) before the gate reports
-                    throw new IllegalStateException("not run: -Dforseti.gate.only=" + System.getProperty("forseti.gate.only"));
-                }
-                throw new IllegalArgumentException("no scenario " + name);
+                if (!all().contains(name)) throw new IllegalArgumentException("no scenario " + name);
+                for (Future<Run> x : runs.values()) x.get();   // the scenarios this run makes finish (and log) before the gate reports
+                throw new IllegalStateException(notRun(c, name));
             }
             return f.get();
         }
         Shuffled shuffled(String name, long seed) throws Exception {
             Future<Shuffled> f = shuffled.get(name + "@" + seed);
-            if (f == null) throw new IllegalStateException("not run: -Dforseti.gate.only=" + System.getProperty("forseti.gate.only"));
+            if (f == null) throw new IllegalStateException(c.shard != null ? "not run: the shuffled runs of " + name + " are not in shard " + c.shard.name()
+                : "not run: -Dforseti.gate.only=" + System.getProperty("forseti.gate.only"));
             return f.get();
         }
 
@@ -408,4 +421,6 @@ final class Scenarios {
 
     static Pipeline pipeline(Context c) throws Exception { return c.memo("scenario-pipeline", () -> new Pipeline(c)); }
     static Run get(Context c, String name) throws Exception { return pipeline(c).get(name); }
+    /** Whether this gate run has made its scenario pipeline (an assertion asked for a scenario). */
+    static boolean started(Context c) { return c.has("scenario-pipeline"); }
 }

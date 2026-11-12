@@ -44,8 +44,14 @@ public final class CoreGate {
         return List.copyOf(all);
     }
 
+    /** {@code shard}: run only that shard of {@code gate/core-shards.json}; {@code aggregate}: evaluate the shard outputs under that
+     *  directory ({@link Shards}); both null for a full run. */
     public record Options(Path root, Path manifest, Path out, String python, String negativeControl, List<String> intendedFailures,
-                          long seed, String command) {}
+                          long seed, String command, String shard, Path aggregate) {
+        public Options(Path root, Path manifest, Path out, String python, String negativeControl, List<String> intendedFailures, long seed, String command) {
+            this(root, manifest, out, python, negativeControl, intendedFailures, seed, command, null, null);
+        }
+    }
 
     /** What an assertion may use: the repository root, the oracle's interpreter, a private temporary directory, the log directory. */
     public static final class Context {
@@ -53,6 +59,10 @@ public final class CoreGate {
         final String python;
         private int dirs;
         private final Map<String, Object> memo = new HashMap<>();
+        /** The shard this gate run is ({@code --shard}), null otherwise. */
+        Shards.Shard shard;
+        /** The shards' merged summaries in an aggregate run ({@code --aggregate}), null otherwise. */
+        Summaries aggregate;
         /** What the assertions measure for {@code report.json} ({@code measurements}): item 2's reference values, revision counts. */
         final ObjectNode measurements = Json.object();
         Context(Path root, Path tmp, Path logs, String python) { this.root = root; this.tmp = tmp; this.logs = logs; this.python = python; }
@@ -69,6 +79,7 @@ public final class CoreGate {
             memo.put(key, v);
             return v;
         }
+        boolean has(String key) { return memo.containsKey(key); }
         void measure(String key, JsonNode value) { synchronized (measurements) { measurements.set(key, value); } }
         /** Runs {@code <python> -I <args...>} from the repository root; output goes to {@code <out>/logs/<log>.log}. */
         public Proc python(String log, String... args) throws IOException, InterruptedException {
@@ -99,12 +110,12 @@ public final class CoreGate {
 
     /** The command line: validates the flags (exit 2 on a usage error) and runs the gate from the current directory. */
     public static int main(Args flags, String command, PrintStream out, PrintStream err) {
-        String engine, python, control;
-        Path outDir;
+        String engine, python, control, shard;
+        Path outDir, aggregate;
         long seed;
         List<String> intended = List.of();
         try {
-            flags.only(Set.of("engine", "out", "python", "negative-control", "seed"));
+            flags.only(Set.of("engine", "out", "python", "negative-control", "seed", "shard", "aggregate"));
             engine = flags.required("engine");
             if (!engine.equals("core")) throw new IllegalArgumentException("--engine " + engine + ": this gate runs --engine core only");
             outDir = Path.of(flags.get("out", "build/gate"));
@@ -112,14 +123,20 @@ public final class CoreGate {
             seed = Long.parseLong(flags.get("seed", Long.toString(DEFAULT_SEED)));
             control = flags.get("negative-control").orElse(null);
             if (control != null) intended = control(Path.of(""), control);
+            shard = flags.get("shard").orElse(null);
+            aggregate = flags.get("aggregate").map(Path::of).orElse(null);
+            if (shard != null && aggregate != null) throw new IllegalArgumentException("--shard and --aggregate exclude each other");
+            if (control != null && (shard != null || aggregate != null)) throw new IllegalArgumentException("--negative-control runs the full gate, without --shard or --aggregate");
+            if (shard != null) Shards.load(Path.of("")).shard(shard);
+            if (aggregate != null && !Files.isDirectory(aggregate)) throw new IllegalArgumentException("--aggregate " + aggregate + ": not a directory");
         } catch (IllegalArgumentException e) {
             err.println(e.getMessage());
-            err.println("usage: forseti gate --engine core [--out <dir>] [--python <interpreter>] [--negative-control <name>] [--seed <n>]");
+            err.println("usage: forseti gate --engine core [--out <dir>] [--python <interpreter>] [--negative-control <name>] [--seed <n>] [--shard <name> | --aggregate <dir>]");
             return 2;
         }
         Path root = Path.of("").toAbsolutePath();
-        return run(new Options(root, root.resolve(MANIFEST), outDir.toAbsolutePath(), python, control, intended, seed, "forseti " + command),
-            registered(), out, err);
+        return run(new Options(root, root.resolve(MANIFEST), outDir.toAbsolutePath(), python, control, intended, seed, "forseti " + command, shard,
+            aggregate == null ? null : aggregate.toAbsolutePath()), registered(), out, err);
     }
 
     /** The intended failures of a control listed in {@code gate/core-negative-controls.json} and implemented here; a usage error otherwise. */
@@ -140,24 +157,61 @@ public final class CoreGate {
         Assertions acc = null;
         String manifestSha = null, error = null;
         ObjectNode pins = Json.object(), digests = Json.object(), measurements = Json.object();
+        Shards.Plan plan = null;
         Path tmp = null;
         long started = System.nanoTime();
         try {
             byte[] manifestBytes = Files.readAllBytes(o.manifest());
             manifestSha = Canonical.digestOf(manifestBytes);
-            acc = new Assertions(manifestIds(Json.read(manifestBytes)), out);
+            List<String> ids = manifestIds(Json.read(manifestBytes));
+            Shards.Shard shard = null;
+            if (o.shard() != null || o.aggregate() != null) {
+                plan = Shards.load(o.root());
+                Set<String> aggregatable = new HashSet<>(Injections.AGGREGATE);
+                List<String> wrong = Shards.validate(plan, ids, aggregatable);
+                if (!wrong.isEmpty()) throw new IllegalStateException(Shards.PLAN + ": " + String.join("; ", wrong));
+                if (o.shard() != null) shard = plan.shard(o.shard());
+            }
+            final Shards.Shard only = shard;
+            final Set<String> aggregateIds = plan == null ? Set.of() : new HashSet<>(plan.aggregate());
+            acc = new Assertions(shard != null ? shard.assertions() : ids, out);
             Files.createDirectories(o.out());
             tmp = Files.createTempDirectory("forseti-gate-");
             Context ctx = new Context(o.root(), tmp, o.out().resolve("logs"), o.python());
+            ctx.shard = shard;
             measurements = ctx.measurements;
             pins = pins(ctx);
             digests = fixtureDigests(o.root());
-            for (Check c : checks) {
+            List<Check> selected = checks.stream().filter(c -> only != null ? only.assertions().contains(c.id()) : o.aggregate() == null || aggregateIds.contains(c.id())).toList();
+            List<String> coverage = new ArrayList<>();
+            if (o.aggregate() != null) {
+                ObjectNode expect = Json.object();
+                expect.put("manifestSha256", manifestSha);
+                Json.putSafe(expect, "seed", o.seed());
+                expect.set("pins", pins);
+                expect.set("fixtureDigests", digests);
+                List<Shards.Recorded> recorded = new ArrayList<>();
+                ctx.aggregate = Shards.read(o.root(), o.aggregate(), plan, expect, recorded, coverage);
+                for (Shards.Recorded r : recorded)
+                    try { acc.check(r.id(), r.ok(), "[shard " + r.shard() + "] " + r.evidence()); } catch (Assertions.Refused ignored) { /* recorded by the accountant */ }
+            }
+            for (Check c : selected) {
                 Result r;
                 try { r = c.body().run(ctx); }
                 catch (Exception | Error e) { r = new Result(false, "crashed: " + e); }
                 try { acc.check(c.id(), r.ok(), r.evidence()); } catch (Assertions.Refused ignored) { /* recorded by the accountant */ }
             }
+            if (shard != null) {
+                Summaries mine = Summaries.fromPipeline(ctx);
+                Json.write(o.out().resolve(Shards.SUMMARIES), mine.toJson());
+                List<String> own = Shards.coverage(o.root(), mine);   // this shard's scenarios; the aggregate run checks every shard's again
+                own.removeAll(mine.missing);
+                coverage.addAll(own);
+            } else if (o.aggregate() == null && Scenarios.started(ctx) && !Scenarios.skipHorizon() && Scenarios.only() == null) {
+                coverage.addAll(Shards.coverage(o.root(), Summaries.of(ctx)));
+            }
+            for (String line : coverage) out.println("COVERAGE " + line);
+            if (!coverage.isEmpty()) throw new IllegalStateException("coverage: " + coverage.size() + " problems, first: " + coverage.get(0));
         } catch (Exception | Error e) {
             error = e.toString();
             err.println("gate crashed: " + error);
@@ -180,6 +234,10 @@ public final class CoreGate {
         Json.putSafe((ObjectNode) report.get("measurements"), "gateWallTimeMs", (System.nanoTime() - started) / 1_000_000);
         report.put("startedAt", startedAt).put("finishedAt", Instant.now().toString()).put("command", o.command());
         report.put("error", error);
+        report.put("shard", o.shard());
+        report.put("shardPlanSha256", plan == null ? null : plan.sha256());
+        ArrayNode results = report.putArray("results");
+        if (acc != null) for (var e : acc.results()) results.addObject().put("id", e.getKey()).put("ok", e.getValue().getKey()).put("evidence", e.getValue().getValue());
         try { Json.write(o.out().resolve("report.json"), report); }
         catch (RuntimeException e) { err.println("cannot write the report: " + e.getMessage()); exit = 1; }
         out.println(acc == null ? "assertions run 0 / expected 0" : acc.line());

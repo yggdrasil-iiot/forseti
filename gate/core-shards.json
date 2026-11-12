@@ -1,0 +1,24 @@
+{
+  "shards": [
+    {
+      "name": "hand-made",
+      "scenarios": ["baseline", "held-back-10min", "redelivery", "overlap", "bad-quality", "clock-plus-30", "clock-plus-90", "corrections",
+        "corrections-10b-before", "corrections-10b-after", "corrections-10c", "session", "quiet-occupancy", "quiet-occupancy-control", "plc-stamped",
+        "plc-nocheck", "plc-held-back", "stage2", "stage2-early", "cascade", "smoke", "smoke-plc", "smoke-incident"],
+      "shuffled": ["baseline", "stage2"],
+      "assertions": ["F-JCS-JAVA", "F-JCS-PY", "F-JCS-REFUSALS", "F-SCHEMA-COPIES", "F-UPSTREAM-UNTOUCHED", "F-JOURNAL-REDUCERS", "F-HEAD-OK",
+        "F-HEAD-SIGNATURE", "F-HEAD-SAME-KEY", "F-HEAD-SUBJECT", "F-HEAD-FUTURE", "F-HEAD-ROLLBACK", "F-HEAD-EXPIRED", "F-RELEASE-DIGEST",
+        "F-PAYLOAD-DIGEST", "F-RULES-LOAD-OJ", "F-RULES-LOAD-PLC", "F-BINDING-SCHEMA-MISMATCH", "S-SMOKE-VISIT", "S-SMOKE-PLC", "S-REVISIONS",
+        "S-PROGRESS", "S-W1", "S-DETERMINISM", "T-PROGRESS-TRACKER", "T-SMOKE-INCIDENT", "T-CASCADE", "T-DELETE", "T-LEDGER-2", "I-1", "I-2",
+        "I-2b", "I-3", "I-4", "I-5", "I-7", "I-8", "I-9", "I-9b", "I-10", "I-10b", "I-10d", "I-10f", "I-11", "I-11b", "I-11c", "I-11d", "I-12",
+        "I-13", "I-14", "I-15", "I-16", "I-17", "I-18", "I-19", "I-25", "I-26", "C-6-STAGE1", "C-6-STAGE2"]
+    },
+    {"name": "horizon-no-departure", "scenarios": ["horizon-no-departure", "baseline"], "shuffled": [], "assertions": ["I-6"]},
+    {"name": "horizon-reopened", "scenarios": ["horizon-reopened", "corrections-10c"], "shuffled": [], "assertions": ["I-10c"]},
+    {"name": "horizon-correction-beyond", "scenarios": ["horizon-correction-beyond"], "shuffled": [], "assertions": ["I-10e"]},
+    {"name": "horizon-planned-late", "scenarios": ["horizon-planned-late"], "shuffled": [], "assertions": []},
+    {"name": "plc-horizon-no-end", "scenarios": ["plc-horizon-no-end"], "shuffled": [], "assertions": ["I-11e"]}
+  ],
+  "aggregate": ["J-DISPOSITION-COVERAGE", "J-REVISION-CONTINUITY", "J-NO-EQUAL-CONSECUTIVE", "J-PROGRESS-ORDER", "J-W1-FORMULA", "J-W2-EQUALS-W1",
+    "J-BASIS-CURRENT", "J-AFTER-HORIZON-CUTS", "C-2-REFERENCE"]
+}
