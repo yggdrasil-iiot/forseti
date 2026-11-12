@@ -137,38 +137,41 @@ final class PlcStamped {
         }
     }
 
-    /** P2 over every stored snapshot of the station's identified equipment; visits whose online state expired are left out. */
+    /** P2 over every stored snapshot of the station's identified equipment; visits whose online state expired are left out. Reads
+     *  {@link Snapshots}' per-equipment index: per visit ID v, the earliest valid true starts; the end is the first later snapshot
+     *  (in {@code (sourceTs, message key)} order, sourceTs after the start) that is a false with v or a true with another ID; the last
+     *  true before it, and whether a true with v follows it, come from the same order. */
     Frame derive(Stage1State s) {
         String station = s.station;
-        Map<String, List<Stage1State.Snapshot>> byDevice = new TreeMap<>();
-        for (Stage1State.Snapshot x : s.snapshots.values())   // message-key order; the stable sort below keeps it for equal sourceTs
-            if (x.valid() && station.equals(stationOf(x.device()))) byDevice.computeIfAbsent(x.device(), d -> new ArrayList<>()).add(x);
-        Comparator<Stage1State.Snapshot> order = Comparator.comparingLong(Stage1State.Snapshot::sourceTs);
         Map<String, List<Part>> parts = new TreeMap<>();
-        Map<String, List<Stage1State.Snapshot>> ofVisit = new TreeMap<>();
-        for (Map.Entry<String, List<Stage1State.Snapshot>> e : byDevice.entrySet()) {
-            List<Stage1State.Snapshot> l = e.getValue();
-            l.sort(order);
-            SortedSet<String> ids = new TreeSet<>();
-            for (Stage1State.Snapshot x : l) {
-                ofVisit.computeIfAbsent(x.visitId(), k -> new ArrayList<>()).add(x);
-                if (x.present()) ids.add(x.visitId());
-            }
-            for (String v : ids) {
-                int i = 0;
-                while (!(l.get(i).visitId().equals(v) && l.get(i).present())) i++;
-                long start = l.get(i).sourceTs(), lastTrue = start;
-                Long close = null;
-                boolean change = false, after = false;
-                for (int j = i + 1; j < l.size(); j++) {
-                    Stage1State.Snapshot y = l.get(j);
-                    if (y.sourceTs() <= start) continue;   // "later": a snapshot at the start's own sourceTs decides nothing
-                    if (y.visitId().equals(v)) {
-                        if (y.present()) { if (close == null) lastTrue = y.sourceTs(); else after = true; }
-                        else if (close == null) close = y.sourceTs();
-                    } else if (y.present() && close == null) { close = y.sourceTs(); change = true; }
+        Map<String, SortedSet<String>> unitsOf = new TreeMap<>();
+        for (Map.Entry<String, Snapshots.Device> e : s.snapshots.devices().entrySet()) {
+            if (!station.equals(stationOf(e.getKey()))) continue;
+            Snapshots.Device d = e.getValue();
+            d.units.forEach((v, u) -> unitsOf.computeIfAbsent(v, k -> new TreeSet<>()).addAll(u.keySet()));
+            for (Map.Entry<String, TreeSet<Snapshots.Pos>> pe : d.present.entrySet()) {
+                String v = pe.getKey();
+                TreeSet<Snapshots.Pos> pv = pe.getValue();
+                Snapshots.Pos first = pv.first();
+                long start = first.ts();
+                Snapshots.Pos close = null;
+                boolean change = false;
+                if (start != Long.MAX_VALUE) {
+                    Snapshots.Pos later = new Snapshots.Pos(start + 1, "");   // "later": a snapshot at the start's own sourceTs decides nothing
+                    TreeSet<Snapshots.Pos> av = d.absent.get(v);
+                    Snapshots.Pos ended = av == null ? null : av.ceiling(later), other = null;   // a false with v; a true with another ID
+                    for (Map.Entry<String, TreeSet<Snapshots.Pos>> o : d.present.entrySet()) {
+                        if (o.getKey().equals(v)) continue;
+                        Snapshots.Pos c = o.getValue().ceiling(later);
+                        if (c != null && (other == null || c.compareTo(other) < 0)) other = c;
+                    }
+                    if (other != null && (ended == null || other.compareTo(ended) < 0)) { close = other; change = true; }
+                    else close = ended;
                 }
-                parts.computeIfAbsent(v, k -> new ArrayList<>()).add(new Part(e.getKey(), start, close, change, lastTrue, after, l.get(i).unitId()));
+                long lastTrue = close == null ? pv.last().ts() : pv.lower(close).ts();
+                boolean after = close != null && pv.higher(close) != null;
+                parts.computeIfAbsent(v, k -> new ArrayList<>()).add(new Part(e.getKey(), start, close == null ? null : close.ts(), change, lastTrue, after,
+                    d.all.get(first).unitId()));
             }
         }
         List<VisitClaim> visits = new ArrayList<>();
@@ -185,7 +188,7 @@ final class PlcStamped {
             for (Part p : ps) if (p.start() < first.start()) first = p;
             VisitClaim c = VisitClaim.plc(ref, first.unitAtStart(), station, first.start());
             SortedSet<String> units = new TreeSet<>();
-            for (Stage1State.Snapshot x : ofVisit.get(v)) units.add(x.unitId());
+            units.addAll(unitsOf.get(v));
             c.inputConflict = units.size() > 1;
             Set<Long> starts = new TreeSet<>(), closes = new TreeSet<>();
             boolean allEnded = true, anyChange = false, after = false;
@@ -205,7 +208,7 @@ final class PlcStamped {
             if (allEnded) c.leave = maxEnd;
             else if (anyChange) { c.missingVisitClose = true; c.attributionEnd = changeAt; }
             visits.add(c);
-            if (c.inputConflict) conflicting.put(c.key, ofVisit.get(v));
+            if (c.inputConflict) conflicting.put(c.key, ofVisit(s, v));
             sig.append(c.key).append('|').append(c.unitId).append('|').append(c.enter).append('|').append(c.leave).append('|').append(c.attributionEnd)
                 .append('|').append(c.inputConflict).append(c.missingVisitClose).append(c.inconsistentBoundary);
             for (Part p : ps) {
@@ -215,5 +218,13 @@ final class PlcStamped {
             sig.append('\n');
         }
         return new Frame(visits, spans, conflicting, sig.toString(), s);
+    }
+
+    /** Every valid snapshot of visit ID v at the station: equipment by equipment, each in P2 order. */
+    private List<Stage1State.Snapshot> ofVisit(Stage1State s, String v) {
+        List<Stage1State.Snapshot> l = new ArrayList<>();
+        for (Map.Entry<String, Snapshots.Device> e : s.snapshots.devices().entrySet())
+            if (s.station.equals(stationOf(e.getKey()))) for (Stage1State.Snapshot x : e.getValue().all.values()) if (x.visitId().equals(v)) l.add(x);
+        return l;
     }
 }

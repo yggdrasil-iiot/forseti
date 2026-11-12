@@ -401,7 +401,7 @@ public final class Stage1 {
         if (v == null) return;
         s.expired.put(key, new Stage1State.Expired(v.visitRef, v.enter, v.leave, v.leave == null ? v.attributionEnd : null, v.retracted(), v.onlineExpiresAt(H, L)));
         String visitId = visitRef.path("visitId").asText();
-        s.snapshots.values().removeIf(x -> x.valid() && visitId.equals(x.visitId()) && s.station.equals(plc.stationOf(x.device())));
+        s.snapshots.removeIf(x -> x.valid() && visitId.equals(x.visitId()) && s.station.equals(plc.stationOf(x.device())));
         s.deadlines.cancelAll(visitRef);
         dropSamples(s, x -> {
             Stage1State.Measurement m = x.sourceTs == null ? null : s.measurements.get(measurementKey(x.device, x.metric, x.sourceTs));
@@ -458,7 +458,7 @@ public final class Stage1 {
     private void prunePlc(Stage1State s, long w) {
         Set<String> online = new HashSet<>();
         for (VisitClaim v : plc.derive(s).visits) online.add(v.visitRef.path("visitId").asText());
-        s.snapshots.values().removeIf(x -> (x.visitId() == null || !online.contains(x.visitId())) && x.sourceTs() != null && x.sourceTs() + tolE + H + L <= w);
+        s.snapshots.removeIf(x -> (x.visitId() == null || !online.contains(x.visitId())) && x.sourceTs() != null && x.sourceTs() + tolE + H + L <= w);
         if (!plc.crossCheck) return;
         Set<String> gone = new HashSet<>();
         for (VisitClaim v : VisitClaim.derive(s)) if (v.online() && v.onlineExpiresAt(H, L) <= w) gone.add(v.source + "\u0000" + v.arrivalEventId);

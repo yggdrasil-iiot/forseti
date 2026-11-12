@@ -39,7 +39,7 @@ public final class Stage1State {
     final TreeMap<String, Measurement> measurements = new TreeMap<>();
     final TreeMap<String, String> messages = new TreeMap<>();
     final TreeMap<String, Session> sessions = new TreeMap<>();
-    final TreeMap<String, Snapshot> snapshots = new TreeMap<>();
+    final Snapshots snapshots = new Snapshots();
     /** The occupancy visits as they stood at the last committed progress, by {@code source NUL arrivalEventId}: S3 admission and the
      *  {@code late-after-settlement} test (S4) judge an occupancy input against them, not against the visit as earlier inputs of the
      *  same cut changed it. Set at every cut close. */
