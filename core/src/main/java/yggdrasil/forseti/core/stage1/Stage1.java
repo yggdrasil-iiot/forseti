@@ -180,10 +180,11 @@ public final class Stage1 {
         VisitClaim ref = null;
         for (VisitClaim v : before) if (v.source.equals(o.source()) && v.arrivalEventId.equals(refArrival)) ref = v;
 
-        // S3 admission
+        // S3 admission, against the visit as it stood at the last committed progress (not as earlier inputs of this cut changed it)
+        Stage1State.Admitted committed = aw == null ? null : s.admissionVisits.get(o.source() + "\u0000" + refArrival);
         if (aw != null) {
             boolean expired = o.arriving() && decl == null ? aw >= o.eventTime() + H + L
-                : ref != null ? aw >= ref.onlineExpiresAt(H, L) : aw >= o.eventTime() + H + L;
+                : committed != null ? aw >= committed.onlineExpiresAt() : aw >= o.eventTime() + H + L;
             if (expired) {
                 c.disposition(r.origin(), part, kind, identity, digest, rule, decl != null ? Disposition.Reason.CORRECTION_BEYOND_HORIZON : Disposition.Reason.BEYOND_HORIZON, null);
                 return;
@@ -235,7 +236,7 @@ public final class Stage1 {
             s.deliveries.put(idKey, occ);
         }
         occ.list.add(nd);   // (c) or a first delivery: accepted
-        boolean late = ref != null && ref.leave != null && aw != null && aw >= ref.leave + L;
+        boolean late = committed != null && committed.leave() != null && aw >= committed.leave() + L;   // S4: settled at admission
         c.disposition(r.origin(), part, kind, identity, digest, rule, late ? Disposition.Reason.LATE_AFTER_SETTLEMENT : Disposition.Reason.ACCEPTED, null);
         recompute(c, s.lastW1, null);
     }
@@ -400,7 +401,7 @@ public final class Stage1 {
         if (v == null) return;
         s.expired.put(key, new Stage1State.Expired(v.visitRef, v.enter, v.leave, v.leave == null ? v.attributionEnd : null, v.retracted(), v.onlineExpiresAt(H, L)));
         String visitId = visitRef.path("visitId").asText();
-        s.snapshots.values().removeIf(x -> x.valid() && visitId.equals(x.visitId()) && s.station.equals(plc.stationOf(x.device())));
+        s.snapshots.removeIf(x -> x.valid() && visitId.equals(x.visitId()) && s.station.equals(plc.stationOf(x.device())));
         s.deadlines.cancelAll(visitRef);
         dropSamples(s, x -> {
             Stage1State.Measurement m = x.sourceTs == null ? null : s.measurements.get(measurementKey(x.device, x.metric, x.sourceTs));
@@ -442,6 +443,8 @@ public final class Stage1 {
             refs.add(new Progress.BarrierRef(Json.safeLong(b.get("cutId"), "barrierRefs.cutId", Json.NON_NEGATIVE),
                 new Progress.Origin(Json.text(b.path("origin"), "topic"), (int) Json.safeLong(b.path("origin").get("partition"), "barrierRefs.origin.partition", 0, Integer.MAX_VALUE)),
                 Json.safeLong(b.get("throughOffset"), "barrierRefs.throughOffset", Json.THROUGH)));
+        s.admissionVisits.clear();
+        for (VisitClaim v : VisitClaim.derive(s)) s.admissionVisits.put(v.source + "\u0000" + v.arrivalEventId, new Stage1State.Admitted(v.leave, v.onlineExpiresAt(H, L)));
         Progress.InitEvidence init = s.pendingInit;
         s.pendingInit = null;
         out.add(new Progress.Stage1(s.generation, s.station, cc.cutId(), 0, w, admissionBefore, refs, 0, null, List.of(), init));
@@ -455,7 +458,7 @@ public final class Stage1 {
     private void prunePlc(Stage1State s, long w) {
         Set<String> online = new HashSet<>();
         for (VisitClaim v : plc.derive(s).visits) online.add(v.visitRef.path("visitId").asText());
-        s.snapshots.values().removeIf(x -> (x.visitId() == null || !online.contains(x.visitId())) && x.sourceTs() != null && x.sourceTs() + tolE + H + L <= w);
+        s.snapshots.removeIf(x -> (x.visitId() == null || !online.contains(x.visitId())) && x.sourceTs() != null && x.sourceTs() + tolE + H + L <= w);
         if (!plc.crossCheck) return;
         Set<String> gone = new HashSet<>();
         for (VisitClaim v : VisitClaim.derive(s)) if (v.online() && v.onlineExpiresAt(H, L) <= w) gone.add(v.source + "\u0000" + v.arrivalEventId);
@@ -487,12 +490,15 @@ public final class Stage1 {
         Sessions.View view = Sessions.view(s, w);
         Collection<String> keys = scope == null ? new ArrayList<>(s.samples.keySet()) : scope;
         Set<String> affected = scope == null ? null : new HashSet<>();
+        Map<String, SampleRow.Outcome> outcomes = new HashMap<>();
+        Set<String> measured = new TreeSet<>();
         for (String k : keys) {
             Stage1State.Sample x = s.samples.get(k);
             SampleRow.Outcome o = classify(s, x, att, frame, occupants, view);
+            outcomes.put(k, o);
             if (x.sourceTs != null && !x.replay) {
-                Stage1State.Measurement m = s.measurements.get(measurementKey(x.device, x.metric, x.sourceTs));
-                if (m != null && !x.idConflict) m.coverageVisit = o.coverageVisit();
+                String mk = measurementKey(x.device, x.metric, x.sourceTs);
+                if (s.measurements.containsKey(mk)) measured.add(mk);
                 if (affected != null) {
                     if (!view.unknown(x.device).isEmpty()) affected = null;
                     else for (VisitClaim v : visits) if (v.online() && x.sourceTs >= v.enter && x.sourceTs < WorkRecord.jEnd(v, w, H)) affected.add(v.key);
@@ -500,6 +506,21 @@ public final class Stage1 {
             }
             ObjectNode row = SampleRow.body(x.sourceTs, o, x.active);
             if (!row.equals(x.row)) { c.row(SAMPLES, x.sampleId, row, s.sampleRows); x.row = row; }
+        }
+        // S2, S6: an observation delivered more than once is one observation; it counts for the visit any of its samples counts for, so a
+        // later delivery that contributes nothing (an incoherent snapshot, say) does not take an earlier delivery's contribution away
+        for (String mk : measured) {
+            Stage1State.Measurement m = s.measurements.get(mk);
+            String visit = null;
+            boolean usable = false;
+            for (String k : m.sampleKeys) {
+                Stage1State.Sample y = s.samples.get(k);
+                if (y.idConflict || y.replay) continue;
+                usable = true;
+                SampleRow.Outcome o = outcomes.computeIfAbsent(k, z -> classify(s, y, att, frame, occupants, view));
+                if (o.coverageVisit() != null) { visit = o.coverageVisit(); break; }
+            }
+            if (usable) m.coverageVisit = visit;
         }
         for (VisitClaim v : visits) {
             if (!v.online() || (affected != null && !affected.contains(v.key))) continue;

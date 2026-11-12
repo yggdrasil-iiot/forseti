@@ -14,6 +14,7 @@ public final class Assertions {
     private final List<String> expected;
     private final PrintStream out;
     private final Map<String, Boolean> results = new LinkedHashMap<>();
+    private final Map<String, String> evidences = new LinkedHashMap<>();
     private final List<String> unknown = new ArrayList<>(), duplicates = new ArrayList<>();
 
     public Assertions(List<String> manifestIds, PrintStream out) {
@@ -35,10 +36,17 @@ public final class Assertions {
             throw new Refused("assertion " + id + " ran twice");
         }
         results.put(id, condition);
+        evidences.put(id, evidence);
         out.println((condition ? "PASS " : "FAIL ") + id + " " + evidence);
     }
 
     public List<String> expected() { return expected; }
+    /** Every recorded result in the order checked: id, whether it held, its evidence. */
+    public List<Map.Entry<String, Map.Entry<Boolean, String>>> results() {
+        List<Map.Entry<String, Map.Entry<Boolean, String>>> l = new ArrayList<>();
+        results.forEach((id, ok) -> l.add(Map.entry(id, Map.entry(ok, evidences.get(id)))));
+        return l;
+    }
     public List<String> ran() { return List.copyOf(results.keySet()); }
     /** Manifest ids that ran and did not hold, then ids refused as unknown or as duplicates. */
     public List<String> failed() {

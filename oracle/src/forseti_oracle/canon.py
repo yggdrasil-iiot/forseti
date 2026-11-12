@@ -54,7 +54,46 @@ def _check(v) -> None:
             _check(x)
 
 
+def _plain(v) -> bool:
+    """True when ``v`` holds no float, every integer is inside the JCS domain and every key is an ASCII string: for such a value
+    the standard library's sorted compact encoding is byte for byte the RFC 8785 form (ASCII keys sort the same by code point as by
+    UTF-16 unit; the two escape the same characters the same way; integers and literals print alike)."""
+    t = type(v)
+    if t is str or t is bool or v is None:
+        return True
+    if t is int:
+        return -MAX_SAFE <= v <= MAX_SAFE
+    if t is dict:
+        for k, x in v.items():
+            if type(k) is not str or not k.isascii():
+                return False
+            tx = type(x)   # the scalar cases inline: most members are scalars
+            if tx is str or tx is bool or x is None:
+                continue
+            if tx is int:
+                if -MAX_SAFE <= x <= MAX_SAFE:
+                    continue
+                return False
+            if not _plain(x):
+                return False
+        return True
+    if t is list or t is tuple:
+        for x in v:
+            if not _plain(x):
+                return False
+        return True
+    return False
+
+
+_ENCODE = json.JSONEncoder(ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False).encode
+
+
 def canonical_bytes(value) -> bytes:
+    if _plain(value):
+        try:
+            return _ENCODE(value).encode("utf-8")
+        except UnicodeEncodeError:
+            pass   # a lone surrogate: the general path refuses it
     _check(value)
     return rfc8785.dumps(value)
 

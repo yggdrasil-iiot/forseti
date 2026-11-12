@@ -2,7 +2,10 @@ package yggdrasil.forseti.cli.recording;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import java.io.IOException;
+import java.io.InputStream;
 import java.io.UncheckedIOException;
+import java.nio.ByteBuffer;
+import java.nio.channels.SeekableByteChannel;
 import java.nio.file.*;
 import java.util.*;
 import java.util.stream.Stream;
@@ -38,6 +41,7 @@ public final class Recording {
     private final List<Deadline> deadlines = new ArrayList<>();
     private final Map<String, String> digests = new LinkedHashMap<>();
     private final Map<String, List<Record>> cache = new HashMap<>();
+    private final Map<String, Long> sizes = new HashMap<>();
 
     private Recording(Path dir, JsonNode m, RoutingManifest routing) {
         this.dir = dir; this.manifest = m; this.routing = routing;
@@ -124,36 +128,117 @@ public final class Recording {
         return new Recording(dir, Json.read(dir.resolve(MANIFEST)), routing);
     }
 
-    /** The records of one subscribed input partition, read strictly: offsets 0, 1, 2, ..., LF-terminated lines. */
+    /** The records of one subscribed input partition, read strictly: offsets 0, 1, 2, ..., LF-terminated lines. The list is kept
+     *  for the life of this object; a run over a large recording reads with {@link #reader} instead. */
     public List<Record> records(String topic, int partition) {
-        if (!routing.subscribed(topic).contains(partition)) throw new IllegalArgumentException("partition not subscribed: " + topic + "/" + partition);
-        return cache.computeIfAbsent(topic + "/" + partition, k -> List.copyOf(readPartition(dir.resolve(topic).resolve(partition + ".jsonl"), k)));
+        subscribedOrRefuse(topic, partition);
+        return cache.computeIfAbsent(topic + "/" + partition, k -> {
+            List<Record> out = new ArrayList<>();
+            try (Reader r = reader(topic, partition)) { for (Line l; (l = r.next()) != null;) out.add(l.record()); }
+            return List.copyOf(out);
+        });
     }
 
-    private static List<Record> readPartition(Path file, String name) {
-        byte[] bytes;
-        try { bytes = Files.readAllBytes(file); } catch (IOException e) { throw malformed("missing partition file " + name); }
-        List<Record> out = new ArrayList<>();
-        if (bytes.length == 0) return out;
-        if (bytes[bytes.length - 1] != '\n') throw malformed(name + " does not end with LF");
-        int start = 0;
-        for (int i = 0; i < bytes.length; i++) {
-            if (bytes[i] == '\r') throw malformed(name + " carries CR");
-            if (bytes[i] != '\n') continue;
-            JsonNode line = Json.read(Arrays.copyOfRange(bytes, start, i));
-            start = i + 1;
-            if (!line.isObject() || line.size() != 5) throw malformed(name + " line " + out.size() + " is not {offset, timestamp, key, headers, value}");
-            long offset = Json.safeLong(line.get("offset"), "offset", Json.NON_NEGATIVE);
-            if (offset != out.size()) throw malformed(name + " offset " + offset + " where " + out.size() + " is due");
-            JsonNode ts = line.get("timestamp");
-            if (ts == null) throw malformed(name + " line " + offset + " has no timestamp");
-            Long timestamp = ts.isNull() ? null : Json.safeLong(ts, "timestamp", Json.NON_NEGATIVE);
-            JsonNode key = line.get("key"), headers = line.get("headers"), value = line.get("value");
-            if (key == null || !key.isTextual() || headers == null || !headers.isObject() || value == null)
-                throw malformed(name + " line " + offset + " key, headers or value");
-            out.add(new Record(offset, timestamp, key.textValue(), headers, value));
+    /** The number of records of one subscribed input partition, every line read strictly as {@link #records} reads it, without
+     *  keeping them. */
+    public long size(String topic, int partition) {
+        subscribedOrRefuse(topic, partition);
+        String k = topic + "/" + partition;
+        List<Record> cached = cache.get(k);
+        if (cached != null) return cached.size();
+        return sizes.computeIfAbsent(k, x -> {
+            try (Reader r = reader(topic, partition)) {
+                while (r.next() != null) { /* read strictly, keep nothing */ }
+                return r.read();
+            }
+        });
+    }
+
+    private void subscribedOrRefuse(String topic, int partition) {
+        if (!routing.subscribed(topic).contains(partition)) throw new IllegalArgumentException("partition not subscribed: " + topic + "/" + partition);
+    }
+
+    /** One line of a partition file: the record read strictly and the line's bytes as delivered (without the LF). */
+    public record Line(Record record, byte[] bytes) {}
+
+    /** A sequential strict reader of one subscribed partition, line by line, with the checks and messages of {@link #records}: the
+     *  file ends with LF (checked first, as a whole-file read checks it), no line carries CR, offsets are 0, 1, 2, ... */
+    public Reader reader(String topic, int partition) {
+        subscribedOrRefuse(topic, partition);
+        return new Reader(dir.resolve(topic).resolve(partition + ".jsonl"), topic + "/" + partition);
+    }
+
+    public static final class Reader implements AutoCloseable {
+        private final String name;
+        private final InputStream in;
+        private final byte[] chunk = new byte[1 << 16];
+        private int pos, end;
+        private byte[] line = new byte[1 << 12];
+        private long read;
+
+        Reader(Path file, String name) {
+            this.name = name;
+            try {
+                long size = Files.size(file);
+                if (size > 0) {
+                    try (SeekableByteChannel ch = Files.newByteChannel(file)) {
+                        ByteBuffer last = ByteBuffer.allocate(1);
+                        ch.position(size - 1);
+                        if (ch.read(last) != 1 || last.get(0) != '\n') throw malformed(name + " does not end with LF");
+                    }
+                }
+                in = Files.newInputStream(file);
+            } catch (IOException e) { throw malformed("missing partition file " + name); }
         }
-        return out;
+
+        /** The next line, null after the last one. */
+        public Line next() {
+            int n = 0;
+            while (true) {
+                if (pos == end) {
+                    try { end = in.read(chunk, 0, chunk.length); } catch (IOException e) { throw new UncheckedIOException(e); }
+                    pos = 0;
+                    if (end <= 0) {
+                        end = 0;
+                        if (n != 0) throw malformed(name + " does not end with LF");
+                        return null;
+                    }
+                }
+                int i = pos;
+                while (i < end && chunk[i] != '\n') { if (chunk[i] == '\r') throw malformed(name + " carries CR"); i++; }
+                int len = i - pos;
+                if (n + len > line.length) line = Arrays.copyOf(line, Math.max(line.length * 2, n + len));
+                System.arraycopy(chunk, pos, line, n, len);
+                n += len;
+                pos = i;
+                if (i < end) {
+                    pos++;
+                    byte[] bytes = Arrays.copyOf(line, n);
+                    Record r = parseLine(bytes, read, name);
+                    read++;
+                    return new Line(r, bytes);
+                }
+            }
+        }
+
+        /** The number of lines returned so far. */
+        public long read() { return read; }
+
+        @Override public void close() { try { in.close(); } catch (IOException e) { throw new UncheckedIOException(e); } }
+    }
+
+    private static Record parseLine(byte[] bytes, long due, String name) {
+        JsonNode line = Json.read(bytes);
+        if (!line.isObject() || line.size() != 5) throw malformed(name + " line " + due + " is not {offset, timestamp, key, headers, value}");
+        long offset = Json.safeLong(line.get("offset"), "offset", Json.NON_NEGATIVE);
+        if (offset != due) throw malformed(name + " offset " + offset + " where " + due + " is due");
+        JsonNode ts = line.get("timestamp");
+        if (ts == null) throw malformed(name + " line " + offset + " has no timestamp");
+        Long timestamp = ts.isNull() ? null : Json.safeLong(ts, "timestamp", Json.NON_NEGATIVE);
+        JsonNode key = line.get("key"), headers = line.get("headers"), value = line.get("value");
+        if (key == null || !key.isTextual() || headers == null || !headers.isObject() || value == null)
+            throw malformed(name + " line " + offset + " key, headers or value");
+        return new Record(offset, timestamp, key.textValue(), headers, value);
     }
 
     /** Every file of the directory except the manifest is listed in {@code digests} with its raw-byte SHA-256, every subscribed
@@ -181,7 +266,7 @@ public final class Recording {
         Batch lastBatch = batches.get(batches.size() - 1);
         for (String topic : RoutingManifest.TOPICS)
             for (int p : routing.subscribed(topic)) {
-                long lastOffset = records(topic, p).size() - 1L;
+                long lastOffset = size(topic, p) - 1L;
                 for (Batch b : batches) if (b.through(topic, p) > lastOffset) throw malformed("throughOffset beyond the records of " + topic + "/" + p);
                 if (lastBatch.through(topic, p) != lastOffset) throw malformed("the last batch leaves records of " + topic + "/" + p + " out");
             }

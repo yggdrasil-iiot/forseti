@@ -378,6 +378,24 @@ class Stage1OccupancyJoinTest {
         assertTrue(d.workRecord("occ-1").get("interval").get("leave").isNull());
     }
 
+    /** 10f in one cut: the declaration on the departure is applied first (contract order), yet the corrective departure is admitted
+     *  against the visit as it stood at the last committed progress, which was settled (S3, S4). */
+    @Test void aCorrectionInOneCutIsJudgedAgainstTheCommittedVisit() {
+        Driver d = baseline();
+        d.cut();
+        d.cut(T + 60_000 + L);
+        assertEquals("complete", status(d.workRecord("occ-1")));
+        Inputs.InputRecord decl = d.input(OCC, declared(departure("occ-2", T + 60_000, U1, S1, "occ-1"), INCORRECT_DATA, T + 800_000));
+        Inputs.InputRecord corrective = d.input(OCC, departure("occ-12", T + 61_000, U1, S1, "occ-1"));
+        d.cut(T + 60_000 + L);
+        for (var x : List.of(new Object[]{decl, "errorDeclaration"}, new Object[]{corrective, "event"})) {
+            Disposition disp = d.disposition((Inputs.InputRecord) x[0], (String) x[1]);
+            assertEquals(Disposition.Kind.ACCEPTED, disp.body().disposition());
+            assertEquals(Disposition.Reason.LATE_AFTER_SETTLEMENT, disp.body().reason());
+        }
+        assertEquals(T + 61_000, d.workRecord("occ-1").get("interval").get("leave").longValue());
+    }
+
     static Driver uncertainScan(RuleSet rules, List<Inputs.InputRecord> marked) {
         Driver d = new Driver(rules, S1);
         d.input(OCC, arrival("occ-1", T, U1, S1));

@@ -160,9 +160,11 @@ public final class ReferenceEngine {
         // revision naming another station reaches Stage2.decide and is rejected station-change there
         Map<String, String> incidentStation = new HashMap<>();
 
-        Map<String, List<byte[]>> raw = new HashMap<>();
-        for (String t : STAGE1_TOPICS) for (int p : subscribed.get(t)) raw.put(t + "/" + p, rawValues(rec, t, p));
-        for (int p : incidentPartitions) raw.put(InputParser.INCIDENTS + "/" + p, rawValues(rec, InputParser.INCIDENTS, p));
+        // every delivered value is checked against its parsed record before the first batch, as one pass that keeps nothing; the
+        // batches then stream each partition once, a batch at a time
+        for (String t : STAGE1_TOPICS) for (int p : subscribed.get(t)) checkValues(rec, t, p);
+        for (int p : incidentPartitions) checkValues(rec, InputParser.INCIDENTS, p);
+        Map<String, Recording.Reader> readers = new HashMap<>();
 
         // (3) the batches
         try { Files.createDirectories(o.out()); } catch (IOException e) { throw new UncheckedIOException(e); }
@@ -170,7 +172,7 @@ public final class ReferenceEngine {
         Random random = new Random(o.seed());
         Map<String, Long> previous = new HashMap<>();
         Map<String, Map<Integer, CutLog.Range>> consumed = new TreeMap<>();
-        try (JournalFiles journals = new JournalFiles(o.out())) {
+        try (JournalFiles journals = new JournalFiles(o.out()); Readers open = new Readers(readers)) {
             for (Recording.Batch b : rec.batches()) {
                 long cutId = b.cutId();
                 List<InputParser.Read> delivered = new ArrayList<>();
@@ -180,11 +182,10 @@ public final class ReferenceEngine {
                     for (int p : subscribed.get(t)) {
                         String k = t + "/" + p;
                         long from = previous.getOrDefault(k, -1L) + 1, through = b.through(t, p);
-                        List<Recording.Record> records = rec.records(t, p);
-                        List<byte[]> bytes = raw.get(k);
+                        Recording.Reader reader = readers.computeIfAbsent(k, x -> rec.reader(t, p));
                         for (long off = from; off <= through; off++) {
-                            Recording.Record r = records.get((int) off);
-                            delivered.add(InputParser.read(new Inputs.Origin(t, p, off), r.key(), bytes.get((int) off)));
+                            Recording.Line l = nextLine(reader, k, off);
+                            delivered.add(InputParser.read(new Inputs.Origin(t, p, off), l.record().key(), valueOf(l.bytes())));
                         }
                         tr.put(p, new CutLog.Range(from, through + 1));
                         consumed.computeIfAbsent(t, x -> new TreeMap<>()).merge(p, new CutLog.Range(from, through + 1),
@@ -206,9 +207,10 @@ public final class ReferenceEngine {
                 for (int p : incidentPartitions) {
                     String k = InputParser.INCIDENTS + "/" + p;
                     long from = previous.getOrDefault(k, -1L) + 1, through = b.through(InputParser.INCIDENTS, p);
-                    List<Recording.Record> records = rec.records(InputParser.INCIDENTS, p);
+                    Recording.Reader reader = readers.computeIfAbsent(k, x -> rec.reader(InputParser.INCIDENTS, p));
                     for (long off = from; off <= through; off++) {
-                        InputParser.Read read = InputParser.read(new Inputs.Origin(InputParser.INCIDENTS, p, off), records.get((int) off).key(), raw.get(k).get((int) off));
+                        Recording.Line l = nextLine(reader, k, off);
+                        InputParser.Read read = InputParser.read(new Inputs.Origin(InputParser.INCIDENTS, p, off), l.record().key(), valueOf(l.bytes()));
                         Incidents.Outcome door = Incidents.door(rules, read);
                         if (door instanceof Incidents.Rejected x) rejects2.add(x.record(), Disposition.Part.EVENT, x.body());
                         else routedIncidents.add(((Incidents.Routed) door).record());
@@ -357,22 +359,25 @@ public final class ReferenceEngine {
     }
 
     /** The {@code value} bytes of every line of one partition file, as delivered (never re-serialized: a raw-bytes digest and an
-     *  overflowing literal depend on them), checked against the record {@link Recording} parsed. */
-    static List<byte[]> rawValues(Recording rec, String topic, int partition) {
-        List<Recording.Record> records = rec.records(topic, partition);
-        byte[] bytes;
-        try { bytes = Files.readAllBytes(rec.dir().resolve(topic).resolve(partition + ".jsonl")); } catch (IOException e) { throw new UncheckedIOException(e); }
-        List<byte[]> out = new ArrayList<>(records.size());
-        int start = 0;
-        for (int i = 0; i < bytes.length; i++) {
-            if (bytes[i] != '\n') continue;
-            byte[] v = valueOf(Arrays.copyOfRange(bytes, start, i));
-            start = i + 1;
-            if (!Json.read(v).equals(records.get(out.size()).value())) throw new IllegalArgumentException("malformed recording: " + topic + "/" + partition + " line " + out.size() + " value");
-            out.add(v);
+     *  overflowing literal depend on them), checked against the record {@link Recording} parsed; one streaming pass that keeps nothing. */
+    static void checkValues(Recording rec, String topic, int partition) {
+        try (Recording.Reader r = rec.reader(topic, partition)) {
+            for (Recording.Line l; (l = r.next()) != null;)
+                if (!Json.read(valueOf(l.bytes())).equals(l.record().value()))
+                    throw new IllegalArgumentException("malformed recording: " + topic + "/" + partition + " line " + l.record().offset() + " value");
         }
-        if (out.size() != records.size()) throw new IllegalArgumentException("malformed recording: " + topic + "/" + partition + " line count");
-        return out;
+    }
+
+    /** The line of {@code offset}: the readers advance in step with the batches, so it is always the reader's next one. */
+    private static Recording.Line nextLine(Recording.Reader reader, String partition, long offset) {
+        Recording.Line l = reader.next();
+        if (l == null || l.record().offset() != offset) throw new IllegalStateException("recording reader of " + partition + " is not at offset " + offset);
+        return l;
+    }
+
+    /** Closes the partition readers a run opened. */
+    private record Readers(Map<String, Recording.Reader> open) implements AutoCloseable {
+        @Override public void close() { for (Recording.Reader r : open.values()) r.close(); }
     }
 
     private static byte[] valueOf(byte[] line) {

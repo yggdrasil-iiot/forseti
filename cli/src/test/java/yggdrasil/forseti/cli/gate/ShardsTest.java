@@ -1,0 +1,290 @@
+package yggdrasil.forseti.cli.gate;
+
+import static org.junit.jupiter.api.Assertions.*;
+
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.node.ArrayNode;
+import com.fasterxml.jackson.databind.node.ObjectNode;
+import java.nio.file.*;
+import java.util.*;
+import java.util.function.BiConsumer;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
+import yggdrasil.forseti.cli.recording.ScenarioBuilder;
+import yggdrasil.forseti.core.Json;
+
+/** The shard plan and the aggregate run's checks of the shard outputs, on the committed plan and hand-made shard outputs. */
+class ShardsTest {
+    static final Path ROOT = CoreGateTest.ROOT;
+    @TempDir Path tmp;
+
+    static Shards.Plan plan() { return Shards.load(ROOT); }
+    static List<String> manifest() { return CoreGate.manifestIds(Json.read(ROOT.resolve(CoreGate.MANIFEST))); }
+    static Set<String> aggregatable() { return new HashSet<>(Injections.AGGREGATE); }
+
+    @Test void theCommittedPlanPartitionsTheManifestAndMakesEveryScenario() {
+        Shards.Plan p = plan();
+        assertEquals(List.of(), Shards.validate(p, manifest(), aggregatable()));
+        assertEquals(new TreeSet<>(Injections.AGGREGATE), new TreeSet<>(p.aggregate()), "the aggregate run evaluates exactly the assertions over every run");
+        Set<String> horizonShards = new TreeSet<>();
+        for (Shards.Shard s : p.shards()) for (String sc : s.scenarios()) if (Scenarios.HORIZON.contains(sc)) horizonShards.add(s.name() + ":" + sc);
+        assertEquals(Scenarios.HORIZON.size(), horizonShards.size(), "each horizon recording is made by one shard: " + horizonShards);
+        for (Shards.Shard s : p.shards())
+            assertTrue(s.scenarios().stream().filter(Scenarios.HORIZON::contains).count() <= 1, s.name() + " makes more than one horizon recording");
+    }
+
+    @Test void aPlanThatLeavesOutOrRepeatsAnythingIsRefused() {
+        Shards.Plan p = plan();
+        Shards.Shard first = p.shards().get(0);
+        List<String> lessAssertions = new ArrayList<>(first.assertions());
+        String dropped = lessAssertions.remove(0);
+        List<Shards.Shard> l = new ArrayList<>(p.shards());
+        l.set(0, new Shards.Shard(first.name(), first.scenarios(), first.shuffled(), lessAssertions));
+        assertTrue(Shards.validate(new Shards.Plan(l, p.aggregate(), "x"), manifest(), aggregatable()).contains(dropped + " is in no shard and not in aggregate"));
+
+        List<String> twice = new ArrayList<>(p.aggregate());
+        twice.add(first.assertions().get(0));
+        assertTrue(Shards.validate(new Shards.Plan(p.shards(), twice, "x"), manifest(), aggregatable()).stream().anyMatch(x -> x.contains("is in two places")));
+
+        List<String> noBaseline = new ArrayList<>(first.scenarios());
+        noBaseline.remove("stage2-early");
+        l = new ArrayList<>(p.shards());
+        l.set(0, new Shards.Shard(first.name(), noBaseline, first.shuffled(), first.assertions()));
+        assertTrue(Shards.validate(new Shards.Plan(l, p.aggregate(), "x"), manifest(), aggregatable()).contains("no shard makes scenario stage2-early"));
+
+        l = new ArrayList<>(p.shards());
+        l.set(0, new Shards.Shard(first.name(), first.scenarios(), List.of("baseline"), first.assertions()));
+        assertTrue(Shards.validate(new Shards.Plan(l, p.aggregate(), "x"), manifest(), aggregatable()).contains("no shard makes the shuffled runs of stage2"));
+
+        l = new ArrayList<>(p.shards());
+        List<String> foreign = new ArrayList<>(p.aggregate());
+        foreign.add("I-1");
+        List<String> noI1 = new ArrayList<>(first.assertions());
+        noI1.remove("I-1");
+        l.set(0, new Shards.Shard(first.name(), first.scenarios(), first.shuffled(), noI1));
+        assertTrue(Shards.validate(new Shards.Plan(l, foreign, "x"), manifest(), aggregatable()).contains("I-1 is not an assertion the aggregate run can evaluate"));
+    }
+
+    // --- the aggregate run's reading of the shard outputs ------------------------------------------------------------------------
+
+    static JsonNode lock(String scenario) {
+        return Json.read(ScenarioBuilder.lockOf(ROOT.resolve("fixtures").resolve("scenarios").resolve(scenario + ".json")));
+    }
+    static long lockCuts(String scenario) { return lock(scenario).path("counts").path("cuts").asLong(); }
+
+    /** Cut ids 1..n, the form every committed recording plans (its manifest's batches). */
+    static void ids(ObjectNode run, String field, long n) {
+        ArrayNode a = run.putArray(field);
+        for (long k = 1; k <= n; k++) a.add(k);
+    }
+
+    static ObjectNode run(ObjectNode summaries, String name) {
+        for (JsonNode x : summaries.get("runs")) if (x.path("name").asText().equals(name)) return (ObjectNode) x;
+        throw new IllegalStateException(name);
+    }
+
+    static ObjectNode expect() {
+        ObjectNode e = Json.object();
+        e.put("manifestSha256", "m");
+        Json.putSafe(e, "seed", 1L);
+        e.putObject("pins").put("python", "3.13");
+        e.putObject("fixtureDigests").put("scenarios", "d");
+        return e;
+    }
+
+    /** A complete, passing set of shard outputs under {@code dir}; {@code edit(shard, {report, summaries})} changes one before it is written. */
+    Path outputs(BiConsumer<String, ObjectNode[]> edit) throws Exception {
+        Path dir = Files.createDirectories(tmp.resolve("shards-" + UUID.randomUUID()));
+        Shards.Plan p = plan();
+        for (Shards.Shard s : p.shards()) {
+            ObjectNode report = expect().deepCopy(), summaries = Json.object();
+            report.put("shard", s.name()).put("shardPlanSha256", p.sha256()).putNull("error");
+            Json.putSafe(report, "exit", 0L);
+            Json.putSafe(report, "assertionsExpected", (long) s.assertions().size());
+            Json.putSafe(report, "assertionsRun", (long) s.assertions().size());
+            report.putArray("failed");
+            report.putArray("notRun");
+            ArrayNode results = report.putArray("results");
+            for (String id : s.assertions()) results.addObject().put("id", id).put("ok", true).put("evidence", "stand-in");
+            ArrayNode runs = summaries.putArray("runs"), shuffled = summaries.putArray("shuffled");
+            for (String sc : s.scenarios()) {
+                ObjectNode r = runs.addObject();
+                r.put("name", sc).putNull("failure").put("ok", true).put("summary", sc + ": stand-in").put("equal", true);
+                Json.putSafe(r, "cutLogCuts", lockCuts(sc));
+                Json.putSafe(r, "cutsCompared", lockCuts(sc));
+                r.put("recordingManifestSha256", lock(sc).path("files").path("manifest.json").asText());
+                ids(r, "plannedCutIds", lockCuts(sc));
+                ids(r, "cutLogIds", lockCuts(sc));
+                ids(r, "comparedCutIds", lockCuts(sc));
+                r.putObject("findings");
+                r.putObject("rows").put("forseti.work-records", 3);
+            }
+            for (String sc : s.shuffled()) for (long seed : Scenarios.SHUFFLE_SEEDS) { ObjectNode x = shuffled.addObject().put("name", sc); Json.putSafe(x, "seed", seed); x.putNull("failure"); }
+            ObjectNode[] both = {report, summaries};
+            edit.accept(s.name(), both);
+            Path d = Files.createDirectories(dir.resolve(s.name()));
+            Json.write(d.resolve("report.json"), both[0]);
+            Json.write(d.resolve(Shards.SUMMARIES), both[1]);
+        }
+        return dir;
+    }
+
+    record Read(Summaries summaries, List<Shards.Recorded> recorded, List<String> problems) {}
+    Read read(Path dir) {
+        List<Shards.Recorded> rec = new ArrayList<>();
+        List<String> problems = new ArrayList<>();
+        Summaries s = Shards.read(ROOT, dir, plan(), expect(), rec, problems);
+        return new Read(s, rec, problems);
+    }
+
+    @Test void completeShardOutputsMergeWithoutProblems() throws Exception {
+        Read r = read(outputs((s, b) -> {}));
+        assertEquals(List.of(), r.problems());
+        assertEquals(List.of(), r.summaries().missing);
+        assertEquals(Scenarios.all().size(), r.summaries().runs.size());
+        assertEquals(Scenarios.SHUFFLED.size() * Scenarios.SHUFFLE_SEEDS.size(), r.summaries().shuffled.size());
+        int ids = 0;
+        for (Shards.Shard s : plan().shards()) ids += s.assertions().size();
+        assertEquals(ids, r.recorded().size());
+        assertEquals(manifest().size() - plan().aggregate().size(), r.recorded().size());
+    }
+
+    @Test void aMissingShardIsAProblemAndItsScenariosAreMissing() throws Exception {
+        Path dir = outputs((s, b) -> {});
+        CoreGate.delete(dir.resolve("horizon-planned-late"));
+        Read r = read(dir);
+        assertTrue(r.problems().stream().anyMatch(x -> x.startsWith("shard horizon-planned-late: ")), r.problems().toString());
+        assertTrue(r.summaries().missing.contains("horizon-planned-late not run: no shard summarised it"), r.summaries().missing.toString());
+        assertTrue(r.problems().contains("horizon-planned-late not run: no shard summarised it"), "coverage names the missing scenario");
+    }
+
+    @Test void aShardRunAgainstOtherInputsIsAProblem() throws Exception {
+        Read r = read(outputs((s, b) -> { if (s.equals("plc-horizon-no-end")) { b[0].putObject("pins").put("python", "3.12"); b[0].put("shardPlanSha256", "other"); } }));
+        assertTrue(r.problems().stream().anyMatch(x -> x.startsWith("shard plc-horizon-no-end: pins ")), r.problems().toString());
+        assertTrue(r.problems().contains("shard plc-horizon-no-end: ran against another " + Shards.PLAN), r.problems().toString());
+    }
+
+    @Test void anUnrecordedOrForeignAssertionIsAProblem() throws Exception {
+        Read r = read(outputs((s, b) -> {
+            if (s.equals("horizon-reopened")) ((ArrayNode) b[0].get("results")).removeAll();
+            if (s.equals("horizon-correction-beyond")) ((ArrayNode) b[0].get("results")).addObject().put("id", "I-1").put("ok", true).put("evidence", "");
+        }));
+        assertTrue(r.problems().contains("shard horizon-reopened did not record I-10c"), r.problems().toString());
+        assertTrue(r.problems().contains("shard horizon-correction-beyond recorded I-1, which the plan does not give it"), r.problems().toString());
+        assertTrue(r.recorded().stream().noneMatch(x -> x.shard().equals("horizon-correction-beyond") && x.id().equals("I-1")));
+    }
+
+    @Test void aScenarioNotComparedAtEveryPlannedCutIsAProblem() throws Exception {
+        Read r = read(outputs((s, b) -> {
+            if (!s.equals("horizon-no-departure")) return;
+            for (JsonNode x : b[1].get("runs")) if (x.path("name").asText().equals("horizon-no-departure")) Json.putSafe((ObjectNode) x, "cutsCompared", lockCuts("horizon-no-departure") - 1);
+        }));
+        long n = lockCuts("horizon-no-departure");
+        assertTrue(r.problems().contains("horizon-no-departure: " + (n - 1) + " cuts compared with the oracle and " + n + " completed, its lock plans " + n), r.problems().toString());
+    }
+
+    @Test void aScenarioThatDidNotHoldOrShardsThatDisagreeAreProblems() throws Exception {
+        Read r = read(outputs((s, b) -> {
+            for (JsonNode x : b[1].get("runs")) {
+                if (s.equals("horizon-reopened") && x.path("name").asText().equals("corrections-10c")) ((ObjectNode) x.get("rows")).put("forseti.work-records", 4);
+                if (s.equals("hand-made") && x.path("name").asText().equals("overlap")) ((ObjectNode) x).put("ok", false).put("summary", "overlap: 2 differences");
+            }
+        }));
+        assertTrue(r.problems().stream().anyMatch(x -> x.startsWith("corrections-10c: two shards disagree on rows")), r.problems().toString());
+        assertTrue(r.problems().contains("overlap did not hold: overlap: 2 differences"), r.problems().toString());
+    }
+
+    /** A shard whose report says it failed, or whose accounting its results do not back, never passes the aggregate on its results. */
+    @Test void aShardReportThatDisagreesWithItsResultsIsAProblem() throws Exception {
+        Read r = read(outputs((s, b) -> {
+            if (s.equals("horizon-reopened")) Json.putSafe(b[0], "exit", 1L);
+            if (s.equals("horizon-no-departure")) ((ArrayNode) b[0].get("failed")).add("I-6");
+            if (s.equals("plc-horizon-no-end")) ((ArrayNode) b[0].get("notRun")).add("I-11e");
+            if (s.equals("horizon-correction-beyond")) Json.putSafe(b[0], "assertionsRun", 0L);
+            if (s.equals("hand-made")) { ArrayNode res = (ArrayNode) b[0].get("results"); res.add(res.get(0).deepCopy()); }
+        }));
+        assertTrue(r.problems().contains("shard horizon-reopened: exited 1"), r.problems().toString());
+        assertTrue(r.problems().contains("shard horizon-no-departure: its report lists failed [I-6], its results fail []"), r.problems().toString());
+        assertTrue(r.problems().contains("shard plc-horizon-no-end: not run [I-11e]"), r.problems().toString());
+        assertTrue(r.problems().stream().anyMatch(x -> x.startsWith("shard horizon-correction-beyond: assertions run 0 / expected 1")), r.problems().toString());
+        String first = plan().shard("hand-made").assertions().get(0);
+        assertTrue(r.problems().contains("shard hand-made recorded " + first + " twice"), r.problems().toString());
+    }
+
+    /** The same number of cuts is not enough: a skipped cut made up by a repeated one, or a run on another recording, is a problem. */
+    @Test void cutsAreCheckedByIdentityAndTheRecordingByItsLockedDigest() throws Exception {
+        long n = lockCuts("horizon-reopened");
+        Read r = read(outputs((s, b) -> {
+            if (s.equals("horizon-reopened")) {
+                ArrayNode c = run(b[1], "horizon-reopened").putArray("comparedCutIds");
+                for (long k = 1; k < n; k++) c.add(k);
+                c.add(n - 1);
+            }
+            if (s.equals("hand-made")) run(b[1], "overlap").put("recordingManifestSha256", "another");
+        }));
+        assertTrue(r.problems().contains("horizon-reopened: the gate compared cuts (at position " + (n - 1) + ": " + (n - 1) + " vs " + n + "; " + n + " vs " + n + " cuts) other than the recording plans"), r.problems().toString());
+        assertTrue(r.problems().stream().anyMatch(x -> x.startsWith("overlap: its run read recording manifest another, its lock pins ")), r.problems().toString());
+        assertTrue(r.problems().stream().noneMatch(x -> x.startsWith("horizon-reopened: ") && x.contains("cuts compared with the oracle and")), "the counts alone agree");
+    }
+
+    @Test void aRunOrShuffledRunSummarisedTwiceOrAnUnplannedSeedIsAProblem() throws Exception {
+        Read r = read(outputs((s, b) -> {
+            if (!s.equals("hand-made")) return;
+            ArrayNode runs = (ArrayNode) b[1].get("runs"), sh = (ArrayNode) b[1].get("shuffled");
+            runs.add(runs.get(0).deepCopy());
+            sh.add(sh.get(0).deepCopy());
+            ObjectNode odd = sh.addObject().put("name", sh.get(0).path("name").asText());
+            Json.putSafe(odd, "seed", 999L);
+            odd.putNull("failure");
+        }));
+        String firstRun = plan().shard("hand-made").scenarios().get(0);
+        assertTrue(r.problems().contains("shard hand-made summarised " + firstRun + " twice"), r.problems().toString());
+        assertTrue(r.problems().stream().anyMatch(x -> x.startsWith("shard hand-made summarised shuffled run ") && x.endsWith(" twice")), r.problems().toString());
+        assertTrue(r.problems().stream().anyMatch(x -> x.contains("@999, which the plan does not give it")), r.problems().toString());
+    }
+
+    @Test void twoShardsThatMadeTheSameScenarioMustAgreeOnEverySemanticField() throws Exception {
+        Read r = read(outputs((s, b) -> {
+            if (s.equals("horizon-reopened")) {
+                run(b[1], "corrections-10c").putObject("measures").put("longestLatenessMs", 7);
+                run(b[1], "corrections-10c").putObject("ms").put("oracle", 1);
+            }
+        }));
+        assertTrue(r.problems().stream().anyMatch(x -> x.startsWith("corrections-10c: two shards disagree on measures")), r.problems().toString());
+        assertTrue(r.problems().stream().noneMatch(x -> x.contains("disagree on ms")), "timings may differ");
+    }
+
+    @Test void aMissingShuffledRunIsAProblem() throws Exception {
+        Read r = read(outputs((s, b) -> { if (s.equals("hand-made")) ((ArrayNode) b[1].get("shuffled")).remove(0); }));
+        assertTrue(r.problems().stream().anyMatch(x -> x.startsWith("shard hand-made has no summary of shuffled run baseline@")), r.problems().toString());
+        assertTrue(r.summaries().missing.stream().anyMatch(x -> x.startsWith("baseline seed ")), r.summaries().missing.toString());
+    }
+
+    /** A shard that owns no assertion (its scenarios feed only the aggregate run) holds when its scenarios do: exit 0, not "0 / 0 failed". */
+    @Test void aShardWithoutAssertionsOfItsOwnExitsZero() throws Exception {
+        Path root = Files.createDirectories(tmp.resolve("root"));
+        Files.createDirectories(root.resolve("gate"));
+        ObjectNode planJson = Json.object();
+        ArrayNode shards = planJson.putArray("shards");
+        ObjectNode all = shards.addObject().put("name", "everything");
+        Scenarios.all().forEach(all.putArray("scenarios")::add);
+        Scenarios.SHUFFLED.forEach(all.putArray("shuffled")::add);
+        ArrayNode ids = all.putArray("assertions");
+        for (String id : manifest()) if (!Injections.AGGREGATE.contains(id)) ids.add(id);
+        ObjectNode none = shards.addObject().put("name", "nothing");
+        none.putArray("scenarios");
+        none.putArray("shuffled");
+        none.putArray("assertions");
+        Injections.AGGREGATE.forEach(planJson.putArray("aggregate")::add);
+        Json.write(root.resolve(Shards.PLAN), planJson);
+        Path out = tmp.resolve("out-nothing");
+        java.io.ByteArrayOutputStream so = new java.io.ByteArrayOutputStream();
+        int exit = CoreGate.run(new CoreGate.Options(root, ROOT.resolve(CoreGate.MANIFEST), out, CoreGateTest.PYTHON, null, List.of(), CoreGate.DEFAULT_SEED, "test",
+            "nothing", null), CoreGate.registered(), new java.io.PrintStream(so, true, java.nio.charset.StandardCharsets.UTF_8), new java.io.PrintStream(new java.io.ByteArrayOutputStream()));
+        JsonNode report = Json.read(out.resolve("report.json"));
+        assertEquals(0, exit, so.toString(java.nio.charset.StandardCharsets.UTF_8) + report);
+        assertEquals("nothing", report.path("shard").asText());
+        assertTrue(Files.isRegularFile(out.resolve(Shards.SUMMARIES)));
+        assertEquals(0, Json.read(out.resolve(Shards.SUMMARIES)).path("runs").size());
+    }
+}

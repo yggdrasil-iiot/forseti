@@ -121,6 +121,13 @@ class Recording:
             self._cache[key] = self._read(self.path / topic / f"{partition}.jsonl", f"{topic}/{partition}")
         return self._cache[key]
 
+    def check(self, topic: str, partition: int) -> None:
+        """The checks of ``records`` (offsets, LF, the line shape) without keeping the records: a large recording is read once."""
+        if partition not in self.subscribed(topic):
+            raise Malformed(f"partition not subscribed: {topic}/{partition}")
+        if (topic, partition) not in self._cache:
+            self._read(self.path / topic / f"{partition}.jsonl", f"{topic}/{partition}")
+
     @staticmethod
     def _read(file: Path, name: str) -> list[Record]:
         raw = file.read_bytes()
