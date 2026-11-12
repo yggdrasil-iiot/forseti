@@ -40,6 +40,7 @@ public final class CoreGate {
         List<Check> all = new ArrayList<>(Foundation.checks());
         all.addAll(Stage1Assertions.checks());
         all.addAll(Stage2Assertions.checks());
+        all.addAll(Injections.checks());
         return List.copyOf(all);
     }
 
@@ -52,6 +53,8 @@ public final class CoreGate {
         final String python;
         private int dirs;
         private final Map<String, Object> memo = new HashMap<>();
+        /** What the assertions measure for {@code report.json} ({@code measurements}): item 2's reference values, revision counts. */
+        final ObjectNode measurements = Json.object();
         Context(Path root, Path tmp, Path logs, String python) { this.root = root; this.tmp = tmp; this.logs = logs; this.python = python; }
         public Path path(String relative) { return root.resolve(relative); }
         public Path fixtures() { return root.resolve("fixtures"); }
@@ -66,6 +69,7 @@ public final class CoreGate {
             memo.put(key, v);
             return v;
         }
+        void measure(String key, JsonNode value) { synchronized (measurements) { measurements.set(key, value); } }
         /** Runs {@code <python> -I <args...>} from the repository root; output goes to {@code <out>/logs/<log>.log}. */
         public Proc python(String log, String... args) throws IOException, InterruptedException {
             List<String> cmd = new ArrayList<>(List.of(python, "-I"));
@@ -135,8 +139,9 @@ public final class CoreGate {
         String startedAt = Instant.now().toString();
         Assertions acc = null;
         String manifestSha = null, error = null;
-        ObjectNode pins = Json.object(), digests = Json.object();
+        ObjectNode pins = Json.object(), digests = Json.object(), measurements = Json.object();
         Path tmp = null;
+        long started = System.nanoTime();
         try {
             byte[] manifestBytes = Files.readAllBytes(o.manifest());
             manifestSha = Canonical.digestOf(manifestBytes);
@@ -144,6 +149,7 @@ public final class CoreGate {
             Files.createDirectories(o.out());
             tmp = Files.createTempDirectory("forseti-gate-");
             Context ctx = new Context(o.root(), tmp, o.out().resolve("logs"), o.python());
+            measurements = ctx.measurements;
             pins = pins(ctx);
             digests = fixtureDigests(o.root());
             for (Check c : checks) {
@@ -170,6 +176,8 @@ public final class CoreGate {
         report.set("pins", pins);
         Json.putSafe(report, "seed", o.seed());
         report.set("fixtureDigests", digests);
+        synchronized (measurements) { report.set("measurements", measurements.deepCopy()); }
+        Json.putSafe((ObjectNode) report.get("measurements"), "gateWallTimeMs", (System.nanoTime() - started) / 1_000_000);
         report.put("startedAt", startedAt).put("finishedAt", Instant.now().toString()).put("command", o.command());
         report.put("error", error);
         try { Json.write(o.out().resolve("report.json"), report); }

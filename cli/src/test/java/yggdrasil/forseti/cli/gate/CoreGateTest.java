@@ -25,8 +25,15 @@ class CoreGateTest {
     static final Path MANIFEST = ROOT.resolve(CoreGate.MANIFEST);
     static final String PYTHON = System.getProperty("forseti.python", "python");
     static final Set<String> NEEDS_PYTHON = Set.of("F-JCS-PY", "F-JCS-REFUSALS", "F-RULES-LOAD-OJ", "F-RULES-LOAD-PLC");
+    /** The scenario assertions of pull request 4 build recordings, run the harness and the oracle: they run in the jar gate only. */
+    static final Set<String> NEEDS_ORACLE = needsOracle();
+    static Set<String> needsOracle() {
+        Set<String> s = new TreeSet<>(NEEDS_PYTHON);
+        for (Check c : Injections.checks()) s.add(c.id());
+        return s;
+    }
     static final List<String> REPORT_FIELDS = List.of("exit", "scope", "engine", "manifestSha256", "assertionsExpected", "assertionsRun", "failed",
-        "notRun", "intendedFailures", "pins", "seed", "fixtureDigests", "startedAt", "finishedAt", "command", "error");
+        "notRun", "intendedFailures", "pins", "seed", "fixtureDigests", "measurements", "startedAt", "finishedAt", "command", "error");
 
     @TempDir Path tmp;
 
@@ -60,21 +67,21 @@ class CoreGateTest {
 
     @Test void everyManifestIdHasARegisteredAssertion() {
         List<String> manifest = manifestIds(MANIFEST), registered = registeredIds();
-        assertEquals(29, manifest.size());
+        assertEquals(72, manifest.size());
         assertEquals(manifest.size(), new HashSet<>(manifest).size(), "no id twice in the manifest");
         assertEquals(registered.size(), new HashSet<>(registered).size(), "no id registered twice");
         assertEquals(new TreeSet<>(manifest), new TreeSet<>(registered), "every manifest id is registered and every registered id is in the manifest");
         for (JsonNode a : Json.read(MANIFEST).path("assertions")) {
             String id = a.path("id").asText();
-            assertEquals(id.startsWith("F-") ? 1 : id.startsWith("S-") ? 2 : 3, a.path("pr").asInt(), a.toString());
-            assertTrue(a.path("id").asText().matches("[FST]-[A-Z0-9-]+"), a.toString());
+            assertEquals(id.startsWith("F-") ? 1 : id.startsWith("S-") ? 2 : id.startsWith("T-") ? 3 : 4, a.path("pr").asInt(), a.toString());
+            assertTrue(a.path("id").asText().matches("[FSTIJC]-[A-Z0-9-]+[b-f]?"), a.toString());
             assertFalse(a.path("description").asText().isBlank(), a.toString());
         }
     }
 
     @Test void theAssertionsThatNeedNoInterpreterHoldOnTheFixtures() throws Exception {
-        Path manifest = manifestWith(a -> { for (int i = a.size() - 1; i >= 0; i--) if (NEEDS_PYTHON.contains(a.get(i).path("id").asText())) a.remove(i); });
-        List<Check> checks = CoreGate.registered().stream().filter(c -> !NEEDS_PYTHON.contains(c.id())).toList();
+        Path manifest = manifestWith(a -> { for (int i = a.size() - 1; i >= 0; i--) if (NEEDS_ORACLE.contains(a.get(i).path("id").asText())) a.remove(i); });
+        List<Check> checks = CoreGate.registered().stream().filter(c -> !NEEDS_ORACLE.contains(c.id())).toList();
         Run r = run(manifest, checks);
         assertEquals(List.of(), r.list("failed"), String.join("\n", r.lines()));
         assertEquals(0, r.exit());
@@ -90,10 +97,10 @@ class CoreGateTest {
         assertEquals(1, r.exit());
         assertEquals(List.of("F-NOT-REGISTERED"), r.list("notRun"));
         assertEquals(List.of(), r.list("failed"));
-        assertEquals("assertions run 29 / expected 30", r.last());
+        assertEquals("assertions run 72 / expected 73", r.last());
         assertEquals(1, r.report().path("exit").asInt());
-        assertEquals(30, r.report().path("assertionsExpected").asInt());
-        assertEquals(29, r.report().path("assertionsRun").asInt());
+        assertEquals(73, r.report().path("assertionsExpected").asInt());
+        assertEquals(72, r.report().path("assertionsRun").asInt());
     }
 
     @Test void anUnknownAssertionFailsTheGate() {
@@ -103,7 +110,7 @@ class CoreGateTest {
         assertEquals(1, r.exit());
         assertEquals(List.of("F-UNKNOWN"), r.list("failed"));
         assertEquals(List.of(), r.list("notRun"));
-        assertEquals("assertions run 29 / expected 29", r.last());
+        assertEquals("assertions run 72 / expected 72", r.last());
 
         List<Check> twice = new ArrayList<>(holding());
         twice.add(new Check("F-JCS-JAVA", c -> new Result(true, "a second run of one id")));
@@ -118,7 +125,7 @@ class CoreGateTest {
         Run r = run(MANIFEST, checks);
         assertEquals(1, r.exit());
         assertEquals(List.of(checks.get(3).id()), r.list("failed"));
-        assertEquals("assertions run 29 / expected 29", r.last());
+        assertEquals("assertions run 72 / expected 72", r.last());
     }
 
     @Test void aCrashStillWritesAFailureReport() throws Exception {
@@ -136,21 +143,21 @@ class CoreGateTest {
         assertEquals("assertions run 0 / expected 0", noManifest.last());
 
         Path empty = Files.createDirectories(tmp.resolve("empty-root"));   // every fixture missing: every assertion fails, none is skipped
-        Run missing = run(empty, MANIFEST, CoreGate.registered().stream().filter(c -> !NEEDS_PYTHON.contains(c.id())).toList());
+        Run missing = run(empty, MANIFEST, CoreGate.registered().stream().filter(c -> !NEEDS_ORACLE.contains(c.id())).toList());
         assertEquals(1, missing.exit());
         Set<String> wantFailed = new TreeSet<>(registeredIds());
-        wantFailed.removeAll(NEEDS_PYTHON);
+        wantFailed.removeAll(NEEDS_ORACLE);
         wantFailed.remove("F-JOURNAL-REDUCERS");   // inline journals: the one assertion that reads no file
         assertEquals(wantFailed, new TreeSet<>(missing.list("failed")), missing.lines().toString());
-        assertEquals(new TreeSet<>(NEEDS_PYTHON), new TreeSet<>(missing.list("notRun")));
-        assertEquals("assertions run 25 / expected 29", missing.last());
+        assertEquals(NEEDS_ORACLE, new TreeSet<>(missing.list("notRun")));
+        assertEquals("assertions run 25 / expected 72", missing.last());
         assertTrue(missing.report().path("fixtureDigests").path("registry").isNull());
     }
 
     @Test void theReportRecordsPinsAndDigests() throws Exception {
         Run r = run(MANIFEST, holding());
         assertEquals(0, r.exit());
-        assertEquals("assertions run 29 / expected 29", r.last());
+        assertEquals("assertions run 72 / expected 72", r.last());
         JsonNode rep = r.report();
         List<String> fields = new ArrayList<>();
         rep.fieldNames().forEachRemaining(fields::add);
@@ -158,8 +165,8 @@ class CoreGateTest {
         assertEquals("core", rep.path("scope").asText());
         assertEquals("core", rep.path("engine").asText());
         assertEquals(Canonical.digestOf(Files.readAllBytes(MANIFEST)), rep.path("manifestSha256").asText());
-        assertEquals(29, rep.path("assertionsExpected").asInt());
-        assertEquals(29, rep.path("assertionsRun").asInt());
+        assertEquals(72, rep.path("assertionsExpected").asInt());
+        assertEquals(72, rep.path("assertionsRun").asInt());
         assertEquals(20261109L, rep.path("seed").asLong());
         assertEquals("io.github.erdtman:java-json-canonicalization:1.1", rep.path("pins").path("jcs").path("java").asText());
         assertTrue(rep.path("pins").has("python") && rep.path("pins").path("jcs").has("python"));
