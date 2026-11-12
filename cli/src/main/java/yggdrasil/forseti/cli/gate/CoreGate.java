@@ -218,7 +218,9 @@ public final class CoreGate {
         } finally {
             if (tmp != null) delete(tmp);
         }
-        int exit = acc == null || error != null ? 1 : acc.exitCode();
+        // A shard may own no assertion of its own (its scenarios feed only the aggregate assertions): it holds when its scenarios do.
+        boolean emptyShard = o.shard() != null && acc != null && acc.expected().isEmpty() && acc.failed().isEmpty();
+        int exit = acc == null || error != null ? 1 : emptyShard ? 0 : acc.exitCode();
         ObjectNode report = Json.object();
         Json.putSafe(report, "exit", exit);
         report.put("scope", "core").put("engine", "core").put("manifestSha256", manifestSha);

@@ -178,4 +178,32 @@ class ShardsTest {
         assertTrue(r.problems().stream().anyMatch(x -> x.startsWith("shard hand-made has no summary of shuffled run baseline@")), r.problems().toString());
         assertTrue(r.summaries().missing.stream().anyMatch(x -> x.startsWith("baseline seed ")), r.summaries().missing.toString());
     }
+
+    /** A shard that owns no assertion (its scenarios feed only the aggregate run) holds when its scenarios do: exit 0, not "0 / 0 failed". */
+    @Test void aShardWithoutAssertionsOfItsOwnExitsZero() throws Exception {
+        Path root = Files.createDirectories(tmp.resolve("root"));
+        Files.createDirectories(root.resolve("gate"));
+        ObjectNode planJson = Json.object();
+        ArrayNode shards = planJson.putArray("shards");
+        ObjectNode all = shards.addObject().put("name", "everything");
+        Scenarios.all().forEach(all.putArray("scenarios")::add);
+        Scenarios.SHUFFLED.forEach(all.putArray("shuffled")::add);
+        ArrayNode ids = all.putArray("assertions");
+        for (String id : manifest()) if (!Injections.AGGREGATE.contains(id)) ids.add(id);
+        ObjectNode none = shards.addObject().put("name", "nothing");
+        none.putArray("scenarios");
+        none.putArray("shuffled");
+        none.putArray("assertions");
+        Injections.AGGREGATE.forEach(planJson.putArray("aggregate")::add);
+        Json.write(root.resolve(Shards.PLAN), planJson);
+        Path out = tmp.resolve("out-nothing");
+        java.io.ByteArrayOutputStream so = new java.io.ByteArrayOutputStream();
+        int exit = CoreGate.run(new CoreGate.Options(root, ROOT.resolve(CoreGate.MANIFEST), out, CoreGateTest.PYTHON, null, List.of(), CoreGate.DEFAULT_SEED, "test",
+            "nothing", null), CoreGate.registered(), new java.io.PrintStream(so, true, java.nio.charset.StandardCharsets.UTF_8), new java.io.PrintStream(new java.io.ByteArrayOutputStream()));
+        JsonNode report = Json.read(out.resolve("report.json"));
+        assertEquals(0, exit, so.toString(java.nio.charset.StandardCharsets.UTF_8) + report);
+        assertEquals("nothing", report.path("shard").asText());
+        assertTrue(Files.isRegularFile(out.resolve(Shards.SUMMARIES)));
+        assertEquals(0, Json.read(out.resolve(Shards.SUMMARIES)).path("runs").size());
+    }
 }
