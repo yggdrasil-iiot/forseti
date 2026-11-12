@@ -23,6 +23,8 @@ final class Shards {
     private Shards() {}
 
     static final String PLAN = "gate/core-shards.json", SUMMARIES = "summaries.json";
+    /** Summary fields two shards that made the same scenario may differ on: timings and the evidence text that embeds them. */
+    static final Set<String> NOT_COMPARED = Set.of("ms", "summary");
 
     record Shard(String name, List<String> scenarios, List<String> shuffled, List<String> assertions) {}
     record Plan(List<Shard> shards, List<String> aggregate, String sha256) {
@@ -96,27 +98,39 @@ final class Shards {
             for (String f : List.of("manifestSha256", "seed", "pins", "fixtureDigests"))
                 if (!same(expect.path(f), report.path(f))) problems.add("shard " + s.name() + ": " + f + " " + report.path(f) + ", the aggregate run's " + expect.path(f));
             if (!report.path("error").isNull()) problems.add("shard " + s.name() + ": " + report.path("error").asText());
-            Set<String> seen = new HashSet<>();
+            if (report.path("exit").asLong(-1) != 0) problems.add("shard " + s.name() + ": exited " + report.path("exit"));
+            Set<String> seen = new HashSet<>(), notOk = new TreeSet<>();
             for (JsonNode r : report.path("results")) {
                 String id = r.path("id").asText();
                 if (!s.assertions().contains(id)) { problems.add("shard " + s.name() + " recorded " + id + ", which the plan does not give it"); continue; }
-                seen.add(id);
-                recorded.add(new Recorded(s.name(), id, r.path("ok").asBoolean(false), r.path("evidence").asText("")));
+                if (!seen.add(id)) { problems.add("shard " + s.name() + " recorded " + id + " twice"); continue; }
+                boolean ok = r.path("ok").asBoolean(false);
+                if (!ok) notOk.add(id);
+                recorded.add(new Recorded(s.name(), id, ok, r.path("evidence").asText("")));
             }
             for (String id : s.assertions()) if (!seen.contains(id)) problems.add("shard " + s.name() + " did not record " + id);
+            // the report's own accounting must agree with its results: a shard never passes on counts its results do not back
+            Set<String> failed = new TreeSet<>(), notRun = new TreeSet<>();
+            report.path("failed").forEach(x -> failed.add(x.asText()));
+            report.path("notRun").forEach(x -> notRun.add(x.asText()));
+            if (!failed.equals(notOk)) problems.add("shard " + s.name() + ": its report lists failed " + failed + ", its results fail " + notOk);
+            if (!notRun.isEmpty()) problems.add("shard " + s.name() + ": not run " + notRun);
+            long expected = report.path("assertionsExpected").asLong(-1), ran = report.path("assertionsRun").asLong(-1);
+            if (expected != s.assertions().size() || ran != s.assertions().size() || seen.size() != s.assertions().size())
+                problems.add("shard " + s.name() + ": assertions run " + ran + " / expected " + expected + " with " + seen.size() + " results, its plan gives it " + s.assertions().size());
             Set<String> runs = new HashSet<>();
             for (JsonNode r : summaries.path("runs")) {
                 String name = r.path("name").asText();
                 if (!s.scenarios().contains(name)) { problems.add("shard " + s.name() + " summarised " + name + ", which the plan does not give it"); continue; }
-                runs.add(name);
+                if (!runs.add(name)) { problems.add("shard " + s.name() + " summarised " + name + " twice"); continue; }
                 byScenario.computeIfAbsent(name, k -> new ArrayList<>()).add(r);
             }
             for (String sc : s.scenarios()) if (!runs.contains(sc)) problems.add("shard " + s.name() + " has no summary of " + sc);
             Set<String> shuffled = new HashSet<>();
             for (JsonNode x : summaries.path("shuffled")) {
                 String key = x.path("name").asText() + "@" + x.path("seed").asLong();
-                if (!s.shuffled().contains(x.path("name").asText())) { problems.add("shard " + s.name() + " summarised shuffled run " + key + ", which the plan does not give it"); continue; }
-                shuffled.add(key);
+                if (!s.shuffled().contains(x.path("name").asText()) || !Scenarios.SHUFFLE_SEEDS.contains(x.path("seed").asLong())) { problems.add("shard " + s.name() + " summarised shuffled run " + key + ", which the plan does not give it"); continue; }
+                if (!shuffled.add(key)) { problems.add("shard " + s.name() + " summarised shuffled run " + key + " twice"); continue; }
                 merged.shuffled.put(key, x);
             }
             for (String sc : s.shuffled()) for (long seed : Scenarios.SHUFFLE_SEEDS)
@@ -126,14 +140,33 @@ final class Shards {
             List<JsonNode> l = byScenario.get(sc);
             if (l == null) { merged.missing.add(sc + " not run: no shard summarised it"); continue; }
             merged.runs.put(sc, l.get(0));
-            for (JsonNode other : l.subList(1, l.size()))
-                for (String f : List.of("ok", "cutLogCuts", "cutsCompared", "equal", "findings", "rows"))
+            for (JsonNode other : l.subList(1, l.size())) {
+                Set<String> fields = new TreeSet<>();
+                l.get(0).fieldNames().forEachRemaining(fields::add);
+                other.fieldNames().forEachRemaining(fields::add);
+                fields.removeAll(NOT_COMPARED);
+                for (String f : fields)
                     if (!same(l.get(0).path(f), other.path(f))) problems.add(sc + ": two shards disagree on " + f + " (" + l.get(0).path(f) + " vs " + other.path(f) + ")");
+            }
         }
         for (String sc : Scenarios.SHUFFLED) for (long seed : Scenarios.SHUFFLE_SEEDS)
             if (!merged.shuffled.containsKey(sc + "@" + seed)) merged.missing.add(sc + " seed " + seed + " not run: no shard summarised it");
         problems.addAll(coverage(root, merged));
         return merged;
+    }
+
+    static List<Long> longs(JsonNode a) {
+        List<Long> l = new ArrayList<>();
+        a.forEach(x -> l.add(x.asLong()));
+        return l;
+    }
+
+    /** Where {@code got} departs from {@code want}: the position, the two values there, and the two lengths. */
+    static String firstDifference(List<Long> got, List<Long> want) {
+        int i = 0;
+        while (i < got.size() && i < want.size() && got.get(i).equals(want.get(i))) i++;
+        return "(at position " + i + ": " + (i < got.size() ? got.get(i) : "none") + " vs " + (i < want.size() ? want.get(i) : "none")
+            + "; " + got.size() + " vs " + want.size() + " cuts)";
     }
 
     /** Equal as JSON values (an integer read back from a file is equal to the long it was written from). */
@@ -145,17 +178,29 @@ final class Shards {
         return Canonical.digest(x).equals(Canonical.digest(y));
     }
 
-    /** Every summarised scenario was compared with the oracle at every cut its committed lock plans, and held. */
+    /** Every summarised scenario was compared with the oracle at every cut its committed lock plans, and held. The cuts are checked by
+     *  identity, not only by number: the recording the run read is the one its lock pins ({@code manifest.json} digest), its planned cut
+     *  ids are as many as the lock plans and strictly increasing, and the harness completed and the gate compared exactly those cuts, in
+     *  that order (a skipped cut cannot be made up by a repeated or an unplanned one). */
     static List<String> coverage(Path root, Summaries s) {
         List<String> p = new ArrayList<>(s.missing);
         for (JsonNode r : s.runs.values()) {
             String name = r.path("name").asText();
-            long lockCuts;
-            try { lockCuts = Json.read(ScenarioBuilder.lockOf(root.resolve("fixtures").resolve("scenarios").resolve(name + ".json"))).path("counts").path("cuts").asLong(-1); }
+            JsonNode lock;
+            try { lock = Json.read(ScenarioBuilder.lockOf(root.resolve("fixtures").resolve("scenarios").resolve(name + ".json"))); }
             catch (RuntimeException e) { p.add(name + ": cannot read its lock: " + e.getMessage()); continue; }
+            long lockCuts = lock.path("counts").path("cuts").asLong(-1);
             if (!r.path("ok").asBoolean(false)) p.add(name + " did not hold: " + r.path("summary").asText());
             long compared = r.path("cutsCompared").asLong(-1), completed = r.path("cutLogCuts").asLong(-1);
             if (compared != lockCuts || completed != lockCuts) p.add(name + ": " + compared + " cuts compared with the oracle and " + completed + " completed, its lock plans " + lockCuts);
+            String pinned = lock.path("files").path("manifest.json").asText(null), read = r.path("recordingManifestSha256").asText(null);
+            if (pinned == null || !pinned.equals(read)) p.add(name + ": its run read recording manifest " + read + ", its lock pins " + pinned);
+            List<Long> planned = longs(r.path("plannedCutIds")), logged = longs(r.path("cutLogIds")), checked = longs(r.path("comparedCutIds"));
+            if (planned.size() != lockCuts) p.add(name + ": its recording plans " + planned.size() + " cuts, its lock plans " + lockCuts);
+            for (int i = 1; i < planned.size(); i++)
+                if (planned.get(i) <= planned.get(i - 1)) { p.add(name + ": planned cut ids are not strictly increasing at " + planned.get(i)); break; }
+            if (!logged.equals(planned)) p.add(name + ": the harness completed cuts " + firstDifference(logged, planned) + " other than the recording plans");
+            if (!checked.equals(planned)) p.add(name + ": the gate compared cuts " + firstDifference(checked, planned) + " other than the recording plans");
         }
         for (JsonNode x : s.shuffled.values()) if (Summaries.failed(x)) p.add(x.path("name").asText() + " seed " + x.path("seed").asLong() + ": " + x.path("failure").asText());
         return p;

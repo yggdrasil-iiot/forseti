@@ -57,6 +57,8 @@ final class Comparison {
         final List<String> examples = new ArrayList<>();
         final Map<String, Integer> filesWritten = new HashMap<>();
         final List<Pending> pending = new ArrayList<>();
+        /** The cuts compared, in the order compared. */
+        final List<Long> comparedIds = new ArrayList<>();
         /** Per cut with pending differences: table -> "count setHash" of the folded stream, recomputed by the gate. */
         final Map<Long, Map<String, String>> summaries = new TreeMap<>();
         Path diffDir;
@@ -299,6 +301,7 @@ final class Comparison {
     /** Folds the oracle's cut directory {@code oracleCut} into {@code o} and compares it with the fold (just advanced to {@code cutId}). */
     static void compareCut(RunFold fold, long cutId, Path oracleCut, OracleFold o, String scenario, JsonNode cutEntry, Tally t) throws IOException {
         t.cuts++;
+        t.comparedIds.add(cutId);
         if (o.broken != null) {
             t.difference(STREAM_TOPIC, "cut " + cutId + ": not compared, the oracle stream broke at " + o.broken);
             return;

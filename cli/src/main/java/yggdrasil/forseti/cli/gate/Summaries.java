@@ -3,19 +3,24 @@ package yggdrasil.forseti.cli.gate;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import java.io.IOException;
+import java.nio.file.Files;
 import java.util.*;
 import yggdrasil.forseti.cli.gate.CoreGate.Context;
 import yggdrasil.forseti.cli.gate.Scenarios.Run;
 import yggdrasil.forseti.cli.gate.Scenarios.Shuffled;
 import yggdrasil.forseti.core.Json;
+import yggdrasil.forseti.core.canon.Canonical;
 
 /** What the assertions over every scenario run ({@code J-*}, {@code C-2-REFERENCE}) read: one summary per scenario run and per
  *  {@code --shuffle} run, made where the run was compared with the oracle. A gate run that makes every scenario takes them from its own
  *  pipeline; a shard run ({@code --shard}) writes the summaries of its scenarios to {@code summaries.json}, and the aggregate run
  *  ({@code --aggregate}) reads them back from every shard ({@link Shards}), so these assertions are evaluated on the same values either way.
  *
- *  <p>A run summary: {@code name, synthetic, failure, ok, summary} (the evidence text of {@link Run#summary()}), {@code cutLogCuts} (cuts
- *  the harness completed), {@code cutsCompared} (cuts compared with the oracle), {@code equal}, {@code findings {check: {count,
+ *  <p>A run summary: {@code name, synthetic, failure, ok, summary} (the evidence text of {@link Run#summary()}), {@code plannedCutIds}
+ *  (the recording's batches) and {@code recordingManifestSha256} (raw-byte digest of its {@code manifest.json}, pinned by the scenario
+ *  lock), {@code cutLogCuts}/{@code cutLogIds} (cuts the harness completed), {@code cutsCompared}/{@code comparedCutIds} (cuts compared
+ *  with the oracle, in order), {@code equal}, {@code findings {check: {count,
  *  describe}}}, {@code rows {topic: records}}, {@code measures}, {@code ms}, the rule's {@code horizonMs, allowedLatenessMs,
  *  outOfOrdernessMs}, {@code heldBackWantMs} ({@link Injections#heldBackLateness}) and, for a horizon recording, {@code afterHorizon}
  *  (what {@code J-AFTER-HORIZON-CUTS} checks). */
@@ -56,8 +61,25 @@ final class Summaries {
         String text;
         try { text = r.summary(); } catch (RuntimeException e) { text = r.name + ": " + (r.failure != null ? r.failure : "incomplete: " + e); }
         o.put("summary", text);
-        if (r.cutLog != null) Json.putSafe(o, "cutLogCuts", r.cutLog.path("cuts").size());
-        if (r.tally != null) { Json.putSafe(o, "cutsCompared", r.tally.cuts); o.put("equal", r.tally.equal()); }
+        if (r.manifest != null) {
+            ArrayNode planned = o.putArray("plannedCutIds");
+            for (JsonNode b : r.manifest.path("batches")) planned.add(b.path("cutId").asLong());
+        }
+        if (r.recording != null) {
+            try { o.put("recordingManifestSha256", Canonical.digestOf(Files.readAllBytes(r.recording.resolve("manifest.json")))); }
+            catch (IOException e) { o.putNull("recordingManifestSha256"); }
+        }
+        if (r.cutLog != null) {
+            Json.putSafe(o, "cutLogCuts", r.cutLog.path("cuts").size());
+            ArrayNode ids = o.putArray("cutLogIds");
+            for (JsonNode c : r.cutLog.path("cuts")) ids.add(c.path("cutId").asLong());
+        }
+        if (r.tally != null) {
+            Json.putSafe(o, "cutsCompared", r.tally.cuts);
+            ArrayNode ids = o.putArray("comparedCutIds");
+            r.tally.comparedIds.forEach(ids::add);
+            o.put("equal", r.tally.equal());
+        }
         if (r.fold != null) {
             o.set("findings", findings(r.fold.findings));
             ObjectNode rows = o.putObject("rows");
