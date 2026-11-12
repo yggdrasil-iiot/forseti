@@ -141,7 +141,7 @@ jobs:
       - uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3 # v4
         with: {java-version: '17.0.21', distribution: temurin, cache: maven}
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
-        with: {python-version: '3.13.18'}
+        with: {python-version: '3.13'}  # no 3.13.18 build for Windows; the pins the aggregate compares come from the ubuntu shard jobs
       - run: python -m pip install -e "oracle[dev]"
       - run: python -m pytest -q oracle
       - run: mvn -B -ntp install
