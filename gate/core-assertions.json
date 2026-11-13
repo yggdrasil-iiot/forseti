@@ -395,6 +395,21 @@
       "id": "I-23",
       "pr": 5,
       "description": "horizon-planned-late online: W1 = A at the planned cut, holeAt and holeAt - 1 admitted, holeAt - 2 replay-required beyond-horizon, visit 3 missingPeriods 1 before the late batch and 0 after; horizon-planned-late@replay on the locked replay recording: every deadline keeps its cut ids and is bracketed by the reported W1, the third sample attributed with cause replayed, no replay-required disposition, every timer row carries the replayed timer cause and precedes its progress; the base journals reread after the replay equal their index and fold alike, the replay journals carry only the replay generation; both generations shared under --state"
+    },
+    {
+      "id": "G-SELF-OMITTED",
+      "pr": 6,
+      "description": "the gate on a temporary copy of the manifest whose registry leaves one manifest id without an assertion: exit 1, that id in notRun, the accounting line one short"
+    },
+    {
+      "id": "G-SELF-MISSING-REPORT",
+      "pr": 6,
+      "description": "the gate with a report directory it cannot write: exit 1, and the failure report written to stderr instead"
+    },
+    {
+      "id": "C-1",
+      "pr": 6,
+      "description": "item 1 (spec 579): every scenario run, shuffled run and generation run of the gate was compared with the oracle at every cut its recording plans and every compared cut matched; report.json measurements.item1 lists the scenarios and the cuts, rows and dispositions compared"
     }
   ]
 }

@@ -20,7 +20,8 @@ import yggdrasil.forseti.core.canon.Canonical;
  *  <p>A run summary: {@code name, synthetic, failure, ok, summary} (the evidence text of {@link Run#summary()}), {@code plannedCutIds}
  *  (the recording's batches) and {@code recordingManifestSha256} (raw-byte digest of its {@code manifest.json}, pinned by the scenario
  *  lock), {@code cutLogCuts}/{@code cutLogIds} (cuts the harness completed), {@code cutsCompared}/{@code comparedCutIds} (cuts compared
- *  with the oracle, in order), {@code equal}, {@code findings {check: {count,
+ *  with the oracle, in order), {@code equal}, {@code rowsCompared} and {@code dispositionsReconciled} (what the comparison compared over
+ *  every cut, read by {@code C-1}), {@code findings {check: {count,
  *  describe}}}, {@code rows {topic: records}}, {@code measures}, {@code ms}, the rule's {@code horizonMs, allowedLatenessMs,
  *  outOfOrdernessMs}, {@code heldBackWantMs} ({@link Injections#heldBackLateness}) and, for a horizon recording, {@code afterHorizon}
  *  (what {@code J-AFTER-HORIZON-CUTS} checks). */
@@ -128,6 +129,8 @@ final class Summaries {
             ArrayNode ids = o.putArray("comparedCutIds");
             r.tally.comparedIds.forEach(ids::add);
             o.put("equal", r.tally.equal());
+            Json.putSafe(o, "rowsCompared", r.tally.rowsCompared);
+            Json.putSafe(o, "dispositionsReconciled", r.tally.dispositionsCompared);
         }
     }
 
@@ -168,7 +171,8 @@ final class Summaries {
         if (!o.has("summary")) o.put("summary", x.name() + " seed " + x.seed() + ": " + failure);
         // the field order of the schema
         ObjectNode ordered = Json.object();
-        for (String f : List.of("name", "seed", "failure", "ok", "summary", "recordingManifestSha256", "plannedCutIds", "cutLogCuts", "cutLogIds", "cutsCompared", "comparedCutIds", "equal"))
+        for (String f : List.of("name", "seed", "failure", "ok", "summary", "recordingManifestSha256", "plannedCutIds", "cutLogCuts", "cutLogIds", "cutsCompared", "comparedCutIds", "equal",
+                "rowsCompared", "dispositionsReconciled"))
             if (o.has(f)) ordered.set(f, o.get(f));
         if (x.findings() != null) ordered.set("findings", findings(x.findings()));
         if (x.rows() != null) { ObjectNode rows = ordered.putObject("rows"); x.rows().forEach((k, v) -> Json.putSafe(rows, k, v)); }

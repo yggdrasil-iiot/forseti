@@ -116,6 +116,30 @@ line keeps its reference as Amendment 2026-11-11 states.
 Unchanged: every assertion id and task number, the manifest growth 72 -> 79 -> 82, the six shards and the aggregate job as the
 required check, no recording cache, PR 6's content.
 
+## Amendment 2026-11-14
+
+PR 6 (`test/step3-core-gate`, Tasks 22-23, manifest 79 -> 82) applies the owner decision of 2026-11-12 on negative controls, which the
+Chunk 7 text predates; where Chunk 7 or Verification item 6 describe whole-gate control runs, this amendment replaces them.
+
+1. `gate/core-negative-controls.json` lists each control with its intended ids and the shards that own or feed them; the gate
+   refuses a file whose controls, intended ids or shards disagree with the implementation, the manifest or the shard plan.
+   `wrong-rules-pin` intends every `I-*` id (34) and runs on all six shards.
+2. A control runs as `--negative-control <c> --shard <s>` per listed shard, with the same manifest, shard plan, fixtures, seed
+   and jar; it must exit 1 with the intended ids that shard evaluates in `failed`, and a shard that only feeds an aggregate id
+   may exit 0. A crash, a failed run summary or a missing run never counts as the intended failure, and every cut and oracle
+   comparison is kept.
+3. A control with an intended aggregate id (`drop-late`: `J-DISPOSITION-COVERAGE`; `no-cascade`: `J-BASIS-CURRENT`) is then proved
+   by `--aggregate <dir> --negative-control <c>` over that control's shard runs only, which must exit 1 with the aggregate ids
+   failed.
+4. `report.json.intendedFailures` holds the intended ids the run's layout evaluates; `report.json.control` records the control's
+   name, all intended ids, its shards, the ids this run owns, the intended ids that failed, problems and whether the verdict held;
+   `run.json` gains `negativeControl`. `scripts/check-control-report.py` checks one control run.
+5. CI replaces the `core-gate` control loop with a `control` matrix (one job per control and shard) and a `control-aggregate`
+   matrix; `core-gate` requires both, and checks that an unlisted control name exits 2.
+6. The spec gains one sentence under Negative controls: a control run uses the same manifest, shard plan, fixtures, seed and jar
+   as the gate, and evaluates its declared assertions (owner approved, 2026-11-12). The plan file itself is the one already
+   committed; Task 23 creates no second copy.
+
 ## Sub-steps
 
 Eight PRs in this order (owner decision Q1; PR 5 is delivered as 5a and 5b, Amendment 2026-11-13). Each has its own branch off the merged predecessor, an executable gate (`forseti gate --engine core` with the committed manifest `gate/core-assertions.json` growing from 18 to 82 assertions, plus the Maven and pytest commands of its tasks), and a pull-request task. Earlier gates report their sub-step; only PR 6 closes step 3. No `tools/verify.py` wrapper is kept: the gate binary, Maven and pytest are the three commands, and a wrapper would be a fourth place where a skipped test could hide.

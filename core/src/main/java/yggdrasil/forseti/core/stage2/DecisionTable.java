@@ -31,6 +31,13 @@ public final class DecisionTable {
     private DecisionTable() {}
 
     public static Decision decide(String match, String onWithdrawn, String onBasisRetracted, Inputs.IncidentEvent inc, List<Judged> bases) {
+        return decide(match, onWithdrawn, onBasisRetracted, inc, bases, false);
+    }
+
+    /** {@code stationGranularity}: the {@code station-granularity} negative control, under which rows 2 and 7 read the station's activity
+     *  evidence as the target tool's ({@code equipmentEvidence} of {@code stationRef} instead of {@code equipmentRef}). */
+    public static Decision decide(String match, String onWithdrawn, String onBasisRetracted, Inputs.IncidentEvent inc, List<Judged> bases, boolean stationGranularity) {
+        String tool = stationGranularity ? inc.stationRef() : inc.equipmentRef();
         // (1) withdrawn
         if ("withdrawn".equals(inc.status()))
             return new Decision("insufficient".equals(onWithdrawn) ? INSUFFICIENT : NOT_AFFECTED, "incident-withdrawn", 1);
@@ -41,7 +48,7 @@ public final class DecisionTable {
             if ("station-visit".equals(match)) return new Decision(AFFECTED, "station-visit", 2);
             Long leave = b.leave();
             long lo = Math.max(b.enter(), sf), hi = Math.min(leave == null ? Long.MAX_VALUE : leave, st);
-            JsonNode e = b.evidenceOf(inc.equipmentRef());
+            JsonNode e = b.evidenceOf(tool);
             if (e != null && lo < hi) for (long[] x : intervals(e.path("activityIntervals")))
                 if (Math.max(x[0], lo) < Math.min(x[1], hi)) return new Decision(AFFECTED, "equipment-activity", 2);
         }
@@ -63,7 +70,7 @@ public final class DecisionTable {
         for (Judged b : bases) {
             if (!b.related() || !"complete".equals(b.status()) || b.leave() == null) continue;
             long lo = Math.max(b.enter(), sf), hi = Math.min(b.leave(), st);
-            JsonNode e = b.evidenceOf(inc.equipmentRef());
+            JsonNode e = b.evidenceOf(tool);
             if (lo < hi && e != null && covered(intervals(e.path("inactiveIntervals")), lo, hi)) return new Decision(NOT_AFFECTED, "no-equipment-activity", 7);
         }
         // (8) every remaining basis cancelled with did_not_occur

@@ -75,6 +75,29 @@ public final class Stage1 {
         this.plc = PlcStamped.MODE.equals(mode) ? new PlcStamped(rules) : null;
     }
 
+    /** The negative controls this instance was constructed with. */
+    public NegativeControls controls() { return controls; }
+
+    /** The {@code processing-time} negative control's rewrite of one delivered input (plan Task 22): every member {@code sourceTs} of a
+     *  process message and the {@code eventTime} of an occupancy event become {@code sequence}, the input's delivery sequence number at
+     *  its station; anything else is returned unchanged. The adapter applies it before the input reaches {@link #decide}. */
+    public static Inputs.InputRecord processingTime(Inputs.InputRecord r, long sequence) {
+        Object p = r.parsed();
+        if (p instanceof Inputs.ProcessMessage m) {
+            List<Inputs.Member> members = new ArrayList<>();
+            for (Inputs.Member x : m.members()) members.add(new Inputs.Member(x.metric(), x.value(), x.uaStatusCode(), x.quality(), x.sourceTs() == null ? null : sequence, x.serverTs()));
+            return new Inputs.InputRecord(r.origin(), r.key(), r.rawValue(), r.value(), new Inputs.ProcessMessage(m.edge(), m.device(), m.birthPublishTs(), m.bdSeq(), m.seq(), m.publishTs(), m.bridgeReceivedAt(),
+                m.definitionSha256(), List.copyOf(members), m.rejectedMembers()), r.payloadDigest());
+        }
+        if (p instanceof Inputs.OccupancyEvent o) {
+            ObjectNode v = ((ObjectNode) r.value()).deepCopy();
+            Json.putSafe(v, "eventTime", sequence);
+            return new Inputs.InputRecord(r.origin(), r.key(), r.rawValue(), v, new Inputs.OccupancyEvent(o.eventId(), sequence, o.recordTime(), o.unitId(), o.bizStep(),
+                o.readPoint(), o.visitSeq(), o.arrivalEventId(), o.source(), o.errorDeclaration()), r.payloadDigest());
+        }
+        return r;
+    }
+
     MemberCatalog.Resolved member(String device, String metric) { return byDeviceMetric.get(device + "\u0000" + metric); }
     List<String> equipmentOf(String station) { return equipmentByStation.getOrDefault(station, List.of()); }
 
@@ -183,7 +206,7 @@ public final class Stage1 {
         String idKey = VisitClaim.text(identity), kind = "occupancy";
         String digest = r.payloadDigest().sha256(), rule = r.payloadDigest().rule();
 
-        List<VisitClaim> before = VisitClaim.derive(s);
+        List<VisitClaim> before = VisitClaim.derive(s, controls.firstWins());
         String refArrival = o.arriving() ? o.eventId() : o.arrivalEventId();
         VisitClaim ref = null;
         for (VisitClaim v : before) if (v.source.equals(o.source()) && v.arrivalEventId.equals(refArrival)) ref = v;
@@ -194,11 +217,13 @@ public final class Stage1 {
             boolean expired = o.arriving() && decl == null ? aw >= o.eventTime() + H + L
                 : committed != null ? aw >= committed.onlineExpiresAt() : aw >= o.eventTime() + H + L;
             if (expired) {
+                if (controls.dropLate()) return;   // the drop-late control: the input leaves without its disposition
                 c.disposition(r.origin(), part, kind, identity, digest, rule, decl != null ? Disposition.Reason.CORRECTION_BEYOND_HORIZON : Disposition.Reason.BEYOND_HORIZON, null);
                 return;
             }
         }
         if (ref != null && !ref.online()) {   // an input for a visit whose online state expired never revives it
+            if (controls.dropLate()) return;
             c.disposition(r.origin(), part, kind, identity, digest, rule, decl != null ? Disposition.Reason.CORRECTION_BEYOND_HORIZON : Disposition.Reason.BEYOND_HORIZON, null);
             return;
         }
@@ -337,6 +362,7 @@ public final class Stage1 {
                 continue;
             }
             boolean replay = x.sourceTs() != null && aw != null && x.sourceTs() < aw - H;
+            if (replay && controls.dropLate()) continue;   // the drop-late control: no sample, no replay-required disposition
             Stage1State.Sample smp = new Stage1State.Sample(sampleId, m.device(), x.metric(), memberKey, x.sourceTs(), x.uaStatusCode(), x.value(), active,
                 r.origin(), digest, rule, replay);
             s.samples.put(key, smp);
@@ -388,7 +414,7 @@ public final class Stage1 {
     private void expire(Stage1State s, JsonNode visitRef) {
         String key = VisitClaim.keyOf(visitRef);
         VisitClaim v = null;
-        for (VisitClaim x : VisitClaim.derive(s)) if (x.key.equals(key) && x.online()) v = x;
+        for (VisitClaim x : VisitClaim.derive(s, controls.firstWins())) if (x.key.equals(key) && x.online()) v = x;
         if (v == null) return;
         s.expired.put(key, new Stage1State.Expired(v.visitRef, v.enter, v.leave, v.leave == null ? v.attributionEnd : null, v.retracted(), v.onlineExpiresAt(H, L)));
         String arrivalId = v.arrivalEventId, source = v.source;
@@ -452,7 +478,7 @@ public final class Stage1 {
                 new Progress.Origin(Json.text(b.path("origin"), "topic"), (int) Json.safeLong(b.path("origin").get("partition"), "barrierRefs.origin.partition", 0, Integer.MAX_VALUE)),
                 Json.safeLong(b.get("throughOffset"), "barrierRefs.throughOffset", Json.THROUGH)));
         s.admissionVisits.clear();
-        for (VisitClaim v : VisitClaim.derive(s)) s.admissionVisits.put(v.source + "\u0000" + v.arrivalEventId, new Stage1State.Admitted(v.leave, v.onlineExpiresAt(H, L)));
+        for (VisitClaim v : VisitClaim.derive(s, controls.firstWins())) s.admissionVisits.put(v.source + "\u0000" + v.arrivalEventId, new Stage1State.Admitted(v.leave, v.onlineExpiresAt(H, L)));
         Progress.InitEvidence init = s.pendingInit;
         s.pendingInit = null;
         out.add(new Progress.Stage1(s.generation, s.station, cc.cutId(), 0, w, admissionBefore, refs, 0, null, List.of(), init));
@@ -469,7 +495,7 @@ public final class Stage1 {
         s.snapshots.removeIf(x -> (x.visitId() == null || !online.contains(x.visitId())) && x.sourceTs() != null && x.sourceTs() + tolE + H + L <= w);
         if (!plc.crossCheck) return;
         Set<String> gone = new HashSet<>();
-        for (VisitClaim v : VisitClaim.derive(s)) if (v.online() && v.onlineExpiresAt(H, L) <= w) gone.add(v.source + "\u0000" + v.arrivalEventId);
+        for (VisitClaim v : VisitClaim.derive(s, controls.firstWins())) if (v.online() && v.onlineExpiresAt(H, L) <= w) gone.add(v.source + "\u0000" + v.arrivalEventId);
         Set<String> arrivals = new HashSet<>();
         s.deliveries.values().forEach(o -> { if (o.hasArrivingVariant()) arrivals.add(o.source + "\u0000" + o.eventId); });
         s.deliveries.values().removeIf(o -> {
@@ -491,9 +517,9 @@ public final class Stage1 {
     private void recompute(Ctx c, Long w, Set<String> scope) {
         Stage1State s = c.s;
         PlcStamped.Frame frame = plc == null ? null : plc.derive(s);
-        List<VisitClaim> visits = frame == null ? VisitClaim.derive(s) : frame.visits;
+        List<VisitClaim> visits = frame == null ? VisitClaim.derive(s, controls.firstWins()) : frame.visits;
         Attribution att = frame == null ? new Attribution(visits, tolE, tolL) : null;
-        List<VisitClaim> occupants = frame != null && plc.crossCheck ? VisitClaim.derive(s) : List.of();
+        List<VisitClaim> occupants = frame != null && plc.crossCheck ? VisitClaim.derive(s, controls.firstWins()) : List.of();
         if (frame != null) identityConflicts(c, frame);
         Sessions.View view = Sessions.view(s, w);
         Collection<String> keys = scope == null ? new ArrayList<>(s.samples.keySet()) : scope;

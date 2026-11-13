@@ -34,7 +34,7 @@ class CoreGateTest {
     }
     static final List<String> REPORT_FIELDS = List.of("exit", "kind", "layout", "negativeControl", "scope", "engine", "manifestSha256", "assertionsExpected",
         "assertionsRun", "failed", "notRun", "intendedFailures", "pins", "seed", "fixtureDigests", "measurements", "startedAt", "finishedAt", "command", "error",
-        "shard", "shardPlanSha256", "summariesSha256", "results", "shards", "generations", "runs");
+        "shard", "shardPlanSha256", "summariesSha256", "results", "shards", "generations", "runs", "control");
 
     @TempDir Path tmp;
 
@@ -69,15 +69,15 @@ class CoreGateTest {
 
     @Test void everyManifestIdHasARegisteredAssertion() {
         List<String> manifest = manifestIds(MANIFEST), registered = registeredIds();
-        assertEquals(79, manifest.size());
+        assertEquals(82, manifest.size());
         assertEquals(manifest.size(), new HashSet<>(manifest).size(), "no id twice in the manifest");
         assertEquals(registered.size(), new HashSet<>(registered).size(), "no id registered twice");
         assertEquals(new TreeSet<>(manifest), new TreeSet<>(registered), "every manifest id is registered and every registered id is in the manifest");
         for (JsonNode a : Json.read(MANIFEST).path("assertions")) {
             String id = a.path("id").asText();
-            boolean pr5 = id.startsWith("F-GEN-") || id.equals("I-20") || id.equals("I-23");
-            assertEquals(pr5 ? 5 : id.startsWith("F-") ? 1 : id.startsWith("S-") ? 2 : id.startsWith("T-") ? 3 : 4, a.path("pr").asInt(), a.toString());
-            assertTrue(a.path("id").asText().matches("[FSTIJC]-[A-Z0-9-]+[b-f]?"), a.toString());
+            boolean pr5 = id.startsWith("F-GEN-") || id.equals("I-20") || id.equals("I-23"), pr6 = id.startsWith("G-SELF-") || id.equals("C-1");
+            assertEquals(pr6 ? 6 : pr5 ? 5 : id.startsWith("F-") ? 1 : id.startsWith("S-") ? 2 : id.startsWith("T-") ? 3 : 4, a.path("pr").asInt(), a.toString());
+            assertTrue(a.path("id").asText().matches("[FSTIJCG]-[A-Z0-9-]+[b-f]?"), a.toString());
             assertFalse(a.path("description").asText().isBlank(), a.toString());
         }
     }
@@ -88,7 +88,7 @@ class CoreGateTest {
         Run r = run(manifest, checks);
         assertEquals(List.of(), r.list("failed"), String.join("\n", r.lines()));
         assertEquals(0, r.exit());
-        assertEquals("assertions run 30 / expected 30", r.last());
+        assertEquals("assertions run 32 / expected 32", r.last());
         for (String id : List.of("S-SMOKE-VISIT", "S-SMOKE-PLC", "S-REVISIONS", "S-PROGRESS", "S-W1", "S-DETERMINISM",
                 "T-PROGRESS-TRACKER", "T-SMOKE-INCIDENT", "T-CASCADE", "T-DELETE", "T-LEDGER-2", "F-GEN-NEW", "F-GEN-REFUSES-UNREGISTERED", "F-GEN-FLOOR",
                 "F-GEN-LIFECYCLE", "F-GEN-PROMOTE-REQUIRES-REPORT"))
@@ -101,10 +101,10 @@ class CoreGateTest {
         assertEquals(1, r.exit());
         assertEquals(List.of("F-NOT-REGISTERED"), r.list("notRun"));
         assertEquals(List.of(), r.list("failed"));
-        assertEquals("assertions run 79 / expected 80", r.last());
+        assertEquals("assertions run 82 / expected 83", r.last());
         assertEquals(1, r.report().path("exit").asInt());
-        assertEquals(80, r.report().path("assertionsExpected").asInt());
-        assertEquals(79, r.report().path("assertionsRun").asInt());
+        assertEquals(83, r.report().path("assertionsExpected").asInt());
+        assertEquals(82, r.report().path("assertionsRun").asInt());
     }
 
     @Test void anUnknownAssertionFailsTheGate() {
@@ -114,7 +114,7 @@ class CoreGateTest {
         assertEquals(1, r.exit());
         assertEquals(List.of("F-UNKNOWN"), r.list("failed"));
         assertEquals(List.of(), r.list("notRun"));
-        assertEquals("assertions run 79 / expected 79", r.last());
+        assertEquals("assertions run 82 / expected 82", r.last());
 
         List<Check> twice = new ArrayList<>(holding());
         twice.add(new Check("F-JCS-JAVA", c -> new Result(true, "a second run of one id")));
@@ -129,7 +129,7 @@ class CoreGateTest {
         Run r = run(MANIFEST, checks);
         assertEquals(1, r.exit());
         assertEquals(List.of(checks.get(3).id()), r.list("failed"));
-        assertEquals("assertions run 79 / expected 79", r.last());
+        assertEquals("assertions run 82 / expected 82", r.last());
     }
 
     @Test void aCrashStillWritesAFailureReport() throws Exception {
@@ -154,14 +154,14 @@ class CoreGateTest {
         wantFailed.remove("F-JOURNAL-REDUCERS");   // inline journals: the one assertion that reads no file
         assertEquals(wantFailed, new TreeSet<>(missing.list("failed")), missing.lines().toString());
         assertEquals(NEEDS_ORACLE, new TreeSet<>(missing.list("notRun")));
-        assertEquals("assertions run 30 / expected 79", missing.last());
+        assertEquals("assertions run 32 / expected 82", missing.last());
         assertTrue(missing.report().path("fixtureDigests").path("registry").isNull());
     }
 
     @Test void theReportRecordsPinsAndDigests() throws Exception {
         Run r = run(MANIFEST, holding());
         assertEquals(0, r.exit());
-        assertEquals("assertions run 79 / expected 79", r.last());
+        assertEquals("assertions run 82 / expected 82", r.last());
         JsonNode rep = r.report();
         List<String> fields = new ArrayList<>();
         rep.fieldNames().forEachRemaining(fields::add);
@@ -169,8 +169,8 @@ class CoreGateTest {
         assertEquals("core", rep.path("scope").asText());
         assertEquals("core", rep.path("engine").asText());
         assertEquals(Canonical.digestOf(Files.readAllBytes(MANIFEST)), rep.path("manifestSha256").asText());
-        assertEquals(79, rep.path("assertionsExpected").asInt());
-        assertEquals(79, rep.path("assertionsRun").asInt());
+        assertEquals(82, rep.path("assertionsExpected").asInt());
+        assertEquals(82, rep.path("assertionsRun").asInt());
         assertEquals(20261109L, rep.path("seed").asLong());
         assertEquals("io.github.erdtman:java-json-canonicalization:1.1", rep.path("pins").path("jcs").path("java").asText());
         assertTrue(rep.path("pins").has("python") && rep.path("pins").path("jcs").has("python"));
@@ -387,7 +387,7 @@ class CoreGateTest {
         Path out = tmp.resolve("agg-out");
         Run r = run(new CoreGate.Options(ROOT, MANIFEST, out, PYTHON, null, List.of(), CoreGate.DEFAULT_SEED, "test", null, a.shards()), holding());
         assertEquals(0, r.exit(), r.lines().toString());
-        assertEquals("assertions run 79 / expected 79", r.last());
+        assertEquals("assertions run 82 / expected 82", r.last());
         JsonNode rep = r.report(), source = a.reportJson();
         assertEquals("aggregate", rep.path("layout").asText());
         assertTrue(Shards.same(source.get("generations"), rep.get("generations")), "generations[] are the shards' merged, unchanged");

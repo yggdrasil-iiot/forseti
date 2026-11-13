@@ -30,8 +30,10 @@ final class Injections {
     static final List<String> STATION1_DEVICES = List.of(S1, N1, N2);
     static final List<String> J = List.of("J-DISPOSITION-COVERAGE", "J-REVISION-CONTINUITY", "J-NO-EQUAL-CONSECUTIVE", "J-PROGRESS-ORDER", "J-W1-FORMULA",
         "J-W2-EQUALS-W1", "J-BASIS-CURRENT");
+    /** Item 1 (spec 579): every compared cut of every run of the gate matched the oracle. */
+    static final String ITEM1 = "C-1";
     /** The assertions over every scenario run, evaluated on {@link Summaries} (so an aggregate run over the shards can evaluate them). */
-    static final List<String> AGGREGATE = java.util.stream.Stream.concat(J.stream(), java.util.stream.Stream.of("J-AFTER-HORIZON-CUTS", "C-2-REFERENCE")).toList();
+    static final List<String> AGGREGATE = java.util.stream.Stream.concat(J.stream(), java.util.stream.Stream.of("J-AFTER-HORIZON-CUTS", "C-2-REFERENCE", ITEM1)).toList();
 
     static List<Check> checks() {
         List<Check> l = new ArrayList<>(List.of(
@@ -49,6 +51,7 @@ final class Injections {
         l.add(new Check("C-6-STAGE1", c -> determinism(c, "C-6-STAGE1", List.of("baseline", "stage2"), List.of(RunFold.WR, RunFold.SAMPLES))));
         l.add(new Check("C-6-STAGE2", c -> determinism(c, "C-6-STAGE2", List.of("stage2"), List.of(RunFold.AFFECTED, RunFold.SETS))));
         l.add(new Check("C-2-REFERENCE", Injections::reference));
+        l.add(new Check(ITEM1, Injections::item1));
         return List.copyOf(l);
     }
 
@@ -1201,6 +1204,50 @@ final class Injections {
         for (JsonNode o : manifest.path("source").path("overlays"))
             if ("hold-back".equals(o.path("type").asText())) d = d == null ? o.path("delayMs").asLong() : Math.max(d, o.path("delayMs").asLong());
         return d == null ? null : d - manifest.path("scanMs").asLong() - ooo - 1;
+    }
+
+    /** {@code C-1}, item 1 (spec 579): over every scenario run, every {@code --shuffle} run and every generation run of the gate, the
+     *  run completed, was compared with the oracle at every cut its recording plans (the compared cut ids are the planned ones, in
+     *  order) and every compared cut matched. {@code report.json} {@code measurements.item1} lists the scenarios, and per run and in
+     *  total the cuts compared, the rows compared and the dispositions reconciled. */
+    static Result item1(Context c) throws Exception {
+        Summaries all = Summaries.of(c);
+        P p = new P();
+        p.list.addAll(all.missing);
+        ObjectNode m = Json.object();
+        ArrayNode scenarios = m.putArray("scenarios"), runs = m.putArray("runs");
+        long cuts = 0, rows = 0, dispositions = 0, n = 0;
+        List<Object[]> every = new ArrayList<>();
+        for (JsonNode r : all.runs.values()) every.add(new Object[] {"run", r.path("name").asText(), r});
+        for (JsonNode r : all.shuffled.values()) every.add(new Object[] {"shuffled", r.path("name").asText() + "@" + r.path("seed").asLong(), r});
+        for (JsonNode r : all.generationRuns.values()) every.add(new Object[] {"generation-run", r.path("name").asText(), r});
+        for (Object[] e : every) {
+            String kind = (String) e[0], name = (String) e[1];
+            JsonNode r = (JsonNode) e[2];
+            if (kind.equals("run")) scenarios.add(name);
+            if (Summaries.failed(r)) { p.list.add(name + ": " + r.path("failure").asText()); continue; }
+            List<Long> planned = Shards.longs(r.path("plannedCutIds")), compared = Shards.longs(r.path("comparedCutIds"));
+            if (planned.isEmpty() || !compared.equals(planned) || r.path("cutsCompared").asLong(-1) != planned.size())
+                p.list.add(name + ": compared " + r.path("cutsCompared") + " cuts " + Shards.firstDifference(compared, planned) + ", its recording plans " + planned.size());
+            if (!r.path("equal").asBoolean(false)) p.list.add(name + ": a compared cut differs from the oracle: " + r.path("summary").asText());
+            if (!r.path("rowsCompared").isIntegralNumber() || !r.path("dispositionsReconciled").isIntegralNumber())
+                p.list.add(name + ": its summary has no rowsCompared or dispositionsReconciled");
+            ObjectNode x = runs.addObject().put("kind", kind).put("name", name);
+            Json.putSafe(x, "cutsCompared", r.path("cutsCompared").asLong());
+            Json.putSafe(x, "rowsCompared", r.path("rowsCompared").asLong());
+            Json.putSafe(x, "dispositionsReconciled", r.path("dispositionsReconciled").asLong());
+            cuts += r.path("cutsCompared").asLong();
+            rows += r.path("rowsCompared").asLong();
+            dispositions += r.path("dispositionsReconciled").asLong();
+            n++;
+        }
+        Json.putSafe(m, "runsCompared", n);
+        Json.putSafe(m, "cutsCompared", cuts);
+        Json.putSafe(m, "rowsCompared", rows);
+        Json.putSafe(m, "dispositionsReconciled", dispositions);
+        c.measure("item1", m);
+        return p.result("every compared cut matched the oracle: " + all.runs.size() + " scenarios, " + all.shuffled.size() + " shuffled runs and " + all.generationRuns.size()
+            + " generation runs (" + n + " runs), " + cuts + " cuts, " + rows + " rows and " + dispositions + " dispositions compared; report.json measurements.item1");
     }
 
     static Result reference(Context c) throws Exception {

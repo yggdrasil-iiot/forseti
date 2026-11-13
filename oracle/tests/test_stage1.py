@@ -32,6 +32,13 @@ def baseline(d=None, eid="occ-1", unit=U1, lo=T, settle=True):
     return d
 
 
+def test_the_lenient_oracle_reports_a_provisional_visit_complete():
+    """The lenient-oracle negative control (--lenient): the same inputs, the visit reported complete before its settlement."""
+    d = baseline(Driver(lenient=True), settle=False)
+    assert d.work("occ-1")["status"] == "complete"
+    assert baseline(settle=False).work("occ-1")["status"] == "provisional"
+
+
 def test_a_visit_is_provisional_then_complete_at_settlement():
     d = baseline(settle=False)
     assert d.work("occ-1")["status"] == "provisional"

@@ -185,6 +185,8 @@ public final class FixtureBundles {
         Json.putSafe(r, "cutsCompared", n);
         ids(r, "comparedCutIds", n);
         r.put("equal", true);
+        Json.putSafe(r, "rowsCompared", 10 * n);
+        Json.putSafe(r, "dispositionsReconciled", 5 * n);
         r.putObject("findings");
         r.putObject("rows").put("forseti.work-records", 3);
         return r;

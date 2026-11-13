@@ -46,6 +46,8 @@ final class GateEvidence {
 
     static final String PIPELINE = "pipeline", RUNS = "runs", STATE = "state", SHARED = "shared", ISOLATED = "isolated", JOURNALS = "journals";
     static final String ONLINE = "online", SELF_TEST = "self-test", REPLAY = "event-time-replay", RULE_CHANGE = "rule-change";
+    /** The {@code kind} of a control run's report ({@code --negative-control}). */
+    static final String CONTROL_KIND = "negative-control";
 
     /** A control store of this gate run: its bundle-local name ({@code pipeline}, {@code assertion:<ID>}, {@code assertion:<ID>#2}, ...),
      *  its directory, and whether its registrations are {@code shared} (the executable verb, the system clock, kept). */
@@ -206,9 +208,12 @@ final class GateEvidence {
     }
 
     /** The problems of one bundle: {@code report} and {@code summaries} as read (or about to be written), the kept files under
-     *  {@code bundle}. */
+     *  {@code bundle}. A report of {@code kind: negative-control} is a control run's (owner decision of 2026-11-12): its summaries need not
+     *  hold, since its comparisons and assertions are meant to fail, but every run must still have completed without a failure, every cut
+     *  must have been completed and compared with the oracle, and everything else holds as for a gate report. */
     static List<String> validate(Path root, Path bundle, JsonNode report, JsonNode summaries) {
         List<String> p = new ArrayList<>();
+        boolean control = CONTROL_KIND.equals(report.path("kind").asText(null));
         JsonNode gens = report.path("generations"), runs = report.path("runs");
         if (!gens.isArray() || !runs.isArray()) { p.add("the report has no generations[] or runs[]"); return p; }
 
@@ -235,7 +240,7 @@ final class GateEvidence {
         if (!generationRuns.isObject()) p.add(Shards.SUMMARIES + " has no generationRuns object keyed by name");
         else generationRuns.fields().forEachRemaining(e -> summaryByKey.put(GENERATION + e.getKey(), e.getValue()));
         Map<String, List<Long>> summaryCuts = new HashMap<>();
-        for (Map.Entry<String, JsonNode> e : summaryByKey.entrySet()) summaryCuts.put(e.getKey(), summary(root, e.getKey(), e.getValue(), p));
+        for (Map.Entry<String, JsonNode> e : summaryByKey.entrySet()) summaryCuts.put(e.getKey(), summary(root, e.getKey(), e.getValue(), p, control));
 
         // the shared store
         List<GenerationStore.Entry> stored = null;
@@ -374,7 +379,11 @@ final class GateEvidence {
      *  lock pins (for an event-time replay the replay lock {@code <scenario>.replay.lock.json}), and its planned, completed and compared cut
      *  ids are one strictly increasing list of the lock's length. {@code key} is {@code run:}, {@code shuffled:} or {@code generation:} and
      *  the summary's name. Returns the list. */
-    static List<Long> summary(Path root, String key, JsonNode r, List<String> p) {
+    static List<Long> summary(Path root, String key, JsonNode r, List<String> p) { return summary(root, key, r, p, false); }
+
+    /** {@code control}: the summary of a control run, which must not have failed (a crash or an incomplete run never stands for the
+     *  intended failure) but need not hold; every other rule is the same. */
+    static List<Long> summary(Path root, String key, JsonNode r, List<String> p, boolean control) {
         String name = r.path("name").asText();
         boolean shuffled = key.startsWith(SHUFFLED), generation = key.startsWith(GENERATION);
         String label = shuffled ? name + " seed " + r.path("seed").asLong() : name;
@@ -392,12 +401,13 @@ final class GateEvidence {
         try { lock = Json.read(lockFile); }
         catch (RuntimeException e) { p.add(label + ": cannot read its lock: " + e.getMessage()); return null; }
         long lockCuts = lock.path("counts").path("cuts").asLong(-1);
-        if (shuffled) {
+        if (shuffled || control) {
             if (Summaries.failed(r)) p.add(label + ": " + r.path("failure").asText());
-            if (!r.path("equal").asBoolean(false)) p.add(label + ": its comparison with the oracle is not equal (equal " + r.path("equal") + ")");
+            if (!control && !r.path("equal").asBoolean(false)) p.add(label + ": its comparison with the oracle is not equal (equal " + r.path("equal") + ")");
             if (!r.path("comparedCutIds").isArray()) p.add(label + ": no comparedCutIds of its own oracle comparison");
         }
-        if (!r.path("ok").asBoolean(false)) p.add(label + " did not hold: " + r.path("summary").asText());
+        if (control && !r.path("equal").isBoolean()) p.add(label + ": no comparison with the oracle (equal " + r.path("equal") + ")");
+        if (!control && !r.path("ok").asBoolean(false)) p.add(label + " did not hold: " + r.path("summary").asText());
         long compared = r.path("cutsCompared").asLong(-1), completed = r.path("cutLogCuts").asLong(-1);
         if (compared != lockCuts || completed != lockCuts) p.add(label + ": " + compared + " cuts compared with the oracle and " + completed + " completed, its lock plans " + lockCuts);
         String pinned = lock.path("files").path("manifest.json").asText(null), read = r.path("recordingManifestSha256").asText(null);

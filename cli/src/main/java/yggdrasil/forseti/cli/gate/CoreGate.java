@@ -33,8 +33,31 @@ public final class CoreGate {
     @FunctionalInterface public interface Body { Result run(Context c) throws Exception; }
     public record Result(boolean ok, String evidence) {}
 
-    /** The negative controls this gate implements, each with its intended failures (PR 6 adds them). */
-    static final Map<String, List<String>> IMPLEMENTED_CONTROLS = Map.of();
+    /** The negative controls this gate implements, each with its intended failures (spec Negative controls, plan Task 22);
+     *  {@link #EVERY_INJECTION} stands for every {@code I-*} id of the manifest (the pins cross-check runs inside every injection). */
+    static final String EVERY_INJECTION = "I-*";
+    static final Map<String, List<String>> IMPLEMENTED_CONTROLS = implemented();
+    private static Map<String, List<String>> implemented() {
+        Map<String, List<String>> m = new LinkedHashMap<>();
+        m.put("processing-time", List.of("I-1"));
+        m.put("drop-late", List.of("J-DISPOSITION-COVERAGE"));
+        m.put("no-cascade", List.of("I-18", "J-BASIS-CURRENT"));
+        m.put("lenient-oracle", List.of("I-2", "I-6"));
+        m.put("first-wins", List.of("I-4"));
+        m.put("station-granularity", List.of("I-16"));
+        m.put("ignore-session-gap", List.of("I-8"));
+        m.put("wrong-rules-pin", List.of(EVERY_INJECTION));
+        return Collections.unmodifiableMap(m);
+    }
+
+    /** The intended failures of implemented control {@code name} against the manifest ids ({@link #EVERY_INJECTION} expanded, in
+     *  manifest order). */
+    static List<String> intended(String name, List<String> manifestIds) {
+        List<String> l = new ArrayList<>();
+        for (String id : IMPLEMENTED_CONTROLS.getOrDefault(name, List.of()))
+            if (id.equals(EVERY_INJECTION)) manifestIds.stream().filter(x -> x.startsWith("I-")).forEach(l::add); else l.add(id);
+        return List.copyOf(l);
+    }
 
     public static List<Check> registered() {
         List<Check> all = new ArrayList<>(Foundation.checks());
@@ -42,6 +65,7 @@ public final class CoreGate {
         all.addAll(Stage2Assertions.checks());
         all.addAll(Injections.checks());
         all.addAll(GenerationAssertions.checks());
+        all.addAll(SelfTests.checks());
         return List.copyOf(all);
     }
 
@@ -77,6 +101,9 @@ public final class CoreGate {
         Shards.Shard shard;
         /** The shards' merged summaries in an aggregate run ({@code --aggregate}), null otherwise. */
         Summaries aggregate;
+        /** The negative control of this gate run ({@code --negative-control}), null otherwise: the harness applies it (or, for
+         *  {@code lenient-oracle}, the oracle) on every run this gate run makes. */
+        String control;
         /** What the assertions measure for {@code report.json} ({@code measurements}): item 2's reference values, revision counts. */
         final ObjectNode measurements = Json.object();
         Context(Path root, Path tmp, Path logs, String python) {
@@ -154,10 +181,18 @@ public final class CoreGate {
             if (state != null && control != null) throw new IllegalArgumentException("--state is for a full or a --shard run, not --negative-control");
             if (state != null && !real(state).equals(real(outDir.resolve("state"))))
                 throw new IllegalArgumentException("--state " + state + ": the store of a gate run is <out>/state, " + outDir.resolve("state"));
-            if (control != null) intended = control(Path.of(""), control);
             if (shard != null && aggregate != null) throw new IllegalArgumentException("--shard and --aggregate exclude each other");
-            if (control != null && (shard != null || aggregate != null)) throw new IllegalArgumentException("--negative-control runs the full gate, without --shard or --aggregate");
             if (shard != null) Shards.load(Path.of("")).shard(shard);
+            if (control != null) {
+                // a control runs only on the shards that own or feed its intended ids (owner decision of 2026-11-12)
+                ControlPlan.Control cc = control(Path.of(""), control);
+                Shards.Plan plan = Shards.load(Path.of(""));
+                if (shard != null && !cc.shards().contains(shard))
+                    throw new IllegalArgumentException("--negative-control " + control + " runs on the shards " + cc.shards() + " (" + CONTROLS + "), not on " + shard);
+                if (aggregate != null && cc.aggregateIds(plan).isEmpty())
+                    throw new IllegalArgumentException("--negative-control " + control + " with --aggregate: it intends no aggregate id of " + Shards.PLAN + " (" + cc.intended() + ")");
+                intended = cc.owned(plan, shard, aggregate != null);
+            }
             if (aggregate != null && !Files.isDirectory(aggregate)) throw new IllegalArgumentException("--aggregate " + aggregate + ": not a directory");
         } catch (IllegalArgumentException e) {
             err.println(e.getMessage());
@@ -191,16 +226,17 @@ public final class CoreGate {
         return cmd;
     }
 
-    /** The intended failures of a control listed in {@code gate/core-negative-controls.json} and implemented here; a usage error otherwise. */
-    static List<String> control(Path root, String name) {
-        JsonNode file;
-        try { file = Json.read(root.resolve(CONTROLS)); } catch (IllegalArgumentException e) { throw new IllegalArgumentException("cannot read " + CONTROLS + ": " + e.getMessage()); }
-        List<String> listed = new ArrayList<>();
-        for (JsonNode c : file.path("controls")) listed.add(c.asText());
-        if (!listed.contains(name)) throw new IllegalArgumentException("--negative-control " + name + ": not in " + CONTROLS + " " + listed);
-        List<String> intended = IMPLEMENTED_CONTROLS.get(name);
-        if (intended == null) throw new IllegalArgumentException("--negative-control " + name + ": listed but not implemented by this gate");
-        return intended;
+    /** A control listed in {@code gate/core-negative-controls.json} and implemented here, the whole file validated against the shard plan
+     *  and the manifest ({@link ControlPlan#validate}); a usage error otherwise. */
+    static ControlPlan.Control control(Path root, String name) {
+        ControlPlan file = ControlPlan.load(root);
+        ControlPlan.Control c = file.control(name);
+        if (!IMPLEMENTED_CONTROLS.containsKey(name)) throw new IllegalArgumentException("--negative-control " + name + ": listed but not implemented by this gate");
+        List<String> ids;
+        try { ids = manifestIds(Json.read(root.resolve(MANIFEST))); } catch (IllegalArgumentException e) { throw new IllegalArgumentException("cannot read " + MANIFEST + ": " + e.getMessage()); }
+        List<String> wrong = file.validate(Shards.load(root), ids);
+        if (!wrong.isEmpty()) throw new IllegalArgumentException(CONTROLS + ": " + String.join("; ", wrong));
+        return c;
     }
 
     /** Runs {@code checks} against the manifest, writes the report, prints the accounting line last and returns the exit code. */
@@ -214,6 +250,9 @@ public final class CoreGate {
         String layout = o.shard() != null ? "shard" : o.aggregate() != null ? "aggregate" : "full";
         Shards.Plan plan = null;
         Context ctx = null;
+        ControlPlan.Control control = null;
+        Summaries evaluated = null;
+        Set<String> crashed = new TreeSet<>();
         Path tmp = null;
         long started = System.nanoTime();
         try {
@@ -230,13 +269,25 @@ public final class CoreGate {
                 for (Shards.Shard s : plan.shards()) for (String id : s.assertions()) owner.put(id, s.name());
                 for (String id : plan.aggregate()) owner.put(id, "aggregate");
             }
+            if (o.negativeControl() != null) {
+                try { control = ControlPlan.load(o.root()).control(o.negativeControl()); } catch (IllegalArgumentException e) { control = null; }
+                if (o.aggregate() != null && control == null) throw new IllegalStateException("--negative-control " + o.negativeControl() + " with --aggregate: not in " + CONTROLS);
+            }
             final Shards.Shard only = shard;
             final Set<String> aggregateIds = plan == null ? Set.of() : new HashSet<>(plan.aggregate());
-            acc = new Assertions(shard != null ? shard.assertions() : ids, out);
+            List<String> expectedIds = shard != null ? shard.assertions() : ids;
+            if (o.aggregate() != null && control != null) {
+                // an aggregate control run evaluates its control's shards' assertions and the plan's aggregate ones (owner decision of 2026-11-12)
+                Set<String> scope = new HashSet<>(plan.aggregate());
+                for (Shards.Shard s : plan.shards()) if (control.shards().contains(s.name())) scope.addAll(s.assertions());
+                expectedIds = ids.stream().filter(scope::contains).toList();
+            }
+            acc = new Assertions(expectedIds, out);
             Files.createDirectories(o.out());
             tmp = Files.createTempDirectory("forseti-gate-");
             ctx = new Context(o.root(), tmp, o.out().resolve("logs"), o.python());
             ctx.shard = shard;
+            ctx.control = o.negativeControl();
             if (o.aggregate() == null) {   // the runs and journals this gate run keeps, none of an earlier one
                 CoreGate.delete(o.out().resolve(GateEvidence.RUNS));
                 CoreGate.delete(o.out().resolve(GateEvidence.JOURNALS));
@@ -255,7 +306,8 @@ public final class CoreGate {
                 expect.set("fixtureDigests", digests);
                 List<Shards.Recorded> recorded = new ArrayList<>();
                 ObjectNode merged = Json.object();
-                ctx.aggregate = Shards.read(o.root(), o.aggregate(), plan, expect, recorded, coverage, merged);
+                ctx.aggregate = Shards.read(o.root(), o.aggregate(), plan, expect, recorded, coverage, merged, control);
+                evaluated = ctx.aggregate;
                 shardsOut = (ArrayNode) merged.get("shards");
                 generations = (ArrayNode) merged.get("generations");
                 runs = (ArrayNode) merged.get("runs");
@@ -266,7 +318,7 @@ public final class CoreGate {
                 Result r;
                 ctx.current = c.id();
                 try { r = c.body().run(ctx); }
-                catch (Exception | Error e) { r = new Result(false, "crashed: " + e); }
+                catch (Exception | Error e) { r = new Result(false, "crashed: " + e); crashed.add(c.id()); }
                 finally { ctx.current = null; }
                 try { acc.check(c.id(), r.ok(), r.evidence()); } catch (Assertions.Refused ignored) { /* recorded by the accountant */ }
             }
@@ -276,6 +328,7 @@ public final class CoreGate {
                 if (shard != null) mine = Summaries.fromPipeline(ctx);
                 else if (Scenarios.started(ctx) || ctx.has(Summaries.MEMO)) mine = Summaries.of(ctx);
                 else mine = new Summaries();
+                evaluated = mine;
                 ObjectNode summaries = mine.toJson();
                 byte[] bytes = Json.pretty(summaries);
                 Files.write(o.out().resolve(Shards.SUMMARIES), bytes);
@@ -284,6 +337,7 @@ public final class CoreGate {
                 runs = ctx.evidence.runs();
                 if (shard == null && Scenarios.started(ctx) && !Scenarios.skipHorizon() && Scenarios.only() == null) coverage.addAll(mine.missing);
                 ObjectNode bundle = Json.object();
+                bundle.put("kind", o.negativeControl() != null ? GateEvidence.CONTROL_KIND : "gate");
                 bundle.set("pins", pins);
                 bundle.set("generations", generations);
                 bundle.set("runs", runs);
@@ -325,10 +379,50 @@ public final class CoreGate {
         report.set("shards", shardsOut);
         report.set("generations", generations);
         report.set("runs", runs);
+        if (o.negativeControl() != null) report.set("control", verdict(o, control, plan, acc, error, exit, crashed, evaluated));
+        else report.putNull("control");
         try { Json.write(o.out().resolve("report.json"), report); }
-        catch (RuntimeException e) { err.println("cannot write the report: " + e.getMessage()); exit = 1; }
+        catch (RuntimeException e) {
+            // the gate's own failure report goes to stderr when the report directory cannot take it (G-SELF-MISSING-REPORT)
+            exit = 1;
+            report.put("exit", exit).put("error", "cannot write the report: " + e.getMessage());
+            err.println("cannot write the report: " + e.getMessage() + "; the failure report follows");
+            err.println(Canonical.utf8(Canonical.bytes(report)));
+        }
         out.println(acc == null ? "assertions run 0 / expected 0" : acc.line());
         return exit;
+    }
+
+    /** {@code report.control} of a control run: whether it proved what it intends. {@code owned} are the intended ids this layout
+     *  evaluates ({@code intendedFailures}); the control holds when every one of them ran, did not crash and failed, the run completed
+     *  (no gate error, no coverage problem: every run finished and every cut was compared with the oracle), no scenario run an aggregate
+     *  intended id rests on is missing, and the gate exited 1 when it owns an intended id. A crash or a missing run never counts as an
+     *  intended failure (owner decision of 2026-11-12). */
+    static ObjectNode verdict(Options o, ControlPlan.Control control, Shards.Plan plan, Assertions acc, String error, int exit, Set<String> crashed, Summaries evaluated) {
+        ObjectNode v = Json.object().put("name", o.negativeControl());
+        ArrayNode intended = v.putArray("intended"), shards = v.putArray("shards"), owned = v.putArray("owned"), failed = v.putArray("failedIntended"), problems = v.putArray("problems");
+        if (control != null) { control.intended().forEach(intended::add); control.shards().forEach(shards::add); }
+        else problems.add("not a control of " + CONTROLS);
+        o.intendedFailures().forEach(owned::add);
+        List<String> f = acc == null ? List.of() : acc.failed(), notRun = acc == null ? List.of() : acc.notRun(), ran = acc == null ? List.of() : acc.ran();
+        if (error != null) problems.add("the run did not complete: " + error);
+        for (String id : o.intendedFailures()) {
+            if (!ran.contains(id) || notRun.contains(id)) problems.add(id + " did not run");
+            else if (crashed.contains(id)) problems.add(id + " crashed");
+            else if (!f.contains(id)) problems.add(id + " held: the control did not make it fail");
+            else failed.add(id);
+        }
+        boolean aggregateOwned = plan != null && o.intendedFailures().stream().anyMatch(plan.aggregate()::contains)
+            || plan == null && control != null && o.intendedFailures().stream().anyMatch(Injections.AGGREGATE::contains);
+        if (aggregateOwned && evaluated != null && !evaluated.missing.isEmpty()) problems.add("runs an aggregate intended id rests on are missing: " + evaluated.missing);
+        if (evaluated != null) {
+            for (JsonNode r : evaluated.runs.values()) if (Summaries.failed(r)) problems.add(r.path("name").asText() + ": " + r.path("failure").asText());
+            for (JsonNode r : evaluated.shuffled.values()) if (Summaries.failed(r)) problems.add(r.path("name").asText() + " seed " + r.path("seed").asLong() + ": " + r.path("failure").asText());
+            for (JsonNode r : evaluated.generationRuns.values()) if (Summaries.failed(r)) problems.add(r.path("name").asText() + ": " + r.path("failure").asText());
+        }
+        if (!o.intendedFailures().isEmpty() && exit != 1) problems.add("exit " + exit + ", 1 expected");
+        v.put("held", problems.isEmpty());
+        return v;
     }
 
     static List<String> manifestIds(JsonNode m) {

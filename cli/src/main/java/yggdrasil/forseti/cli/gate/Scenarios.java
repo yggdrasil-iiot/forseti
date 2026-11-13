@@ -502,6 +502,7 @@ final class Scenarios {
             if (seed != null) cmd.addAll(List.of("--seed", Long.toString(seed), "--shuffle"));
             if (GateEvidence.REPLAY.equals(r.variant))
                 cmd.addAll(List.of("--replay", ReferenceEngine.EVENT_TIME, "--replay-lock", ReplayRecording.lockOf(c.fixtures().resolve("scenarios").resolve(r.name + ".json")).toString()));
+            if (yggdrasil.forseti.cli.harness.Controls.harness(c.control)) cmd.addAll(List.of("--negative-control", c.control));   // a control run's harness
             Proc p = Proc.run(c.root, c.logs.resolve("harness-" + r.label() + ".log"), Duration.ofHours(2), cmd);
             if (p.exit() != 0) throw new IllegalStateException("forseti run exit " + p.exit() + ": " + p.lastLine());
             r.cutLog = Json.read(out.resolve("cuts.json"));
@@ -524,6 +525,7 @@ final class Scenarios {
                 cmd.add(e.getKey() + "=" + String.join(",", ps));
             });
             if (Boolean.getBoolean("forseti.gate.oracleNoMemo")) cmd.add("--no-memo");
+            if (yggdrasil.forseti.cli.harness.Controls.LENIENT_ORACLE.equals(c.control)) cmd.add("--lenient");   // the lenient-oracle control
             return cmd;
         }
 
