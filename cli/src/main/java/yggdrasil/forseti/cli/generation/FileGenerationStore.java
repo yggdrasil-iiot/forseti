@@ -86,6 +86,52 @@ public final class FileGenerationStore implements GenerationStore {
         });
     }
 
+    /** The publication of a promotion failed: a write or {@code force} threw, or the channel stopped accepting bytes. {@code appended}
+     *  bytes of the batch reached the channel; the file may hold that prefix of the batch, which every later read refuses
+     *  ({@code control-log-corrupt}) unless it is empty. Never a success. */
+    public static final class ControlLogIo extends RuntimeException {
+        public static final String CODE = "control-log-io";
+        public final long appended;
+        ControlLogIo(long appended, String detail, Throwable cause) { super(CODE + ": " + detail, cause); this.appended = appended; }
+    }
+
+    /** Write calls in a row that accept no byte before the channel counts as no longer accepting bytes. */
+    static final int STALLED_WRITES = 16;
+
+    /** Appends {@code rows} as one buffer (a promotion batch, plan Step 21.2) inside the hold of {@code generations.lock}: the history must
+     *  stay valid with every row ({@link IllegalArgumentException} otherwise, nothing written); the buffer is written at the end of the
+     *  file by a loop that continues a short write until the buffer is drained, then {@code force(true)}; this returns only after
+     *  {@code force} returned. Any I/O failure during the publication is {@link ControlLogIo} with the count of bytes appended. */
+    public void appendBatch(List<Entry> rows) {
+        if (rows.isEmpty()) throw new IllegalArgumentException("an empty batch");
+        locked(() -> {
+            List<Entry> next = new ArrayList<>(all());
+            next.addAll(rows);
+            try { GenerationPolicy.validate(next); }
+            catch (IllegalStateException e) { throw new IllegalArgumentException("the batch would make the history invalid: " + e.getMessage(), e); }
+            java.io.ByteArrayOutputStream buf = new java.io.ByteArrayOutputStream();
+            for (Entry e : rows) { buf.writeBytes(Canonical.bytes(record(e.scope(), e.row()))); buf.write('\n'); }
+            Files.createDirectories(stateDir);
+            ByteBuffer b = ByteBuffer.wrap(buf.toByteArray());
+            long appended = 0;
+            FileChannel ch;
+            try { ch = channels.open(file); } catch (IOException e) { throw new ControlLogIo(0, "open: " + e.getMessage(), e); }
+            try {
+                int stalled = 0;
+                while (b.hasRemaining()) {
+                    int w;
+                    try { w = ch.write(b); } catch (IOException | RuntimeException e) { throw new ControlLogIo(appended, "write: " + e, e); }
+                    if (w > 0) { appended += w; stalled = 0; }
+                    else if (++stalled >= STALLED_WRITES) throw new ControlLogIo(appended, "the channel stopped accepting bytes", null);
+                }
+                try { ch.force(true); } catch (IOException | RuntimeException e) { throw new ControlLogIo(appended, "force: " + e, e); }
+            } finally {
+                try { ch.close(); } catch (IOException ignored) { /* the outcome is decided by the write and force above */ }
+            }
+            return null;
+        });
+    }
+
     @Override public List<Entry> all() { return lines().stream().map(Line::entry).toList(); }
 
     /** The raw bytes of the whole log, after the same validation as every read. */
