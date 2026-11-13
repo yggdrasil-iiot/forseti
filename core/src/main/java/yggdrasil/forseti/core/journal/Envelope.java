@@ -11,6 +11,42 @@ import yggdrasil.forseti.core.Json;
 public record Envelope(long evaluationGeneration, long revision, String supersedesDigest, JsonNode cause, Long eventTimeAt, Trigger trigger,
                        JsonNode basisRevisions, Pins pins) {
     public static final Set<String> CAUSE_KINDS = Set.of("input", "timer", "replayed");
+    /** The cause kind of a row an input or a timer emits: {@code input} in an online generation (a timer row then carries
+     *  {@code timer}), {@code replayed} in a generation replayed in event-time order (spec 583). */
+    public static final String ONLINE = "input", REPLAYED = "replayed";
+
+    /** {@code {"kind": "input", "inputKind", "identity"}} online, {@code {"kind": "replayed", "inputKind", "identity"}} in a replay. */
+    public static ObjectNode inputCause(String causeKind, String inputKind, JsonNode identity) {
+        ObjectNode c = Json.object().put("kind", causeKind(causeKind)).put("inputKind", inputKind);
+        c.set("identity", identity);
+        return c;
+    }
+
+    /** {@code {"kind": "timer", "deadline": d}} online, {@code {"kind": "replayed", "inputKind": "timer", "identity": {"deadline": d}}}
+     *  in a replay. */
+    public static ObjectNode timerCause(String causeKind, long deadline) {
+        if (ONLINE.equals(causeKind(causeKind))) return Json.putSafe(Json.object().put("kind", "timer"), "deadline", deadline);
+        ObjectNode c = Json.object().put("kind", REPLAYED).put("inputKind", "timer");
+        c.set("identity", Json.putSafe(Json.object(), "deadline", deadline));
+        return c;
+    }
+
+    /** The deadline of a timer cause, online {@code {"kind": "timer", "deadline": d}} or replayed
+     *  {@code {"kind": "replayed", "inputKind": "timer", "identity": {"deadline": d}}}; null for every other cause (owner decision 6:
+     *  every check whether a row precedes the progress of its cut reads both through this function). */
+    public static Long timerDeadline(JsonNode cause) {
+        if (cause == null || !cause.isObject()) return null;
+        String kind = cause.path("kind").textValue();
+        JsonNode d = "timer".equals(kind) ? cause.path("deadline")
+            : REPLAYED.equals(kind) && "timer".equals(cause.path("inputKind").textValue()) ? cause.path("identity").path("deadline") : null;
+        return d != null && d.isIntegralNumber() && d.canConvertToLong() ? d.longValue() : null;
+    }
+
+    /** {@code causeKind} itself when it is {@link #ONLINE} or {@link #REPLAYED}; anything else is refused. */
+    public static String causeKind(String causeKind) {
+        if (!ONLINE.equals(causeKind) && !REPLAYED.equals(causeKind)) throw new IllegalArgumentException("cause kind is " + ONLINE + " or " + REPLAYED + ": " + causeKind);
+        return causeKind;
+    }
 
     public record Trigger(String topic, int partition, long offset) {
         ObjectNode toJson() {

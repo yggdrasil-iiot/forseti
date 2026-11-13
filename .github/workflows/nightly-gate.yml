@@ -29,7 +29,8 @@ jobs:
         run: mvn -B -ntp install -DskipTests
       - name: Core gate, every assertion in one run
         working-directory: forseti
-        run: java -Dforseti.gate.horizonXmx=6g -jar cli/target/forseti.jar gate --engine core --out build/gate --state build/gate/state --python "$(command -v python)"
+        env: {JAVA_TOOL_OPTIONS: -Dforseti.gate.horizonXmx=6g}
+        run: bash scripts/gate-then-promote.sh build/gate "$(command -v python)"
       - name: Gate report
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4

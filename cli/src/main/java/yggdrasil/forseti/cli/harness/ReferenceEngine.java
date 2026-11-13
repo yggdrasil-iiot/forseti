@@ -1,7 +1,5 @@
 package yggdrasil.forseti.cli.harness;
 
-import com.fasterxml.jackson.core.JsonParser;
-import com.fasterxml.jackson.core.JsonToken;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.fasterxml.jackson.databind.node.TextNode;
@@ -12,6 +10,7 @@ import java.nio.file.Path;
 import java.util.*;
 import yggdrasil.forseti.cli.generation.FileGenerationStore;
 import yggdrasil.forseti.cli.recording.Recording;
+import yggdrasil.forseti.cli.recording.ReplayRecording;
 import yggdrasil.forseti.cli.recording.RoutingManifest;
 import yggdrasil.forseti.core.Json;
 import yggdrasil.forseti.core.NegativeControls;
@@ -22,6 +21,7 @@ import yggdrasil.forseti.core.input.InputParser;
 import yggdrasil.forseti.core.input.Inputs;
 import yggdrasil.forseti.core.journal.Delete;
 import yggdrasil.forseti.core.journal.Disposition;
+import yggdrasil.forseti.core.journal.Envelope;
 import yggdrasil.forseti.core.journal.Pins;
 import yggdrasil.forseti.core.journal.Progress;
 import yggdrasil.forseti.core.journal.Row;
@@ -66,13 +66,25 @@ public final class ReferenceEngine {
         public ObjectNode toJson() { ObjectNode n = Json.object().put("refusal", code); n.setAll(evidence.deepCopy()); return n; }
     }
 
+    /** {@code replay}: the only replay of this step ({@code --replay event-time}, Decision 11). */
+    public static final String EVENT_TIME = "event-time", REPLAY_DIR = "replay-recording";
+
     /** {@code subscribe}: per topic, the partitions to read instead of the recording's (an empty list unsubscribes the topic);
-     *  {@code artifactSha256}: null for the running jar's digest. */
+     *  {@code artifactSha256}: null for the running jar's digest; {@code replay}: null for an online run, {@link #EVENT_TIME} to
+     *  materialize the recording's retained input in event-time order into {@code <out>/replay-recording/} and run on that, compared with
+     *  {@code replayLock} first when given. A replay with {@code shuffle} is refused. */
     public record Options(Path recording, Path registry, Path state, long generation, Path out, long seed, boolean shuffle,
-                          Map<String, List<Integer>> subscribe, String artifactSha256, String command) {
+                          Map<String, List<Integer>> subscribe, String artifactSha256, String command, String replay, Path replayLock) {
         public Options {
             subscribe = subscribe == null ? Map.of() : Map.copyOf(subscribe);
             if (command == null) command = "forseti run --engine core";
+            if (replay != null && !replay.equals(EVENT_TIME)) throw new IllegalArgumentException("--replay " + replay + ": the only replay is " + EVENT_TIME);
+            if (replay != null && shuffle) throw new IllegalArgumentException("--replay with --shuffle: a replay runs in event-time order");
+            if (replay == null && replayLock != null) throw new IllegalArgumentException("--replay-lock without --replay");
+        }
+        public Options(Path recording, Path registry, Path state, long generation, Path out, long seed, boolean shuffle,
+                       Map<String, List<Integer>> subscribe, String artifactSha256, String command) {
+            this(recording, registry, state, generation, out, seed, shuffle, subscribe, artifactSha256, command, null, null);
         }
     }
 
@@ -83,20 +95,23 @@ public final class ReferenceEngine {
         FileGenerationStore store = new FileGenerationStore(o.state());
         Optional<GenerationStore.Entry> registered = store.registered(o.generation());
         if (registered.isEmpty()) throw new Refused("generation-unregistered", Json.putSafe(Json.object(), "generation", o.generation()));
+        // a retired generation is never run again (plan Step 21.5, F-GEN-LIFECYCLE): its rows would be evaluated under a generation the
+        // control store has taken out of service
+        if (Generation.RETIRED.equals(store.latestStatus(o.generation()).orElse(null)))
+            throw new Refused("generation-retired", Json.putSafe(Json.object(), "generation", o.generation()));
         Generation g = registered.get().row();
         String scope = registered.get().scope(), registeredRowSha256 = store.registeredRowSha256(o.generation()).orElseThrow();
         JsonNode evidence = g.releaseEvidence();
         HeadVerifier.Head head = head(evidence);
         Path mappings = o.registry().resolve("mappings");
-        Recording rec = Recording.open(o.recording());
-        rec.verifyDigests();
-        rec.verifyBatches();
+        Recording original = Recording.open(o.recording());
+        if (o.replay() == null) { original.verifyDigests(); original.verifyBatches(); }   // a replay's materialization verifies them
         RuleSet rules;
         ReleaseReader.Release release;
         try {
             release = ReleaseReader.read(mappings, head);
             JsonNode rule = evidence.path("pins").path("rules").path("attribution");
-            rules = RuleSet.load(release, Json.text(rule, "id"), Json.text(rule, "version"), rec.manifest().path("definitions"));
+            rules = RuleSet.load(release, Json.text(rule, "id"), Json.text(rule, "version"), original.manifest().path("definitions"));
         } catch (Refusal r) {
             ObjectNode ev = Json.object();
             r.evidence.forEach((k, v) -> ev.set(k, Json.JSON.valueToTree(v)));
@@ -105,6 +120,35 @@ public final class ReferenceEngine {
         if (!rules.rulesDigest().equals(g.rulesDigest()))
             throw new Refused("generation-rules-mismatch", Json.putSafe(Json.object(), "generation", g.generation())
                 .put("registered", g.rulesDigest()).put("loaded", rules.rulesDigest()));
+
+        // (1b) an event-time replay: the retained input materialized with the rule's outOfOrdernessMs, then run like any recording
+        long oo = rules.attribution().outOfOrdernessMs();
+        Path runOn = o.recording();
+        if (o.replay() != null) {
+            runOn = o.out().resolve(REPLAY_DIR);
+            boolean outExisted = Files.exists(o.out());
+            ReplayRecording.Result materialized;
+            try { materialized = ReplayRecording.materialize(o.recording(), oo, runOn); }
+            catch (ReplayRecording.Refused r) { throw new Refused(r.code, r.evidence); }
+            if (o.replayLock() != null) {
+                List<String> differences = ReplayRecording.compareLock(materialized.lock(), o.replayLock());
+                if (!differences.isEmpty()) {
+                    deleteTree(outExisted ? runOn : o.out());
+                    ObjectNode ev = Json.object().put("lock", o.replayLock().toString());
+                    differences.forEach(ev.putArray("differences")::add);
+                    throw new Refused("replay-lock-mismatch", ev);
+                }
+            }
+        }
+        Recording rec = o.replay() == null ? original : Recording.open(runOn);
+        if (o.replay() != null) { rec.verifyDigests(); rec.verifyBatches(); }
+        // a replay recording names the outOfOrdernessMs its deadlines were proved with: a run under another rule is refused (spec 583)
+        JsonNode replayO = rec.manifest().path("source").path("outOfOrdernessMs");
+        if (rec.manifest().path("source").has("replayOf") && (!replayO.isIntegralNumber() || replayO.longValue() != oo)) {
+            ObjectNode ev = Json.object();
+            ev.set("recording", replayO.deepCopy());
+            throw new Refused("replay-recording-rule-mismatch", Json.putSafe(ev, "rule", oo));
+        }
 
         // (2) routing, subscriptions, the first batch
         RoutingManifest routing = rec.routing();
@@ -140,14 +184,14 @@ public final class ReferenceEngine {
         String artifact = o.artifactSha256() != null ? o.artifactSha256() : artifactSha256();
         Pins pins = pins(rules, rec.manifest().path("definitions"),
             new Pins.Job(ENGINE, ENGINE_VERSION, artifact, runId, "payload", TextNode.valueOf("off"), routing.routingDigest()));
-        Stage1 stage1 = new Stage1(rules, NegativeControls.NONE);
+        String causeKind = o.replay() == null ? Envelope.ONLINE : Envelope.REPLAYED;
+        Stage1 stage1 = new Stage1(rules, NegativeControls.NONE, causeKind);
         Routing router = new Routing(rules);
-        long oo = rules.attribution().outOfOrdernessMs();
         Map<String, StationTask> tasks = new LinkedHashMap<>();
         for (String s : stations) tasks.put(s, new StationTask(stage1, g.generation(), s, routing.partitionOf(s), oo, pins, initEvidence(o.state(), g.generation())));
         RejectCollector rejects = new RejectCollector(g.generation(), initEvidence(o.state(), g.generation()));
         // stage 2: one writer per station sharing one progress tracker, the stage-2 reject collector (partition 6, no initEvidence)
-        Stage2 stage2 = new Stage2(rules, NegativeControls.NONE);
+        Stage2 stage2 = new Stage2(rules, NegativeControls.NONE, causeKind);
         ProgressTracker tracker = new ProgressTracker();
         Map<String, SetCoverage.EvidenceRange> evidenceRanges = new TreeMap<>();
         rec.evidenceRange().forEach((d, r) -> evidenceRanges.put(d, new SetCoverage.EvidenceRange(r.from(), r.to())));
@@ -253,12 +297,15 @@ public final class ReferenceEngine {
 
         // (4) the cut log and the run record
         cutLog.write(o.out());
-        String manifestSha;
-        try { manifestSha = Canonical.digestOf(Files.readAllBytes(o.recording().resolve(Recording.MANIFEST))); } catch (IOException e) { throw new UncheckedIOException(e); }
+        String manifestSha, originalSha = null;
+        try {
+            manifestSha = Canonical.digestOf(Files.readAllBytes(rec.dir().resolve(Recording.MANIFEST)));
+            if (o.replay() != null) originalSha = Canonical.digestOf(Files.readAllBytes(o.recording().resolve(Recording.MANIFEST)));
+        } catch (IOException e) { throw new UncheckedIOException(e); }
         ObjectNode digests = Json.object();
         rec.digests().forEach(digests::put);
-        ObjectNode record = RunRecord.build(new RunRecord.Facts(runId, g.generation(), registeredRowSha256, scope, o.seed(), o.shuffle(), pins, manifestSha, digests,
-            head.releaseSha256(), rules.rulesDigest(), jcsJava(), subscribedAll, consumed, cutLog.size(), o.command()));
+        ObjectNode record = RunRecord.build(new RunRecord.Facts(runId, g.generation(), registeredRowSha256, scope, o.seed(), o.shuffle(), o.replay(), originalSha,
+            pins, manifestSha, digests, head.releaseSha256(), rules.rulesDigest(), jcsJava(), subscribedAll, consumed, cutLog.size(), o.command()));
         RunRecord.write(o.out(), record);
         return new Result(runId, o.out(), cutLog.size(), record);
     }
@@ -385,22 +432,13 @@ public final class ReferenceEngine {
         @Override public void close() { for (Recording.Reader r : open.values()) r.close(); }
     }
 
-    private static byte[] valueOf(byte[] line) {
-        try (JsonParser p = Json.JSON.getFactory().createParser(line)) {
-            if (p.nextToken() != JsonToken.START_OBJECT) throw new IllegalArgumentException("malformed recording: a line is not an object");
-            while (p.nextToken() == JsonToken.FIELD_NAME) {
-                String name = p.getCurrentName();
-                p.nextToken();
-                if (!"value".equals(name)) { p.skipChildren(); continue; }
-                int from = (int) p.getTokenLocation().getByteOffset();
-                p.skipChildren();
-                p.nextToken();   // the token after the value fixes its end
-                int to = (int) p.getTokenLocation().getByteOffset();
-                while (to > from && (line[to - 1] == ',' || line[to - 1] == ' ')) to--;
-                return Arrays.copyOfRange(line, from, to);
-            }
-        } catch (IOException e) { throw new IllegalArgumentException("malformed recording: " + e.getMessage(), e); }
-        throw new IllegalArgumentException("malformed recording: a line has no value");
+    private static byte[] valueOf(byte[] line) { return Recording.valueBytes(line); }
+
+    private static void deleteTree(Path root) {
+        if (!Files.exists(root)) return;
+        try (java.util.stream.Stream<Path> w = Files.walk(root)) {
+            for (Path p : w.sorted(Comparator.reverseOrder()).toList()) Files.deleteIfExists(p);
+        } catch (IOException e) { throw new UncheckedIOException(e); }
     }
 
     static String artifactSha256() {

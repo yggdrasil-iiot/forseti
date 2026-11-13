@@ -41,7 +41,14 @@ public final class Stage2 {
     final long P, L, workRecordsMs;
     private final List<String> stations;
 
-    public Stage2(RuleSet rules, NegativeControls controls) {
+    /** {@link Envelope#ONLINE} or {@link Envelope#REPLAYED}: the cause kind every row this instance emits carries. */
+    private final String causeKind;
+
+    public Stage2(RuleSet rules, NegativeControls controls) { this(rules, controls, Envelope.ONLINE); }
+
+    /** {@code causeKind} as {@code Stage1}'s: {@link Envelope#REPLAYED} in a generation replayed in event-time order (spec 583). */
+    public Stage2(RuleSet rules, NegativeControls controls, String causeKind) {
+        this.causeKind = Envelope.causeKind(causeKind);
         this.rules = rules;
         this.controls = Objects.requireNonNull(controls);
         this.impact = rules.impact();
@@ -129,11 +136,7 @@ public final class Stage2 {
         }
     }
 
-    private static ObjectNode inputCause(String inputKind, JsonNode identity) {
-        ObjectNode c = Json.object().put("kind", "input").put("inputKind", inputKind);
-        c.set("identity", identity);
-        return c;
-    }
+    private ObjectNode inputCause(String inputKind, JsonNode identity) { return Envelope.inputCause(causeKind, inputKind, identity); }
     private static Long effective(Stage2State s, Long w2) { return w2 != null ? w2 : s.lastW2; }
 
     // ===================================================================================================== inputs
@@ -223,7 +226,7 @@ public final class Stage2 {
         if (s.lastW2 == null || w > s.lastW2) s.lastW2 = w;
         if (!s.deadlines.remove(t.deadline(), t.key(), t.purpose())) return;   // cancelled or replaced meanwhile
         if (RETENTION.equals(t.purpose())) { s.bases.remove(text(t.key())); return; }   // T9: evidence leaves stage-2 state, no re-judgement
-        Ctx c = new Ctx(s, out, Json.putSafe(Json.object().put("kind", "timer"), "deadline", t.deadline()), null, w);
+        Ctx c = new Ctx(s, out, Envelope.timerCause(causeKind, t.deadline()), null, w);
         String key = text(t.key());
         if (s.incidents.containsKey(key)) judge(c, key);
     }
@@ -231,7 +234,7 @@ public final class Stage2 {
     private void cutClose(Stage2State s, Events2.CutClose cc, List<Object> out) {
         long w = cc.w2();
         s.lastW2 = w;
-        Ctx c = new Ctx(s, out, Json.putSafe(Json.object().put("kind", "timer"), "deadline", w), null, w);
+        Ctx c = new Ctx(s, out, Envelope.timerCause(causeKind, w), null, w);
         for (String k : new ArrayList<>(s.incidents.keySet())) judge(c, k);
         for (TreeMap<String, SetCoverage.ActivityRow> rows : s.activity.values()) rows.values().removeIf(x -> x.sourceTs() + workRecordsMs < w);
         s.activity.values().removeIf(Map::isEmpty);

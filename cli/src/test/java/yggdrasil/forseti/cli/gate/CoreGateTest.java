@@ -69,13 +69,14 @@ class CoreGateTest {
 
     @Test void everyManifestIdHasARegisteredAssertion() {
         List<String> manifest = manifestIds(MANIFEST), registered = registeredIds();
-        assertEquals(75, manifest.size());
+        assertEquals(79, manifest.size());
         assertEquals(manifest.size(), new HashSet<>(manifest).size(), "no id twice in the manifest");
         assertEquals(registered.size(), new HashSet<>(registered).size(), "no id registered twice");
         assertEquals(new TreeSet<>(manifest), new TreeSet<>(registered), "every manifest id is registered and every registered id is in the manifest");
         for (JsonNode a : Json.read(MANIFEST).path("assertions")) {
             String id = a.path("id").asText();
-            assertEquals(id.startsWith("F-GEN-") ? 5 : id.startsWith("F-") ? 1 : id.startsWith("S-") ? 2 : id.startsWith("T-") ? 3 : 4, a.path("pr").asInt(), a.toString());
+            boolean pr5 = id.startsWith("F-GEN-") || id.equals("I-20") || id.equals("I-23");
+            assertEquals(pr5 ? 5 : id.startsWith("F-") ? 1 : id.startsWith("S-") ? 2 : id.startsWith("T-") ? 3 : 4, a.path("pr").asInt(), a.toString());
             assertTrue(a.path("id").asText().matches("[FSTIJC]-[A-Z0-9-]+[b-f]?"), a.toString());
             assertFalse(a.path("description").asText().isBlank(), a.toString());
         }
@@ -87,9 +88,10 @@ class CoreGateTest {
         Run r = run(manifest, checks);
         assertEquals(List.of(), r.list("failed"), String.join("\n", r.lines()));
         assertEquals(0, r.exit());
-        assertEquals("assertions run 28 / expected 28", r.last());
+        assertEquals("assertions run 30 / expected 30", r.last());
         for (String id : List.of("S-SMOKE-VISIT", "S-SMOKE-PLC", "S-REVISIONS", "S-PROGRESS", "S-W1", "S-DETERMINISM",
-                "T-PROGRESS-TRACKER", "T-SMOKE-INCIDENT", "T-CASCADE", "T-DELETE", "T-LEDGER-2", "F-GEN-NEW", "F-GEN-REFUSES-UNREGISTERED", "F-GEN-FLOOR"))
+                "T-PROGRESS-TRACKER", "T-SMOKE-INCIDENT", "T-CASCADE", "T-DELETE", "T-LEDGER-2", "F-GEN-NEW", "F-GEN-REFUSES-UNREGISTERED", "F-GEN-FLOOR",
+                "F-GEN-LIFECYCLE", "F-GEN-PROMOTE-REQUIRES-REPORT"))
             assertTrue(r.lines().stream().anyMatch(l -> l.startsWith("PASS " + id + " ")), id + " in " + r.lines());
     }
 
@@ -99,10 +101,10 @@ class CoreGateTest {
         assertEquals(1, r.exit());
         assertEquals(List.of("F-NOT-REGISTERED"), r.list("notRun"));
         assertEquals(List.of(), r.list("failed"));
-        assertEquals("assertions run 75 / expected 76", r.last());
+        assertEquals("assertions run 79 / expected 80", r.last());
         assertEquals(1, r.report().path("exit").asInt());
-        assertEquals(76, r.report().path("assertionsExpected").asInt());
-        assertEquals(75, r.report().path("assertionsRun").asInt());
+        assertEquals(80, r.report().path("assertionsExpected").asInt());
+        assertEquals(79, r.report().path("assertionsRun").asInt());
     }
 
     @Test void anUnknownAssertionFailsTheGate() {
@@ -112,7 +114,7 @@ class CoreGateTest {
         assertEquals(1, r.exit());
         assertEquals(List.of("F-UNKNOWN"), r.list("failed"));
         assertEquals(List.of(), r.list("notRun"));
-        assertEquals("assertions run 75 / expected 75", r.last());
+        assertEquals("assertions run 79 / expected 79", r.last());
 
         List<Check> twice = new ArrayList<>(holding());
         twice.add(new Check("F-JCS-JAVA", c -> new Result(true, "a second run of one id")));
@@ -127,7 +129,7 @@ class CoreGateTest {
         Run r = run(MANIFEST, checks);
         assertEquals(1, r.exit());
         assertEquals(List.of(checks.get(3).id()), r.list("failed"));
-        assertEquals("assertions run 75 / expected 75", r.last());
+        assertEquals("assertions run 79 / expected 79", r.last());
     }
 
     @Test void aCrashStillWritesAFailureReport() throws Exception {
@@ -152,14 +154,14 @@ class CoreGateTest {
         wantFailed.remove("F-JOURNAL-REDUCERS");   // inline journals: the one assertion that reads no file
         assertEquals(wantFailed, new TreeSet<>(missing.list("failed")), missing.lines().toString());
         assertEquals(NEEDS_ORACLE, new TreeSet<>(missing.list("notRun")));
-        assertEquals("assertions run 28 / expected 75", missing.last());
+        assertEquals("assertions run 30 / expected 79", missing.last());
         assertTrue(missing.report().path("fixtureDigests").path("registry").isNull());
     }
 
     @Test void theReportRecordsPinsAndDigests() throws Exception {
         Run r = run(MANIFEST, holding());
         assertEquals(0, r.exit());
-        assertEquals("assertions run 75 / expected 75", r.last());
+        assertEquals("assertions run 79 / expected 79", r.last());
         JsonNode rep = r.report();
         List<String> fields = new ArrayList<>();
         rep.fieldNames().forEachRemaining(fields::add);
@@ -167,8 +169,8 @@ class CoreGateTest {
         assertEquals("core", rep.path("scope").asText());
         assertEquals("core", rep.path("engine").asText());
         assertEquals(Canonical.digestOf(Files.readAllBytes(MANIFEST)), rep.path("manifestSha256").asText());
-        assertEquals(75, rep.path("assertionsExpected").asInt());
-        assertEquals(75, rep.path("assertionsRun").asInt());
+        assertEquals(79, rep.path("assertionsExpected").asInt());
+        assertEquals(79, rep.path("assertionsRun").asInt());
         assertEquals(20261109L, rep.path("seed").asLong());
         assertEquals("io.github.erdtman:java-json-canonicalization:1.1", rep.path("pins").path("jcs").path("java").asText());
         assertTrue(rep.path("pins").has("python") && rep.path("pins").path("jcs").has("python"));
@@ -251,19 +253,22 @@ class CoreGateTest {
         assertEquals("some-control", nc.report().path("negativeControl").asText());
         assertEquals("full", nc.report().path("layout").asText());
 
-        // a shard run of a one-shard plan that makes nothing: layout shard, every result under its shard
+        // a shard run of a two-shard plan whose shard "some" makes nothing: layout shard, every result under its shard
         Path root = Files.createDirectories(tmp.resolve("root"));
         ObjectNode planJson = Json.object();
         ArrayNode shards = planJson.putArray("shards");
         ObjectNode all = shards.addObject().put("name", "everything");
         Scenarios.all().forEach(all.putArray("scenarios")::add);
         Scenarios.SHUFFLED.forEach(all.putArray("shuffled")::add);
-        all.putArray("assertions");
+        ArrayNode first = all.putArray("assertions");
+        ArrayNode planned = all.putArray("generationRuns");
+        Scenarios.GENERATION_RUNS.forEach(g -> planned.add(g.name()));
         ObjectNode some = shards.addObject().put("name", "some");
         some.putArray("scenarios");
         some.putArray("shuffled");
+        some.putArray("generationRuns");
         ArrayNode ids = some.putArray("assertions");
-        for (String id : manifestIds(MANIFEST)) if (!Injections.AGGREGATE.contains(id)) ids.add(id);
+        for (String id : manifestIds(MANIFEST)) if (!Injections.AGGREGATE.contains(id)) { if (first.isEmpty()) first.add(id); else ids.add(id); }
         Injections.AGGREGATE.forEach(planJson.putArray("aggregate")::add);
         Json.write(root.resolve(Shards.PLAN), planJson);
         Run shard = run(new CoreGate.Options(root, MANIFEST, tmp.resolve("shard-out"), PYTHON, null, List.of(), CoreGate.DEFAULT_SEED, "test", "some", null), holding());
@@ -367,6 +372,103 @@ class CoreGateTest {
         JsonNode s = Json.read(summaries);
         assertTrue(s.path("runs").isArray() && s.path("shuffled").isArray(), s.toString());
         assertEquals(List.of(), GateEvidence.validate(ROOT, out), "the full run's bundle passes the validator as written");
+    }
+
+    /** An aggregate run reads the shard bundles and evaluates the aggregate assertions: it registers no generation (no {@code state/},
+     *  no {@code generation new}), keeps no run and no journals, and its {@code generations[]} and {@code runs[]} are the shards' merged,
+     *  unchanged. The shard bundles state this test run's own pins, so the aggregate run passes. */
+    @Test void theAggregateRegistersNothingAndRunsNothing() throws Exception {
+        ObjectNode common = Json.object();
+        common.put("manifestSha256", Canonical.digestOf(Files.readAllBytes(MANIFEST)));
+        Json.putSafe(common, "seed", CoreGate.DEFAULT_SEED);
+        common.set("pins", CoreGate.pins(context(List.of())));
+        common.set("fixtureDigests", CoreGate.fixtureDigests(ROOT));
+        GateBundles.Aggregate a = GateBundles.aggregate(tmp.resolve("agg-source"), GateBundles.Options.DEFAULT, common);
+        Path out = tmp.resolve("agg-out");
+        Run r = run(new CoreGate.Options(ROOT, MANIFEST, out, PYTHON, null, List.of(), CoreGate.DEFAULT_SEED, "test", null, a.shards()), holding());
+        assertEquals(0, r.exit(), r.lines().toString());
+        assertEquals("assertions run 79 / expected 79", r.last());
+        JsonNode rep = r.report(), source = a.reportJson();
+        assertEquals("aggregate", rep.path("layout").asText());
+        assertTrue(Shards.same(source.get("generations"), rep.get("generations")), "generations[] are the shards' merged, unchanged");
+        assertTrue(Shards.same(source.get("runs"), rep.get("runs")), "runs[] are the shards' merged, unchanged");
+        assertTrue(Shards.same(source.get("shards"), rep.get("shards")));
+        for (String d : List.of(GateEvidence.STATE, GateEvidence.RUNS, GateEvidence.JOURNALS)) assertFalse(Files.exists(out.resolve(d)), d + " in an aggregate run's output");
+        try (java.util.stream.Stream<Path> logs = Files.exists(out.resolve("logs")) ? Files.list(out.resolve("logs")) : java.util.stream.Stream.empty()) {
+            assertEquals(List.of(), logs.map(p -> p.getFileName().toString()).filter(n -> n.startsWith("generation-new-") || n.startsWith("harness-")).toList());
+        }
+        Set<String> made = new TreeSet<>();
+        for (JsonNode g : rep.get("generations")) made.add(g.path("shard").asText());
+        assertEquals(new TreeSet<>(Shards.load(ROOT).names()), made, "every generation listed is a shard's");
+    }
+
+    /** The generations of {@code F-GEN-FLOOR} and of {@code I-20}'s rule change live in their own assertion stores, isolated, also when the
+     *  pipeline store is a kept {@code --state} store; the pipeline store's floor stays 1 while theirs rise to 2. */
+    @Test void floorAndRuleChangeGenerationsAreIsolated() throws Exception {
+        CoreGate.Context c = context(List.of("smoke"));
+        c.pipeline = new GateEvidence.Store(GateEvidence.PIPELINE, Files.createDirectories(c.out.resolve(GateEvidence.STATE)), true);
+        GateEvidence.register(c, c.pipeline, REGISTRY, SMOKE, "smoke", GateEvidence.ONLINE, null);
+        c.current = "F-GEN-FLOOR";
+        Result floor = GenerationAssertions.floor(c);
+        assertTrue(floor.ok(), floor.evidence());
+        c.current = null;
+        Scenarios.Run base = new Scenarios.Run();
+        base.name = "smoke";
+        base.recording = SMOKE;
+        base.manifest = Json.read(SMOKE.resolve("manifest.json"));
+        Scenarios.GenerationRun g = Scenarios.generationRun("baseline@rule-1.0.1");
+        Scenarios.Run b = Scenarios.ruleChange(c, g, base, REGISTRY);
+        assertNull(b.failure, b.failure);
+        assertEquals("assertion:I-20", b.generation.store().name());
+        assertEquals(2, b.generation.generation());
+        assertEquals(1, b.previous.generation());
+        assertEquals("1.0.1", b.rule.path("attributionRuleVersion").asText());
+        JsonNode gens = c.evidence.generations();
+        assertEquals(5, gens.size(), gens.toString());
+        assertEquals("shared", gens.get(0).path("state").asText());
+        for (int i = 1; i < 5; i++) {
+            JsonNode e = gens.get(i);
+            assertEquals("isolated", e.path("state").asText(), e.toString());
+            assertTrue(e.path("store").asText().equals("assertion:" + e.path("assertion").asText()), e.toString());
+        }
+        assertEquals(List.of("F-GEN-FLOOR", "F-GEN-FLOOR", "I-20", "I-20"), List.of(gens.get(1).path("assertion").asText(), gens.get(2).path("assertion").asText(),
+            gens.get(3).path("assertion").asText(), gens.get(4).path("assertion").asText()));
+        assertEquals(List.of("self-test", "rule-change"), List.of(gens.get(3).path("variant").asText(), gens.get(4).path("variant").asText()));
+        assertEquals(1L, new yggdrasil.forseti.core.release.FloorStore(c.pipeline.dir()).get("line2").map(yggdrasil.forseti.core.release.FloorStore.Floor::headVersion).orElse(null));
+        assertEquals(2L, new yggdrasil.forseti.core.release.FloorStore(b.generation.store().dir()).get("line2").map(yggdrasil.forseti.core.release.FloorStore.Floor::headVersion).orElse(null));
+        assertEquals(1, new yggdrasil.forseti.cli.generation.FileGenerationStore(c.pipeline.dir()).all().size(), "the pipeline store holds only its own registration");
+        assertEquals(List.of(), GateEvidence.validate(ROOT, c.out, bundle(c), new Summaries().toJson()));
+    }
+
+    /** In a full bundle each generation run is listed once in {@code runs[]} with its variant and store, its generation with the same
+     *  variant; a second entry for it, or the entry under another variant, is a coverage problem. */
+    @Test void aGenerationRunIsListedOnceWithItsVariant() throws Exception {
+        GateBundles.Bundle b = GateBundles.full(tmp.resolve("full"), GateBundles.Options.DEFAULT);
+        ObjectNode rep = b.reportJson();
+        JsonNode summaries = b.summariesJson();
+        assertEquals(List.of(), GateEvidence.validate(ROOT, b.dir(), rep, summaries));
+        for (Scenarios.GenerationRun g : Scenarios.GENERATION_RUNS) {
+            List<JsonNode> entries = new ArrayList<>();
+            for (JsonNode r : rep.get("runs")) if (r.path("scenario").asText().equals(g.scenario()) && r.path("variant").asText().equals(g.variant())) entries.add(r);
+            assertEquals(1, entries.size(), g.name());
+            assertEquals(g.store(), entries.get(0).path("store").asText(), g.name());
+            JsonNode gen = null;
+            for (JsonNode x : rep.get("generations"))
+                if (x.path("store").asText().equals(g.store()) && x.path("registeredRowSha256").asText().equals(entries.get(0).path("registeredRowSha256").asText())) gen = x;
+            assertNotNull(gen, g.name());
+            assertEquals(g.variant(), gen.path("variant").asText(), g.name());
+            assertTrue(summaries.path("generationRuns").has(g.name()), g.name());
+            assertEquals(g.store().equals("pipeline") ? "shared" : "isolated", gen.path("state").asText(), g.name());
+        }
+        String replay = "horizon-planned-late@replay";
+        ObjectNode twice = rep.deepCopy();
+        ((ArrayNode) twice.get("runs")).add(GateBundles.generationRunEntry(twice, replay).deepCopy().put("runId", "a-second-entry"));
+        assertTrue(GateEvidence.validate(ROOT, b.dir(), twice, summaries).contains(replay + ": two run entries for one summary"));
+        ObjectNode other = rep.deepCopy();
+        GateBundles.generationRunEntry(other, replay).put("variant", "online");
+        List<String> p = GateEvidence.validate(ROOT, b.dir(), other, summaries);
+        assertTrue(p.contains(replay + ": a summary without a generation-run run entry"), p.toString());
+        assertTrue(p.contains("horizon-planned-late: two run entries for one summary"), p.toString());
     }
 
     /** Full layout: a shuffled run whose oracle comparison stops one cut short, and one whose comparison differs at one cut, are each a

@@ -101,6 +101,39 @@ class Recording:
                     through(v, f"throughOffsets.{topic}.{p}")
         if self.routing_digest() != self.routing.get("routingDigest"):
             raise Malformed("routingDigest differs from the recomputed digest")
+        self.replay_of, self.replay_out_of_orderness_ms = self._replay_source(m)
+
+    @staticmethod
+    def _replay_source(m: dict):
+        """The replay fields of ``source`` (spec Event-time replay): ``replayOf`` (the raw SHA-256 of the original manifest),
+        ``outOfOrdernessMs`` and the deadline proofs ``deadlines``, whose cut ids are those of the manifest's ``deadlines``. A
+        recording without ``replayOf`` is an original: (None, None). A replay recording is otherwise read like any recording."""
+        src = m.get("source")
+        if not isinstance(src, dict) or "replayOf" not in src:
+            return None, None
+        of = src["replayOf"]
+        if not isinstance(of, str) or len(of) != 64 or any(ch not in "0123456789abcdef" for ch in of):
+            raise Malformed("source.replayOf")
+        oo = non_negative(src.get("outOfOrdernessMs"), "source.outOfOrdernessMs")
+        proofs = src.get("deadlines")
+        if not isinstance(proofs, list):
+            raise Malformed("source.deadlines")
+        planned = [(d.get("kind"), d.get("ref"), d.get("at"), d.get("cutA"), d.get("cutB")) for d in m.get("deadlines", [])]
+        proved = []
+        for d in proofs:
+            if not isinstance(d, dict) or not isinstance(d.get("stations"), list) or not d["stations"]:
+                raise Malformed("source.deadlines stations")
+            for f in ("at", "originalCutA", "originalCutB", "cutA", "cutB"):
+                non_negative(d.get(f), f"source.deadlines.{f}")
+            for f in ("w1A", "w1B"):
+                if not isinstance(d.get(f), dict) or sorted(d[f]) != sorted(d["stations"]):
+                    raise Malformed(f"source.deadlines.{f}")
+                for v in d[f].values():
+                    _int(v, f"source.deadlines.{f}", -MAX_SAFE, MAX_SAFE)
+            proved.append((d.get("kind"), d.get("ref"), d.get("at"), d.get("cutA"), d.get("cutB")))
+        if proved != planned:
+            raise Malformed("source.deadlines differ from the manifest's deadlines")
+        return of, oo
 
     def subscribed(self, topic: str) -> list[int]:
         return list(self.routing["subscribed"].get(topic, []))

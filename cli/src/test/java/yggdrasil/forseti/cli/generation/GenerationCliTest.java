@@ -6,6 +6,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.PrintStream;
+import java.nio.channels.FileChannel;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.*;
 import java.time.Clock;
@@ -15,6 +16,7 @@ import java.util.*;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import yggdrasil.forseti.cli.Main;
+import yggdrasil.forseti.cli.gate.GateBundles;
 import yggdrasil.forseti.cli.harness.ReferenceEngine;
 import yggdrasil.forseti.cli.recording.Recording;
 import yggdrasil.forseti.core.Json;
@@ -331,8 +333,219 @@ class GenerationCliTest {
         viaMain.addAll(List.of(newArgs(state, REGISTRY, "line2", RULE, SMOKE, "--now", "1794182400000")));
         assertEquals(2, main(viaMain.toArray(String[]::new)).exit());
         assertEquals(2, cli(clock(REGISTRY, "line2"), "retire", "--state", state.toString(), "--generation", "1", "--clock", "fixed").exit());
-        assertEquals(2, cli(clock(REGISTRY, "line2"), "promote", "--state", state.toString()).exit(), "no promote verb in this PR");
+        assertEquals(2, cli(clock(REGISTRY, "line2"), "promote", "--state", state.toString()).exit(), "promote without its flags is a usage error");
         assertFalse(Files.exists(state.resolve(FileGenerationStore.FILE)), "a usage error writes nothing");
+    }
+
+    // ============================================================================================================== promote
+
+    /** A time at which every fixture head the promotions verify is valid (after each signedAt, before each expiry). */
+    static Clock promoteClock() {
+        return fixed(Math.max(Math.max(signedAt(REGISTRY, "line2"), signedAt(REGISTRY, "line2-plc")), signedAt(NEXT, "line2")) + 120_000);
+    }
+
+    /** {@code generation promote} in-process with the repository root. */
+    static Out promoteCli(Clock clock, String... args) {
+        ByteArrayOutputStream so = new ByteArrayOutputStream(), se = new ByteArrayOutputStream();
+        int exit = GenerationCli.run(args, new PrintStream(so, true, StandardCharsets.UTF_8), new PrintStream(se, true, StandardCharsets.UTF_8), clock, ROOT);
+        return new Out(exit, so.toString(StandardCharsets.UTF_8), se.toString(StandardCharsets.UTF_8), so.toByteArray());
+    }
+
+    /** The arguments promoting the full bundle's {@code scenario} run on its own store, {@code mappings} the registry's. */
+    static List<String> promoteArgs(GateBundles.Bundle b, String scenario, Path registry) {
+        JsonNode r = b.reportJson();
+        JsonNode g = GateBundles.generationEntry(r, null, scenario), e = GateBundles.runEntry(r, null, scenario);
+        return new ArrayList<>(List.of("promote", "--state", b.state().toString(), "--mappings", registry.resolve("mappings").toString(), "--trusted-keys", KEYS.toString(),
+            "--generation", g.get("generation").asText(), "--registered-row-sha256", g.get("registeredRowSha256").asText(),
+            "--run", b.file(e.get("runRecord").asText()).toString(), "--gate-report", b.report().toString(), "--accept-scope", "core"));
+    }
+
+    static Out promote(GateBundles.Bundle b, String scenario) { return promoteCli(promoteClock(), promoteArgs(b, scenario, REGISTRY).toArray(String[]::new)); }
+
+    GateBundles.Bundle bundle() throws IOException { return GateBundles.full(tmp.resolve("bundle"), GateBundles.Options.DEFAULT); }
+
+    static long generationOf(GateBundles.Bundle b, String scenario) { return GateBundles.generationEntry(b.reportJson(), null, scenario).get("generation").longValue(); }
+
+    static byte[] log(GateBundles.Bundle b) throws IOException { return Files.readAllBytes(b.state().resolve(FileGenerationStore.FILE)); }
+
+    @Test void promoteAppendsReplayingVerifiedCurrentInOneOperation() throws IOException {
+        GateBundles.Bundle b = bundle();
+        long n = generationOf(b, "smoke");
+        byte[] before = log(b);
+        List<String> events = new ArrayList<>();
+        GenerationCli.stores = s -> new FileGenerationStore(s, f -> new FileGenerationStoreTest.Spy(FileChannel.open(f, StandardOpenOption.CREATE,
+            StandardOpenOption.WRITE, StandardOpenOption.APPEND), events));
+        Out o;
+        try { o = promote(b, "smoke"); } finally { GenerationCli.stores = FileGenerationStore::new; }
+        assertEquals(0, o.exit(), o.stdout() + o.stderr());
+        assertEquals("write", events.get(0));
+        assertEquals(List.of("force:true", "close"), events.subList(events.size() - 2, events.size()), "one channel, one force: " + events);
+        assertTrue(events.subList(0, events.size() - 2).stream().allMatch("write"::equals), events.toString());
+        JsonNode p = o.json();
+        assertEquals(sorted(List.of("generation", "status", "registeredRowSha256", "gateReportSha256", "run", "retired")), fields(p));
+        assertEquals(n, p.get("generation").longValue());
+        assertEquals("current", p.get("status").asText());
+        assertTrue(p.get("retired").isNull());
+        String reportSha = Canonical.digestOf(Files.readAllBytes(b.report()));
+        assertEquals(reportSha, p.get("gateReportSha256").asText());
+        Path runFile = b.file(GateBundles.runEntry(b.reportJson(), null, "smoke").get("runRecord").asText());
+        JsonNode rr = Json.read(runFile);
+        assertEquals(rr.get("runId"), p.path("run").get("runId"));
+        assertEquals(Canonical.digestOf(Files.readAllBytes(runFile)), p.path("run").get("runRecordSha256").asText());
+        byte[] after = log(b);
+        assertArrayEquals(before, Arrays.copyOf(after, before.length), "earlier bytes unchanged");
+        List<GenerationStore.Entry> rows = new FileGenerationStore(b.state()).byNumber(n);
+        assertEquals(List.of(Generation.REGISTERED, Generation.REPLAYING, Generation.VERIFIED, Generation.CURRENT), rows.stream().map(x -> x.row().status()).toList());
+        for (GenerationStore.Entry x : rows.subList(1, 4)) assertArrayEquals(Canonical.bytes(p.get("run")), Canonical.bytes(x.row().run()), "the three rows carry the same run");
+        assertNull(rows.get(1).row().gateReportSha256());
+        assertEquals(reportSha, rows.get(2).row().gateReportSha256());
+        assertEquals(reportSha, rows.get(3).row().gateReportSha256());
+        assertEquals(promoteClock().millis(), rows.get(3).row().at());
+        List<JsonNode> all = lines(b.state().resolve(FileGenerationStore.FILE));
+        assertEquals(List.of("replaying", "verified", "current"), all.subList(all.size() - 3, all.size()).stream().map(x -> x.path("value").path("status").asText()).toList(),
+            "the batch is the end of the log");
+        assertEquals(n, new FileGenerationStore(b.state()).current("line2").orElseThrow().row().generation());
+    }
+
+    @Test void promoteRetiresThePreviousCurrentOfTheScope() throws IOException {
+        GateBundles.Bundle b = bundle();
+        long first = generationOf(b, "smoke"), second = generationOf(b, "baseline");
+        assertEquals(0, promote(b, "smoke").exit());
+        Out o = promote(b, "baseline");
+        assertEquals(0, o.exit(), o.stdout() + o.stderr());
+        assertEquals(first, o.json().get("retired").longValue());
+        List<JsonNode> all = lines(b.state().resolve(FileGenerationStore.FILE));
+        List<String> tail = new ArrayList<>();
+        for (JsonNode x : all.subList(all.size() - 4, all.size())) tail.add(x.path("value").path("generation").asLong() + " " + x.path("value").path("status").asText());
+        assertEquals(List.of(second + " replaying", second + " verified", first + " retired", second + " current"), tail);
+        FileGenerationStore s = new FileGenerationStore(b.state());
+        assertEquals(second, s.current("line2").orElseThrow().row().generation());
+        GenerationStore.Entry retired = s.byNumber(first).get(4);
+        assertNull(retired.row().run());
+        assertNull(retired.row().gateReportSha256());
+    }
+
+    @Test void promoteVerifiesTheHeadAtTheCurrentTime() throws IOException {
+        GateBundles.Bundle b = bundle();
+        byte[] before = log(b);
+        JsonNode env = Json.read(REGISTRY.resolve("mappings/head-attestations/line2.dsse.json"));
+        long expires = Instant.parse(Json.read(Base64.getDecoder().decode(env.get("payload").asText())).path("predicate").path("expires").asText()).toEpochMilli();
+        Out expired = promoteCli(fixed(expires), promoteArgs(b, "smoke", REGISTRY).toArray(String[]::new));
+        assertEquals(1, expired.exit(), expired.stdout() + expired.stderr());
+        assertEquals("head-expired", expired.json().get("refusal").asText());
+        assertArrayEquals(before, log(b), "no row");
+        // a later registration raised the floor to 2: the head the generation pinned (1) is now a rollback
+        register(b.state(), NEXT, "line2", "line2-attribution@1.0.1", null);
+        byte[] raised = log(b);
+        Out lowered = promote(b, "smoke");
+        assertEquals(1, lowered.exit(), lowered.stdout() + lowered.stderr());
+        assertEquals("head-rollback", lowered.json().get("refusal").asText());
+        assertArrayEquals(raised, log(b), "no row");
+    }
+
+    @Test void promoteRefusesAGenerationWhoseHeadMovedOn() throws IOException {
+        GateBundles.Bundle b = bundle();
+        byte[] before = log(b);
+        Out o = promoteCli(promoteClock(), promoteArgs(b, "smoke", NEXT).toArray(String[]::new));
+        assertEquals(1, o.exit(), o.stdout() + o.stderr());
+        assertEquals("generation-release-superseded", o.json().get("refusal").asText());
+        assertNotEquals(o.json().get("pinnedReleaseSha256"), o.json().get("headReleaseSha256"));
+        assertArrayEquals(before, log(b), "no row");
+    }
+
+    @Test void promoteWithoutARunOrAReportIsAUsageError() throws IOException {
+        GateBundles.Bundle b = bundle();
+        byte[] before = log(b);
+        for (String flag : List.of("--run", "--gate-report", "--generation", "--registered-row-sha256")) {
+            List<String> a = promoteArgs(b, "smoke", REGISTRY);
+            int i = a.indexOf(flag);
+            a.remove(i + 1);
+            a.remove(i);
+            Out o = promoteCli(promoteClock(), a.toArray(String[]::new));
+            assertEquals(2, o.exit(), flag + ": " + o.stdout() + o.stderr());
+            assertTrue(o.stderr().contains(flag), o.stderr());
+        }
+        List<String> semantic = promoteArgs(b, "smoke", REGISTRY);
+        semantic.set(semantic.indexOf("core"), "semantic");
+        assertEquals(2, promoteCli(promoteClock(), semantic.toArray(String[]::new)).exit(), "--accept-scope takes core only");
+        assertArrayEquals(before, log(b), "a usage error writes nothing");
+    }
+
+    @Test void twoScopesAreCurrentAtOnce() throws IOException {
+        GateBundles.Bundle b = GateBundles.full(tmp.resolve("bundle"), new GateBundles.Options("smoke-plc", null));
+        Out a = promote(b, "smoke"), c = promote(b, "smoke-plc");
+        assertEquals(0, a.exit(), a.stdout() + a.stderr());
+        assertEquals(0, c.exit(), c.stdout() + c.stderr());
+        assertTrue(c.json().get("retired").isNull(), "another scope's current is not retired");
+        FileGenerationStore s = new FileGenerationStore(b.state());
+        assertEquals(generationOf(b, "smoke"), s.current("line2").orElseThrow().row().generation());
+        assertEquals(generationOf(b, "smoke-plc"), s.current("line2-plc").orElseThrow().row().generation());
+    }
+
+    @Test void aSecondPromoteOfTheSameGenerationIsRefused() throws IOException {
+        GateBundles.Bundle b = bundle();
+        assertEquals(0, promote(b, "smoke").exit());
+        byte[] once = log(b);
+        Out again = promote(b, "smoke");
+        assertEquals(1, again.exit(), again.stdout() + again.stderr());
+        assertEquals("generation-transition", again.json().get("refusal").asText());
+        assertEquals("current", again.json().get("from").asText());
+        assertArrayEquals(once, log(b));
+    }
+
+    @Test void aFloorRaisedByAnotherRegistrationBeforePublicationRefusesThePromotion() throws IOException {
+        GateBundles.Bundle b = bundle();
+        long highest = new FileGenerationStore(b.state()).highest();
+        GenerationCli.afterParse = () -> register(b.state(), NEXT, "line2", "line2-attribution@1.0.1", null);
+        Out o;
+        try { o = promote(b, "smoke"); } finally { GenerationCli.afterParse = () -> {}; }
+        assertEquals(1, o.exit(), o.stdout() + o.stderr());
+        assertEquals("head-rollback", o.json().get("refusal").asText());
+        FileGenerationStore s = new FileGenerationStore(b.state());
+        assertEquals(highest + 1, s.highest(), "the interleaved registration landed");
+        assertEquals(2, s.registered(highest + 1).orElseThrow().row().headVersion());
+        assertTrue(s.all().stream().allMatch(x -> x.row().status().equals(Generation.REGISTERED)), "no replaying, verified, current or retired row");
+    }
+
+    @Test void aRegistrationStartedDuringAPromotionLandsAfterItsRows() throws Exception {
+        GateBundles.Bundle b = bundle();
+        long n = generationOf(b, "smoke"), highest = new FileGenerationStore(b.state()).highest();
+        Thread[] t = new Thread[1];
+        Throwable[] failure = new Throwable[1];
+        GenerationCli.insideHold = () -> {
+            GenerationCli.insideHold = () -> {};
+            t[0] = new Thread(() -> { try { register(b.state(), REGISTRY, "line2", RULE, null); } catch (Throwable x) { failure[0] = x; } });
+            t[0].start();
+            try { Thread.sleep(500); } catch (InterruptedException e) { Thread.currentThread().interrupt(); }
+            assertTrue(t[0].isAlive(), "the registration waits for the promotion's hold");
+        };
+        Out o;
+        try { o = promote(b, "smoke"); } finally { GenerationCli.insideHold = () -> {}; }
+        assertEquals(0, o.exit(), o.stdout() + o.stderr());
+        t[0].join(60_000);
+        assertNull(failure[0]);
+        List<JsonNode> all = lines(b.state().resolve(FileGenerationStore.FILE));
+        List<String> tail = new ArrayList<>();
+        for (JsonNode x : all.subList(all.size() - 4, all.size())) tail.add(x.path("value").path("generation").asLong() + " " + x.path("value").path("status").asText());
+        assertEquals(List.of(n + " replaying", n + " verified", n + " current", (highest + 1) + " registered"), tail);
+    }
+
+    @Test void aWriteOrForceFailureIsControlLogIoAndNeverSuccess() throws IOException {
+        for (boolean atForce : List.of(false, true)) {
+            GateBundles.Bundle b = GateBundles.full(tmp.resolve("bundle-" + atForce), GateBundles.Options.DEFAULT);
+            byte[] before = log(b);
+            GenerationCli.stores = s -> new FileGenerationStore(s, f -> new FileGenerationStoreTest.Driven(f, 64, atForce ? Long.MAX_VALUE : 0, false, -1, atForce));
+            Out o;
+            try { o = promote(b, "smoke"); } finally { GenerationCli.stores = FileGenerationStore::new; }
+            assertEquals(1, o.exit(), o.stdout() + o.stderr());
+            JsonNode p = o.json();
+            assertEquals("control-log-io", p.get("refusal").asText());
+            assertFalse(o.stdout().contains("\"status\":\"current\""), "never a success");
+            byte[] after = log(b);
+            assertEquals(after.length - before.length, p.get("appended").longValue(), "the count of bytes appended");
+            if (!atForce) assertArrayEquals(before, after);
+            else assertTrue(p.get("appended").longValue() > 0);
+        }
     }
 
     static List<String> fields(JsonNode n) { List<String> l = new ArrayList<>(); n.fieldNames().forEachRemaining(l::add); return l; }

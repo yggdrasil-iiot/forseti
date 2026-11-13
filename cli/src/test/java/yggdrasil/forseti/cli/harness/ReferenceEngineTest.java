@@ -23,6 +23,7 @@ import yggdrasil.forseti.cli.Main;
 import yggdrasil.forseti.cli.generation.FileGenerationStore;
 import yggdrasil.forseti.cli.generation.GenerationCli;
 import yggdrasil.forseti.cli.recording.Recording;
+import yggdrasil.forseti.cli.recording.ReplayRecording;
 import yggdrasil.forseti.core.Json;
 import yggdrasil.forseti.core.canon.Canonical;
 import yggdrasil.forseti.core.journal.*;
@@ -524,6 +525,138 @@ class ReferenceEngineTest {
         for (JsonNode n : lines(out, SAMPLES, 0)) if (!isProgress(n)) assertNotEquals("identity-mismatch", n.path("value").path("body").path("reason").asText());
         assertEquals("accepted", disposition(out, "mfg.occupancy", 0, 0, "event").get("disposition").asText());
         assertEquals("accepted", disposition(out, "mfg.occupancy", 0, 1, "event").get("disposition").asText());
+    }
+
+    // ============================================================================================================ event-time replay
+
+    /** {@code forseti run} through {@code Main} with extra flags: exit code, stdout and stderr. */
+    static Map.Entry<Integer, String> forsetiRun(Path recording, Path state, long generation, Path out, String... extra) {
+        List<String> args = new ArrayList<>(List.of("run", "--engine", "core", "--recording", recording.toString(), "--registry", REGISTRY.toString(),
+            "--state", state.toString(), "--generation", Long.toString(generation), "--out", out.toString(), "--artifact-sha256", ARTIFACT));
+        args.addAll(List.of(extra));
+        ByteArrayOutputStream so = new ByteArrayOutputStream(), se = new ByteArrayOutputStream();
+        int exit = Main.run(args.toArray(String[]::new), new PrintStream(so, true, StandardCharsets.UTF_8), new PrintStream(se, true, StandardCharsets.UTF_8));
+        return Map.entry(exit, so.toString(StandardCharsets.UTF_8).strip() + se.toString(StandardCharsets.UTF_8).strip());
+    }
+
+    /** The replayed cause of a row the online run emitted with {@code cause} (spec 583). */
+    static JsonNode replayed(JsonNode cause) {
+        if (cause.path("kind").asText().equals("timer")) return Envelope.timerCause(Envelope.REPLAYED, cause.get("deadline").longValue());
+        return Envelope.inputCause(Envelope.REPLAYED, cause.get("inputKind").asText(), cause.get("identity"));
+    }
+
+    static String withoutRunIdAndCause(JsonNode n) {
+        JsonNode c = n.deepCopy();
+        JsonNode env = c.path("value").path("envelope");
+        if (env.isObject()) ((ObjectNode) env).remove("cause");
+        return stripRunId(c);
+    }
+
+    @Test void aReplayedRunCarriesCauseReplayedOnEveryRow() throws IOException {
+        Path online = base();
+        Path state = Files.createDirectories(tmp.resolve("state"));
+        register(state, 1, REGISTRY, null);
+        Path out = tmp.resolve("replay");
+        Map.Entry<Integer, String> r = forsetiRun(SMOKE, state, 1, out, "--replay", "event-time");
+        assertEquals(0, r.getKey(), r.getValue());
+        // smoke's event-time order is its delivery order, so the replay emits the online run's rows and only the cause differs
+        long inputs = 0, timers = 0;
+        for (String topic : List.of(WR, SAMPLES, "forseti.affected", "forseti.affected-sets")) for (int p = 0; p < 3; p++) {
+            Path f = JournalFiles.journal(out, topic, p);
+            if (!Files.exists(f)) { assertFalse(Files.exists(JournalFiles.journal(online, topic, p)), topic + "/" + p); continue; }
+            List<JsonNode> replay = lines(out, topic, p), base = lines(online, topic, p);
+            assertEquals(base.size(), replay.size(), topic + "/" + p);
+            for (int i = 0; i < replay.size(); i++) {
+                JsonNode x = replay.get(i), y = base.get(i);
+                assertEquals(withoutRunIdAndCause(y), withoutRunIdAndCause(x), topic + "/" + p + " line " + i);
+                if (isProgress(x) || x.path("value").has("delete")) continue;
+                JsonNode env = x.path("value").path("envelope"), cause = env.path("cause");
+                assertEquals("replayed", cause.path("kind").asText(), topic + "/" + p + " line " + i);
+                assertEquals(Canonical.utf8(Canonical.bytes(replayed(y.path("value").path("envelope").path("cause")))), Canonical.utf8(Canonical.bytes(cause)));
+                if (cause.path("inputKind").asText().equals("timer")) {
+                    timers++;
+                    assertTrue(env.path("trigger").isNull(), "a timer row has no trigger");
+                    assertTrue(cause.path("identity").path("deadline").isIntegralNumber(), cause.toString());
+                    assertEquals(cause.path("identity").path("deadline").longValue(), (long) Envelope.timerDeadline(cause));
+                } else {
+                    inputs++;
+                    assertEquals(y.path("value").path("envelope").path("trigger"), env.path("trigger"), "an input row keeps its trigger");
+                    assertNull(Envelope.timerDeadline(cause));
+                }
+            }
+        }
+        assertTrue(inputs > 0 && timers > 0, inputs + " input rows, " + timers + " timer rows");
+        for (int p = 0; p < 3; p++) {
+            JournalFold.Result fold = JournalFold.fold(entries(WR, lines(out, WR, p)), 1, cutIds().get(cutIds().size() - 1));
+            assertTrue(fold.violations().isEmpty(), "work-records/" + p + ": " + fold.violations());
+        }
+    }
+
+    @Test void aReplayedRunRecordsBothManifestDigests() throws IOException {
+        Path state = Files.createDirectories(tmp.resolve("state"));
+        register(state, 1, REGISTRY, null);
+        Path lock = FIXTURES.resolve("scenarios/smoke.replay.lock.json");
+        Path out = tmp.resolve("replay");
+        Map.Entry<Integer, String> r = forsetiRun(SMOKE, state, 1, out, "--replay", "event-time", "--replay-lock", lock.toString());
+        assertEquals(0, r.getKey(), r.getValue());
+        JsonNode run = Json.read(out.resolve("run.json"));
+        Path replay = out.resolve(ReferenceEngine.REPLAY_DIR);
+        assertEquals("event-time", run.get("replay").asText());
+        assertEquals(Canonical.digestOf(Files.readAllBytes(SMOKE.resolve("manifest.json"))), run.get("originalRecordingManifestSha256").asText());
+        String replaySha = Canonical.digestOf(Files.readAllBytes(replay.resolve("manifest.json")));
+        assertEquals(replaySha, run.path("fixtureDigests").get("recordingManifestSha256").asText(), "the run read the replay recording");
+        assertNotEquals(run.get("originalRecordingManifestSha256"), run.path("fixtureDigests").get("recordingManifestSha256"));
+        assertEquals(Json.read(lock).path("files").get("manifest.json").asText(), replaySha, "the replay recording is the locked one");
+        assertEquals(Json.read(replay.resolve("manifest.json")).get("digests"), run.path("fixtureDigests").get("recordingFiles"));
+        assertEquals(run.get("originalRecordingManifestSha256").asText(), Json.read(replay.resolve("manifest.json")).path("source").get("replayOf").asText());
+        assertFalse(run.get("shuffle").booleanValue());
+        // the offset ranges name replay offsets: half-open, from 0 to the replay partition's size
+        Recording rec = Recording.open(replay);
+        for (String t : STAGE1) for (int p : rec.routing().subscribed(t))
+            assertEquals(rec.size(t, p), run.path("offsetRanges").path(t).path(Integer.toString(p)).get(1).longValue(), t + "/" + p);
+        // a lock that does not pin these bytes refuses the run, which then leaves nothing behind
+        ObjectNode other = (ObjectNode) Json.read(lock);
+        ((ObjectNode) other.get("files")).put("manifest.json", "0".repeat(64));
+        Path bad = tmp.resolve("other.replay.lock.json");
+        Json.write(bad, other);
+        Map.Entry<Integer, String> refused = forsetiRun(SMOKE, state, 1, tmp.resolve("refused"), "--replay", "event-time", "--replay-lock", bad.toString());
+        assertEquals(1, refused.getKey(), refused.getValue());
+        assertEquals("replay-lock-mismatch", Json.read(refused.getValue().getBytes(StandardCharsets.UTF_8)).get("refusal").asText());
+        assertFalse(Files.exists(tmp.resolve("refused")), "a refused run writes nothing");
+    }
+
+    @Test void replayWithShuffleIsAUsageError() throws IOException {
+        Path state = Files.createDirectories(tmp.resolve("state"));
+        register(state, 1, REGISTRY, null);
+        Map.Entry<Integer, String> r = forsetiRun(SMOKE, state, 1, tmp.resolve("out"), "--replay", "event-time", "--shuffle");
+        assertEquals(2, r.getKey(), r.getValue());
+        assertTrue(r.getValue().contains("--replay with --shuffle"), r.getValue());
+        assertEquals(2, forsetiRun(SMOKE, state, 1, tmp.resolve("out"), "--replay", "processing-time").getKey(), "event-time is the only replay");
+        assertEquals(2, forsetiRun(SMOKE, state, 1, tmp.resolve("out"), "--replay-lock", "x.json").getKey(), "a replay lock without a replay");
+        assertFalse(Files.exists(tmp.resolve("out")));
+        assertThrows(IllegalArgumentException.class, () -> new ReferenceEngine.Options(SMOKE, REGISTRY, state, 1, tmp.resolve("out"), 7, true, Map.of(), ARTIFACT,
+            "test", ReferenceEngine.EVENT_TIME, null));
+    }
+
+    @Test void aReplayRecordingOfAnotherOutOfOrdernessIsRefused() throws IOException {
+        // 30500: smoke's deadline at T0 + 1380000 lies between the largest sourceTs of cuts 27 and 28 (T0 + 1410000, + 1411000) minus
+        // O + 1 for O in [30000, 30999] only; any other O leaves it unproved and refuses the materialization itself
+        Path replay = tmp.resolve("replay-30500");
+        ReplayRecording.materialize(SMOKE, 30500, replay);
+        assertEquals(30500, Json.read(replay.resolve("manifest.json")).path("source").get("outOfOrdernessMs").longValue());
+        Path state = Files.createDirectories(tmp.resolve("state"));
+        register(state, 1, REGISTRY, replay, null);
+        Map.Entry<Integer, String> r = forsetiRun(replay, state, 1, tmp.resolve("out"));
+        assertEquals(1, r.getKey(), r.getValue());
+        JsonNode refusal = Json.read(r.getValue().getBytes(StandardCharsets.UTF_8));
+        assertEquals("replay-recording-rule-mismatch", refusal.get("refusal").asText());
+        assertEquals(30500, refusal.get("recording").longValue());
+        assertEquals(OUT_OF_ORDERNESS, refusal.get("rule").longValue());
+        assertFalse(Files.exists(tmp.resolve("out").resolve("run.json")), "the run never starts");
+        // the same materialization with the rule's outOfOrdernessMs runs
+        Path same = tmp.resolve("replay-rule");
+        ReplayRecording.materialize(SMOKE, OUT_OF_ORDERNESS, same);
+        assertEquals(0, forsetiRun(same, state, 1, tmp.resolve("ok")).getKey());
     }
 
     // ============================================================================================================ helpers

@@ -1,8 +1,10 @@
 package yggdrasil.forseti.cli.gate;
 
 import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Path;
 import java.util.*;
 import java.util.function.Predicate;
 import yggdrasil.forseti.cli.gate.CoreGate.Check;
@@ -12,6 +14,7 @@ import yggdrasil.forseti.cli.gate.RunFold.Disp;
 import yggdrasil.forseti.cli.gate.RunFold.Rev;
 import yggdrasil.forseti.cli.gate.Scenarios.Run;
 import yggdrasil.forseti.cli.gate.Scenarios.Shuffled;
+import yggdrasil.forseti.cli.recording.ReplayRecording;
 import yggdrasil.forseti.core.Json;
 
 /** The engine-independent injection assertions of pull request 4 (plan Task 19): {@code I-*} one per injection id, each on the scenario
@@ -39,7 +42,8 @@ final class Injections {
             new Check("I-10f", Injections::i10f), new Check("I-11", Injections::i11), new Check("I-11b", Injections::i11b), new Check("I-11c", Injections::i11c),
             new Check("I-11d", Injections::i11d), new Check("I-11e", Injections::i11e), new Check("I-12", Injections::i12), new Check("I-13", Injections::i13),
             new Check("I-14", Injections::i14), new Check("I-15", Injections::i15), new Check("I-16", Injections::i16), new Check("I-17", Injections::i17),
-            new Check("I-18", Injections::i18), new Check("I-19", Injections::i19), new Check("I-25", Injections::i25), new Check("I-26", Injections::i26)));
+            new Check("I-18", Injections::i18), new Check("I-19", Injections::i19), new Check("I-25", Injections::i25), new Check("I-26", Injections::i26),
+            new Check("I-20", Injections::i20), new Check("I-23", Injections::i23)));
         for (String id : J) l.add(new Check(id, c -> journal(c, id)));
         l.add(new Check("J-AFTER-HORIZON-CUTS", Injections::afterHorizon));
         l.add(new Check("C-6-STAGE1", c -> determinism(c, "C-6-STAGE1", List.of("baseline", "stage2"), List.of(RunFold.WR, RunFold.SAMPLES))));
@@ -836,6 +840,211 @@ final class Injections {
             + skipped.size() + " cuts not comparable; station2 compared with the oracle in each run");
     }
 
+    // --- I-20, I-23 (pull request 5b) -----------------------------------------------------------------------------------------
+
+    /** Injection 20's scenario (A, the pipeline run; B, its rule-change generation run) and injection 23's (the online run and its replay). */
+    static final String RULE_CHANGE_BASE = "baseline", PLANNED_LATE = "horizon-planned-late";
+
+    /** {@code I-20} (spec 675): a new attribution rule version in a new generation. A = the pipeline {@code baseline} run (rule 1.0.0);
+     *  B = {@code baseline@rule-1.0.1}, generation 2 of the store {@code assertion:I-20} (generation 1 there on {@code registry}, 2 on
+     *  {@code registry-next}). Every record of B carries generation 2, the new rule version and the new rulesDigest; every row of A the
+     *  old digest; each fold holds only its own digest; both are compared with the oracle at every cut. */
+    static Result i20(Context c) throws Exception {
+        Run a = run(c, RULE_CHANGE_BASE), b = Scenarios.pipeline(c).generationRun(RULE_CHANGE_BASE + "@rule-1.0.1");
+        P p = new P(a, b);
+        if (!p.sound()) return p.result("");
+        p.require(a.census != null && b.census != null, "no census of the journals of A or B");
+        if (a.census == null || b.census == null) return p.result("");
+        long g2 = b.generation.generation();
+        p.equal(2L, g2, "B's generation in its store");
+        p.equal(1L, b.previous == null ? null : b.previous.generation(), "the first generation of " + b.generation.store().name());
+        p.equal(a.rulesDigest, b.previous == null ? null : b.previous.rulesDigest(), "generation 1 of " + b.generation.store().name() + " has A's rulesDigest");
+        p.require(!a.rulesDigest.equals(b.rulesDigest), "the two rulesDigests are equal: " + a.rulesDigest);
+        p.equal(Set.of(g2), b.census.allGenerations(), "B: the generation of every record");
+        p.equal(Set.of(b.rulesDigest), b.census.pinsDigests.keySet(), "B: the pins digest of every row");
+        p.equal(Set.of("1.0.1"), b.census.attributionVersions.keySet(), "B: pins.rules.attribution.version of every row");
+        p.equal(Set.of(a.generation.generation()), a.census.allGenerations(), "A: the generation of every record");
+        p.equal(Set.of(a.rulesDigest), a.census.pinsDigests.keySet(), "A: the pins digest of every row");
+        p.equal(Set.of("1.0.0"), a.census.attributionVersions.keySet(), "A: pins.rules.attribution.version of every row");
+        p.require(b.census.rows > 0 && a.census.rows > 0, "no rows: A " + a.census.rows + ", B " + b.census.rows);
+        p.equal(0L, a.fold.findings.count("PINS"), "A: rows whose pins are not its generation's");
+        p.equal(0L, b.fold.findings.count("PINS"), "B: rows whose pins are not its generation's");
+        p.equal("assertion:I-20", b.generation.store().name(), "B's store");
+        p.require(!b.generation.store().shared(), "B's generation is not isolated");
+        p.equal(GateEvidence.PIPELINE, a.generation.store().name(), "A's store");
+        String stream = Json.text(a.manifest.get("rule"), "stream");
+        p.equal(2L, new yggdrasil.forseti.core.release.FloorStore(b.generation.store().dir()).get(stream).map(yggdrasil.forseti.core.release.FloorStore.Floor::headVersion).orElse(null),
+            "the floor of " + b.generation.store().name());
+        p.equal(1L, new yggdrasil.forseti.core.release.FloorStore(c.pipeline.dir()).get(stream).map(yggdrasil.forseti.core.release.FloorStore.Floor::headVersion).orElse(null),
+            "the floor of the pipeline store");
+        return p.result("A = (pipeline, " + a.generation.registeredRowSha256().substring(0, 12) + "...) generation " + a.generation.generation() + ", rulesDigest "
+            + a.rulesDigest.substring(0, 12) + "..., " + a.census.rows + " rows; B = (" + b.generation.store().name() + ", " + b.generation.registeredRowSha256().substring(0, 12)
+            + "...) generation " + g2 + " on registry-next rule 1.0.1, rulesDigest " + b.rulesDigest.substring(0, 12) + "..., " + b.census.rows
+            + " rows, every record generation " + g2 + "; floors " + b.generation.store().name() + " 2, pipeline 1; both compared with the oracle at every cut");
+    }
+
+    /** What injection 23 reads of a run's fold before compaction (samples and message dispositions are dropped from a horizon fold): the
+     *  sample rows of the planned late device and metric at {@code holeAt}, {@code holeAt - 1} and {@code holeAt - 2} (the scenario's
+     *  {@code planned-late-samples} injection, times after its T0), the non-accepted dispositions of that device's messages, and the
+     *  number of {@code replay-required} dispositions of the whole run. */
+    static ObjectNode capturePlannedLate(Context c, RunFold f, Run r) throws java.io.IOException {
+        JsonNode scenario = Json.read(c.fixtures().resolve("scenarios").resolve(r.name + ".json")), late = null;
+        for (JsonNode i : scenario.path("injections")) if ("planned-late-samples".equals(i.path("type").asText())) late = i;
+        ObjectNode o = Json.object();
+        if (late == null) return o.put("error", "the scenario has no planned-late-samples injection");
+        long holeAt = scenario.path("T0").asLong() + late.path("holeAt").asLong();
+        String device = late.path("device").asText(), metric = late.path("metric").asText();
+        Json.putSafe(o, "holeAt", holeAt);
+        o.put("device", device).put("metric", metric);
+        ObjectNode samples = o.putObject("samples");
+        for (long ts = holeAt - 2; ts <= holeAt; ts++) samples.putArray(Long.toString(ts));
+        for (Map.Entry<String, Rev> e : f.live(RunFold.SAMPLES).entrySet()) {
+            JsonNode k = Json.read(e.getKey().getBytes(StandardCharsets.UTF_8));
+            if (!device.equals(k.path("device").asText()) || !metric.equals(k.path("metric").asText())) continue;
+            JsonNode b = e.getValue().node();
+            long ts = b.path("sourceTs").asLong();
+            if (ts < holeAt - 2 || ts > holeAt) continue;
+            ObjectNode s = ((ArrayNode) samples.get(Long.toString(ts))).addObject();
+            s.set("key", k);
+            s.put("state", b.path("state").asText(null)).put("reason", b.path("reason").asText(null));
+            s.set("attributedTo", b.path("attributedTo"));
+        }
+        ArrayNode disps = o.putArray("dispositions");
+        long replayRequired = 0;
+        for (Disp d : f.dispositions()) {
+            if ("replay-required".equals(d.disposition())) replayRequired++;
+            if (!d.topic().equals("ot.messages") || "accepted".equals(d.disposition())) continue;
+            JsonNode id = Json.read(d.identity().getBytes(StandardCharsets.UTF_8));
+            if (!device.equals(id.path("device").asText())) continue;
+            ObjectNode x = disps.addObject().put("part", d.part()).put("disposition", d.disposition()).put("reason", d.reason());
+            x.set("identity", id);
+        }
+        Json.putSafe(o, "replayRequired", replayRequired);
+        return o;
+    }
+
+    /** {@code I-23} (spec 678, planning 611): planned late samples at {@code A - H + 1}, {@code A - H}, {@code A - H - 1} after the cut whose
+     *  reported W1 is A. Online: W1 = A at the planned cut; the first two admitted, the third {@code replay-required} {@code beyond-horizon};
+     *  visit 3's {@code missingPeriods} 1 before the late batch and 0 after. {@code horizon-planned-late@replay}, run and compared on the
+     *  locked replay recording: every deadline keeps its cut ids and is bracketed by the reported W1; the third sample {@code attributed}
+     *  with cause {@code replayed}; no {@code replay-required} disposition; every timer row carries the replayed timer cause and precedes
+     *  its progress. Earlier generation's rows remain, on bytes: the online journals, indexed before the replay started, are read again
+     *  after it, equal their index file for file, and fold to the same rows, final revisions and fingerprints; the replay journals are
+     *  another directory whose every record carries the replay generation. */
+    static Result i23(Context c) throws Exception {
+        Run a = run(c, PLANNED_LATE), b = Scenarios.pipeline(c).generationRun(PLANNED_LATE + "@replay");
+        P p = new P(a, b);
+        if (!p.sound()) return p.result("");
+        JsonNode t = null;
+        for (JsonNode x : a.expected.path("transitions")) if ("planned-late".equals(x.path("assertion").asText())) t = x;
+        if (t == null) { p.list.add("no planned-late transition in the ground truth"); return p.result(""); }
+        long A = t.path("at").asLong(), planned = t.path("cutB").asLong();
+        String station = t.path("station").asText(), visitKey = a.key(t.path("ref").asText());
+        List<Long> cuts = a.cutIds();
+        int i = cuts.indexOf(planned);
+        if (i < 0 || i + 1 >= cuts.size()) { p.list.add("no cut after the planned cut " + planned); return p.result(""); }
+        long lateCut = cuts.get(i + 1);
+        // online
+        p.equal(A, a.w1(planned, station), "the reported W1 at the planned cut " + planned + " (A; a moved hole is an error)");
+        JsonNode on = a.plannedLate, re = b.plannedLate;
+        if (on == null || re == null || on.has("error") || re.has("error")) { p.list.add("no planned-late capture: " + on + " / " + re); return p.result(""); }
+        long holeAt = on.path("holeAt").asLong();
+        for (long ts : List.of(holeAt, holeAt - 1)) {
+            JsonNode s = on.path("samples").path(Long.toString(ts));
+            p.equal(1, s.size(), "online samples at holeAt - " + (holeAt - ts));
+            if (s.size() == 1) {
+                p.equal("attributed", s.get(0).path("state").asText(null), "online state at holeAt - " + (holeAt - ts));
+                p.equal(visitKey, s.get(0).path("attributedTo").isObject() ? RunFold.keyText(s.get(0).path("attributedTo")) : null, "online attributedTo at holeAt - " + (holeAt - ts));
+            }
+        }
+        JsonNode third = on.path("samples").path(Long.toString(holeAt - 2));
+        p.equal(1, third.size(), "online samples at holeAt - 2");
+        if (third.size() == 1) p.equal("replay-required beyond-horizon", third.get(0).path("state").asText() + " " + third.get(0).path("reason").asText(), "online state at holeAt - 2");
+        List<String> onDisps = new ArrayList<>();
+        for (JsonNode d : on.path("dispositions")) onDisps.add(d.path("disposition").asText() + " " + d.path("reason").asText());
+        p.equal(List.of("replay-required beyond-horizon"), onDisps, "online non-accepted dispositions of " + on.path("device").asText() + " (holeAt - 2 only)");
+        JsonNode before = a.fold.at(RunFold.WR, visitKey, planned), after = a.fold.at(RunFold.WR, visitKey, lateCut);
+        p.equal(1L, before == null ? null : before.path("coverage").path("missingPeriods").asLong(-1), t.path("ref").asText() + " missingPeriods at the planned cut " + planned);
+        p.equal(0L, after == null ? null : after.path("coverage").path("missingPeriods").asLong(-1), t.path("ref").asText() + " missingPeriods at the late batch's cut " + lateCut);
+        // replay
+        int kept = 0;
+        for (JsonNode d : b.manifest.path("source").path("deadlines")) {
+            if (d.path("originalCutA").asLong() != d.path("cutA").asLong() || d.path("originalCutB").asLong() != d.path("cutB").asLong())
+                p.list.add("replay deadline " + d.path("kind").asText() + " " + d.path("ref").asText() + " moved from cuts " + d.path("originalCutA") + "/" + d.path("originalCutB")
+                    + " to " + d.path("cutA") + "/" + d.path("cutB"));
+            else kept++;
+        }
+        p.require(kept > 0, "the replay recording has no source.deadlines");
+        p.equal(List.of(), ReplayRecording.checkRun(b.manifest, b.cutLog), "the replay brackets on the reported W1");
+        JsonNode rThird = re.path("samples").path(Long.toString(holeAt - 2));
+        p.equal(1, rThird.size(), "replay samples at holeAt - 2");
+        if (rThird.size() == 1) {
+            p.equal("attributed", rThird.get(0).path("state").asText(null), "replay state at holeAt - 2");
+            p.equal("replayed", causeKind(b.journals, rThird.get(0).path("key")), "replay cause.kind of the sample at holeAt - 2");
+        }
+        p.equal(0L, re.path("replayRequired").asLong(-1), "replay-required dispositions of the replay");
+        JournalCensus rc = b.census;
+        p.require(rc != null, "no census of the replay journals");
+        if (rc != null) {
+            p.equal(Set.of(b.generation.generation()), rc.allGenerations(), "the generation of every record of the replay journals");
+            p.equal(Set.of("replayed"), rc.causeKinds.keySet(), "the cause kinds of the replay's rows");
+            p.equal(0L, rc.onlineTimerRows + rc.malformedReplayedTimerRows, "replay timer rows without the replayed timer cause " + rc.examples);
+            p.require(rc.replayedTimerRows > 0, "the replay emitted no timer row");
+        }
+        p.equal(0L, b.fold.findings.count("J-PROGRESS-ORDER"), "J-PROGRESS-ORDER findings of the replay fold");
+        // earlier generation's rows remain, on bytes
+        String remain = remains(p, a, b);
+        String state = c.pipeline.state();
+        p.equal(GateEvidence.PIPELINE, a.generation.store().name(), "the base generation's store");
+        p.equal(GateEvidence.PIPELINE, b.generation.store().name(), "the replay generation's store");
+        p.require(a.generation.store().shared() == c.pipeline.shared() && b.generation.store().shared() == c.pipeline.shared(), "both generations " + state);
+        return p.result("online: W1 at the planned cut " + planned + " = A T0 + " + (A - a.t0()) + "; holeAt, holeAt - 1 attributed, holeAt - 2 replay-required beyond-horizon; "
+            + t.path("ref").asText() + " missingPeriods 1 at cut " + planned + ", 0 at cut " + lateCut + "; replay (generation " + b.generation.generation() + "): " + kept
+            + " deadlines keep their cut ids and are bracketed, holeAt - 2 attributed with cause replayed, no replay-required, "
+            + (rc == null ? "" : rc.replayedTimerRows + " timer rows with the replayed timer cause, ") + "J-PROGRESS-ORDER clean; " + remain + "; both generations " + state);
+    }
+
+    /** The online journals after the replay: equal to the index written before the replay started, file for file, and folding to the same
+     *  rows, final revisions and fingerprints as the first fold; the replay journals are another directory. */
+    static String remains(P p, Run a, Run b) throws java.io.IOException {
+        if (a.journals == null || b.journals == null) { p.list.add("journals not kept: online " + a.journals + ", replay " + b.journals); return ""; }
+        p.require(!a.journals.toAbsolutePath().normalize().equals(b.journals.toAbsolutePath().normalize()), "the online and replay journals share a directory");
+        Path index = a.journals.resolveSibling(a.journals.getFileName() + ".index.json");
+        JsonNode idx = Json.read(index);
+        TreeMap<String, String> listed = new TreeMap<>(), have = Scenarios.Pipeline.digests(a.journals);
+        idx.fields().forEachRemaining(e -> listed.put(e.getKey(), e.getValue().asText()));
+        p.equal(listed.keySet(), have.keySet(), "the files of the online journals after the replay");
+        int changed = 0;
+        for (String f : listed.keySet()) if (have.containsKey(f) && !have.get(f).equals(listed.get(f))) { changed++; p.list.add("online journal " + f + " changed after the replay"); }
+        ObjectNode second;
+        try (RunFold f = new RunFold(a.journals, a.rulesDigest, a.generation.generation(), !a.synthetic)) {
+            for (long k : a.cutIds()) f.advance(k);
+            f.finish();
+            second = f.digest();
+        }
+        p.require(a.foldDigest != null, "no digest of the first fold");
+        if (a.foldDigest != null) p.require(Shards.same(a.foldDigest, second), "the online journals fold differently after the replay: " + a.foldDigest + " vs " + second);
+        return "online journals after the replay: " + listed.size() + " files = their index (" + changed + " changed), fold equal (rows " + second.path("rows") + ")";
+    }
+
+    /** The cause kind of the last row of sample {@code key} in a run's {@code forseti.samples} journals. */
+    static String causeKind(Path run, JsonNode key) throws java.io.IOException {
+        String want = RunFold.keyText(key), kind = null;
+        Path dir = run.resolve("journals").resolve(RunFold.SAMPLES);
+        if (!java.nio.file.Files.isDirectory(dir)) return null;
+        List<Path> files;
+        try (java.util.stream.Stream<Path> s = java.nio.file.Files.list(dir)) { files = s.sorted().toList(); }
+        for (Path f : files) try (java.io.BufferedReader in = java.nio.file.Files.newBufferedReader(f, StandardCharsets.UTF_8)) {
+            String line;
+            while ((line = in.readLine()) != null) {
+                if (line.isEmpty() || !line.contains(key.path("device").asText())) continue;
+                JsonNode n = RunFold.readLine(line);
+                if (n.path("key").isObject() && RunFold.keyText(n.path("key")).equals(want)) kind = n.path("value").path("envelope").path("cause").path("kind").asText(null);
+            }
+        }
+        return kind;
+    }
+
     // --- J-*, C-* --------------------------------------------------------------------------------------------------------------
 
     static Result journal(Context c, String id) throws Exception {
@@ -855,10 +1064,17 @@ final class Injections {
             shuffled++;
             if (Summaries.findingCount(x, id) > 0) bad.add(s + " shuffle " + seed + " " + Summaries.findingText(x, id));
         }
+        long generationRuns = 0;
+        for (JsonNode g : all.generationRuns.values()) {
+            String name = g.path("name").asText();
+            if (Summaries.failed(g)) { bad.add(name + ": " + g.path("failure").asText()); continue; }
+            generationRuns++;
+            if (Summaries.findingCount(g, id) > 0) bad.add(name + " " + Summaries.findingText(g, id));
+        }
         String extra = "";
         if (id.equals("J-DISPOSITION-COVERAGE")) {
             long deliveries = 0, without = 0;
-            for (JsonNode r : all.runs.values()) {
+            for (JsonNode r : concat(all.runs.values(), all.generationRuns.values())) {
                 JsonNode m = r.path("measures");
                 if (m.isObject()) { deliveries += m.path("deliveries").asLong(); without += m.path("inputsWithoutDisposition").asLong(); }
             }
@@ -866,12 +1082,14 @@ final class Injections {
         }
         if (id.equals("J-REVISION-CONTINUITY") || id.equals("J-NO-EQUAL-CONSECUTIVE")) {
             long rows = 0;
-            for (JsonNode r : all.runs.values()) rows += Summaries.rowSum(r);
+            for (JsonNode r : concat(all.runs.values(), all.generationRuns.values())) rows += Summaries.rowSum(r);
             extra = "; " + rows + " journal records";
         }
-        return new Result(bad.isEmpty(), (bad.isEmpty() ? "" : "PROBLEMS: " + String.join("; ", bad) + " || ") + "0 violations over " + checked + " scenario runs and " + shuffled
-            + " shuffled runs (" + Scenarios.all().size() + " scenarios)" + extra);
+        return new Result(bad.isEmpty(), (bad.isEmpty() ? "" : "PROBLEMS: " + String.join("; ", bad) + " || ") + "0 violations over " + checked + " scenario runs, " + shuffled
+            + " shuffled runs and " + generationRuns + " generation runs " + all.generationRuns.keySet() + " (" + Scenarios.all().size() + " scenarios)" + extra);
     }
+
+    static List<JsonNode> concat(Collection<JsonNode> a, Collection<JsonNode> b) { List<JsonNode> l = new ArrayList<>(a); l.addAll(b); return l; }
 
     static Result afterHorizon(Context c) throws Exception {
         Summaries all = Summaries.of(c);
@@ -881,27 +1099,45 @@ final class Injections {
             JsonNode r = all.runs.get(s);
             if (r == null) { p.list.add(s + " not run"); continue; }
             p.use(r);
-            if (Summaries.failed(r)) continue;
-            JsonNode a = r.path("afterHorizon");
-            if (!a.isObject()) { p.list.add(s + ": no afterHorizon values"); continue; }
-            long need = a.path("need").asLong(), lastW = a.path("lastW1").asLong(), t0 = a.path("t0").asLong();
-            String what = a.path("what").asText();
-            p.require(lastW >= need, s + ": last W1 " + lastW + " < " + what + " " + need);
-            long maxOnline = a.path("maxOnlineVisits").asLong(), lastOnline = a.path("lastOnlineVisits").asLong();
-            p.require(maxOnline > 0 && lastOnline < maxOnline, s + ": onlineVisits max " + maxOnline + ", last " + lastOnline);
-            long rows = a.path("workRecords").asLong();
-            p.equal(a.path("visits").asLong(), rows, s + " work records in the fold at the last cut");
-            out.add(s + " last W1 T0 + " + (lastW - t0) + " >= " + what + " T0 + " + (need - t0) + ", onlineVisits " + maxOnline + " -> " + lastOnline + ", " + rows + " work records remain");
+            out.add(afterHorizon(s, r, p.list));
         }
+        // the generation runs of a horizon recording (its event-time replay): their own afterHorizon values, required
+        for (Scenarios.GenerationRun g : Scenarios.GENERATION_RUNS) {
+            if (!Scenarios.HORIZON.contains(g.scenario())) continue;
+            JsonNode r = all.generationRuns.get(g.name());
+            if (r == null) { p.list.add(g.name() + " not run: no afterHorizon values"); continue; }
+            p.use(r);
+            out.add(afterHorizon(g.name(), r, p.list));
+        }
+        out.removeIf(Objects::isNull);
         return p.result(String.join("; ", out));
+    }
+
+    /** {@code J-AFTER-HORIZON-CUTS} on one run summary: its problems go to {@code problems} (a failed summary by its failure); returns the
+     *  evidence line, null when the run failed or has no values. */
+    static String afterHorizon(String s, JsonNode r, List<String> problems) {
+        if (Summaries.failed(r)) { problems.add(s + ": " + r.path("failure").asText()); return null; }
+        JsonNode a = r.path("afterHorizon");
+        if (!a.isObject()) { problems.add(s + ": no afterHorizon values"); return null; }
+        long need = a.path("need").asLong(), lastW = a.path("lastW1").asLong(), t0 = a.path("t0").asLong();
+        String what = a.path("what").asText();
+        if (lastW < need) problems.add(s + ": last W1 " + lastW + " < " + what + " " + need);
+        long maxOnline = a.path("maxOnlineVisits").asLong(), lastOnline = a.path("lastOnlineVisits").asLong();
+        if (!(maxOnline > 0 && lastOnline < maxOnline)) problems.add(s + ": onlineVisits max " + maxOnline + ", last " + lastOnline);
+        long rows = a.path("workRecords").asLong();
+        if (a.path("visits").asLong() != rows) problems.add(s + " work records in the fold at the last cut: expected " + a.path("visits").asLong() + ", got " + rows);
+        return s + " last W1 T0 + " + (lastW - t0) + " >= " + what + " T0 + " + (need - t0) + ", onlineVisits " + maxOnline + " -> " + lastOnline + ", " + rows + " work records remain";
     }
 
     record Need(long at, String station, String what) {}
 
     /** The W1 the last cut of a horizon recording must reach: the latest {@code enter + H + L} of its open visits (every open visit's
      *  online state expired); a recording without an open visit, the first {@code onlineExpiresAt} ({@code leave + H + L}), so that at
-     *  least one visit's online state is dropped while its row stays. */
+     *  least one visit's online state is dropped while its row stays. The visit facts ({@code station}, {@code enter}, {@code leave}) are
+     *  those of the recording's {@code expected.json}, online or replay; without a visit there is no threshold and this throws. */
     static Need afterHorizonNeed(JsonNode expected, long H, long L) {
+        if (!expected.path("visits").isArray() || expected.path("visits").isEmpty())
+            throw new IllegalStateException("no visit facts: expected.json (scope " + expected.path("scope").asText("none") + ") has no visits[] to compute the after-horizon need from");
         long need = Long.MIN_VALUE;
         String station = S1;
         for (JsonNode v : expected.path("visits")) {

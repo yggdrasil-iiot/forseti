@@ -6,7 +6,7 @@ import java.util.Optional;
 
 /** The transport boundary of {@code forseti.generations}: rows keyed by scope (the {@code streamId} of the release that carries the
  *  attribution rule), appended and never rewritten. Generation numbers are unique across the whole store, so {@link #byNumber} needs no
- *  scope. Only the operator CLI appends ({@code generation new} and {@code retire}; {@code promote} from PR 5b); the harness and the jobs
+ *  scope. Only the operator CLI appends ({@code generation new}, {@code promote} and {@code retire}); the harness and the jobs
  *  only read, and the gate appends no row by any path of its own (it invokes the verbs). The initial recovery declaration is not a
  *  generation row: the run preparation of a generation's first run writes it. Every read sees a history {@link #validate} accepts. */
 public interface GenerationStore {

@@ -29,7 +29,7 @@ import yggdrasil.forseti.core.release.ReleaseReader;
 import yggdrasil.forseti.core.release.TrustedKeys;
 import yggdrasil.forseti.core.rules.RuleSet;
 
-/** {@code forseti generation new|retire|list}: the only writer of {@code generations.jsonl} (Decision 11, spec "Generations and
+/** {@code forseti generation new|promote|retire|list}: the only writer of {@code generations.jsonl} (Decision 11, spec "Generations and
  *  revisions"), and the run preparation of {@code forseti run} ({@link #prepareRun}). Every verb holds {@code generations.lock} for its
  *  whole operation: it reads and validates the whole log, verifies what it verifies, allocates, appends and forces. The head
  *  verification of {@code new} takes the floor lock inside that hold (generation lock, then floor lock, never the other order).
@@ -40,7 +40,11 @@ import yggdrasil.forseti.core.rules.RuleSet;
 public final class GenerationCli {
     private GenerationCli() {}
 
-    public static int run(String[] args, PrintStream out, PrintStream err, Clock clock) {
+    public static int run(String[] args, PrintStream out, PrintStream err, Clock clock) { return run(args, out, err, clock, Path.of("").toAbsolutePath()); }
+
+    /** {@link #run(String[], PrintStream, PrintStream, Clock)} with the repository root {@code promote} reads the committed manifest and
+     *  plan from (the directory the command runs in; a test passes the repository root). */
+    public static int run(String[] args, PrintStream out, PrintStream err, Clock clock, Path root) {
         if (args.length < 1) return usage(err);
         Args f;
         try {
@@ -48,6 +52,8 @@ public final class GenerationCli {
             switch (args[0]) {
                 case "new" -> f.only(Set.of("state", "mappings", "trusted-keys", "stream", "rule", "recording", "definitions"));
                 case "retire" -> f.only(Set.of("state", "generation"));
+                case "promote" -> f.only(Set.of("state", "mappings", "trusted-keys", "generation", "registered-row-sha256", "run", "gate-report", "shards",
+                    "accept-scope"));
                 case "list" -> f.only(Set.of("state"));
                 default -> { return usage(err); }
             }
@@ -56,10 +62,16 @@ public final class GenerationCli {
             switch (args[0]) {
                 case "new": return create(f, out, clock);
                 case "retire": return retire(f, out, clock);
+                case "promote": return promote(f, out, clock, root);
                 default: return list(f, out);
             }
         } catch (ReferenceEngine.Refused e) {
             out.println(Canonical.utf8(Canonical.bytes(e.toJson())));
+            return 1;
+        } catch (FileGenerationStore.ControlLogIo e) {
+            ObjectNode r = Json.object().put("refusal", FileGenerationStore.ControlLogIo.CODE);
+            Json.putSafe(r, "appended", e.appended).put("detail", e.getMessage());
+            out.println(Canonical.utf8(Canonical.bytes(r)));
             return 1;
         } catch (Refusal r) {
             out.println(Canonical.utf8(Canonical.bytes(refusal(r).toJson())));
@@ -78,6 +90,8 @@ public final class GenerationCli {
         err.println("usage: forseti generation new     --state <dir> --mappings <dir> --trusted-keys <file> --stream <s> [--stream <s2>] --rule <id>@<version>");
         err.println("                                  [--recording <dir>] [--definitions <file>]");
         err.println("       forseti generation retire  --state <dir> --generation <n>");
+        err.println("       forseti generation promote --state <dir> --mappings <dir> --trusted-keys <file> --generation <n> --registered-row-sha256 <hex>");
+        err.println("                                  --run <run.json> --gate-report <report.json> [--shards <dir>] [--accept-scope core]");
         err.println("       forseti generation list    --state <dir>");
         return 2;
     }
@@ -178,6 +192,70 @@ public final class GenerationCli {
             store.append(reg.get().scope(), new Generation(n, Generation.RETIRED, r.rulesDigest(), r.inputReleases(), r.replayFrom(), r.headVersion(),
                 r.releaseEvidence(), null, null, clock.millis()));
             return printed(n, Generation.RETIRED, reg.get().scope(), r.rulesDigest(), store.registeredRowSha256(n).orElseThrow());
+        });
+        out.println(Canonical.utf8(Canonical.bytes(printed)));
+        return 0;
+    }
+
+    // -------------------------------------------------------------------------------------------------------------- promote
+
+    /** Test seams of {@code promote}: {@link #afterParse} runs after the arguments are parsed and before the hold is taken,
+     *  {@link #insideHold} first thing inside the hold; {@link #stores} opens the control store (a test substitutes a channel). */
+    static volatile Runnable afterParse = () -> {}, insideHold = () -> {};
+    static volatile java.util.function.Function<Path, FileGenerationStore> stores = FileGenerationStore::new;
+
+    /** {@code generation promote} (plan Step 21.2; spec "Generations and revisions"). After argument parsing everything happens in one
+     *  hold of {@code generations.lock} (generation lock, then the floor lock inside the head verification): (1) the whole history is
+     *  re-read and validated; (2) the gate report is checked by {@link GateReportReader} against the store as it is now; (3) for every
+     *  stream of {@code inputReleases} the head is verified at the current time against the store's own floor and must still name the
+     *  pinned release ({@code generation-release-superseded}); (4) the generation's latest status is {@code registered}
+     *  ({@code generation-transition}); (5) {@code replaying}, {@code verified}, the previous current's {@code retired} row when the scope has
+     *  one, and {@code current} are appended as one batch, drained and forced ({@link FileGenerationStore#appendBatch}). A refusal of steps
+     *  1-4 writes nothing; an I/O failure of step 5 is {@code control-log-io} with the bytes appended, never a success. */
+    private static int promote(Args f, PrintStream out, Clock clock, Path root) {
+        Path state = Path.of(f.required("state")), mappings = Path.of(f.required("mappings")), keys = Path.of(f.required("trusted-keys"));
+        long n = number(f.required("generation"));
+        String digest = f.required("registered-row-sha256");
+        if (!digest.matches("[0-9a-f]{64}")) throw new IllegalArgumentException("--registered-row-sha256 is 64 lowercase hex");
+        Path run = Path.of(f.required("run")), report = Path.of(f.required("gate-report"));
+        Path shards = f.get("shards").map(Path::of).orElse(null);
+        boolean acceptCore = false;
+        if (f.has("accept-scope")) {
+            if (!"core".equals(f.required("accept-scope"))) throw new IllegalArgumentException("--accept-scope takes core only (a semantic report needs no acceptance)");
+            acceptCore = true;
+        }
+        TrustedKeys trusted;
+        try { trusted = TrustedKeys.load(keys); } catch (IOException e) { throw new IllegalArgumentException("--trusted-keys " + keys + ": " + e.getMessage(), e); }
+        GateReportReader.Request request = new GateReportReader.Request(root, report, shards, state, n, digest, run, acceptCore);
+        afterParse.run();
+        FileGenerationStore store = stores.apply(state);
+        ObjectNode printed = store.locked(() -> {
+            insideHold.run();
+            store.validate();                                                     // 1
+            GateReportReader.Accepted accepted = GateReportReader.read(request, store);   // 2
+            GenerationStore.Entry reg = store.registered(n).orElseThrow(() -> unregistered(n));
+            Generation r = reg.row();
+            long now = clock.millis();
+            FloorStore floors = new FloorStore(state);
+            for (JsonNode pin : r.inputReleases()) {                              // 3
+                String stream = Json.text(pin, "stream");
+                HeadVerifier.Head h = HeadVerifier.verify(mappings, stream, trusted, floors, now);
+                if (!h.releaseSha256().equals(pin.path("releaseSha256").asText(null)) || !h.statementSha256().equals(pin.path("statementSha256").asText(null)))
+                    throw new ReferenceEngine.Refused("generation-release-superseded", Json.putSafe(Json.object(), "generation", n).put("stream", stream)
+                        .put("pinnedReleaseSha256", pin.path("releaseSha256").asText(null)).put("headReleaseSha256", h.releaseSha256())
+                        .put("pinnedStatementSha256", pin.path("statementSha256").asText(null)).put("headStatementSha256", h.statementSha256()));
+            }
+            String latest = store.latestStatus(n).orElseThrow();                 // 4
+            if (!Generation.REGISTERED.equals(latest))
+                throw new ReferenceEngine.Refused("generation-transition", Json.putSafe(Json.object(), "generation", n).put("from", latest).put("to", Generation.REPLAYING));
+            Optional<GenerationStore.Entry> previous = store.current(reg.scope());
+            List<GenerationStore.Entry> batch = GenerationPolicy.promotion(reg, previous, accepted.run(), accepted.gateReportSha256(), now);
+            store.appendBatch(batch);                                             // 5: returns only after force
+            ObjectNode o = Json.putSafe(Json.object(), "generation", n);
+            o.put("status", Generation.CURRENT).put("registeredRowSha256", digest).put("gateReportSha256", accepted.gateReportSha256());
+            o.set("run", accepted.run().deepCopy());
+            if (previous.isPresent()) Json.putSafe(o, "retired", previous.get().row().generation()); else o.putNull("retired");
+            return o;
         });
         out.println(Canonical.utf8(Canonical.bytes(printed)));
         return 0;

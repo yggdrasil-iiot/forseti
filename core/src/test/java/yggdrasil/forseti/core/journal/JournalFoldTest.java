@@ -91,6 +91,28 @@ class JournalFoldTest {
         assertTrue(JournalFold.fold(List.of(progress(1, 1), row(1, B, "provisional", 1, null, 2), progress(2, 2)), 1, 2).violations().isEmpty());
     }
 
+    static Row timerRow(JsonNode key, String status, JsonNode cause) {
+        Envelope e = new Envelope(1, 1, null, cause, 10L, null, Json.JSON.createArrayNode(), pins());
+        return Row.of(TOPIC, key, body(status), e);
+    }
+
+    @Test void aReplayTimerRowIsJudgedByItsDeadlineLikeATimerRow() {
+        // progress 1 closes W1 = 999: a timer row due at 999 belongs to cut 1, one due at 1000 to cut 2, whichever cause carries it
+        for (String kind : List.of(Envelope.ONLINE, Envelope.REPLAYED)) {
+            JsonNode due = Envelope.timerCause(kind, 999), later = Envelope.timerCause(kind, 1000);
+            assertEquals(999L, Envelope.timerDeadline(due), kind);
+            JournalFold.Result after = JournalFold.fold(List.of(progress(1, 1), timerRow(A, "complete", due), progress(2, 2)), 1, 2);
+            assertEquals(1, after.violations().rowsAfterProgress().size(), kind + ": " + after.violations());
+            JournalFold.Result next = JournalFold.fold(List.of(progress(1, 1), timerRow(A, "complete", later), progress(2, 2)), 1, 2);
+            assertTrue(next.violations().isEmpty(), kind + ": " + next.violations());
+        }
+        assertEquals("{\"identity\":{\"deadline\":999},\"inputKind\":\"timer\",\"kind\":\"replayed\"}",
+            Canonical.utf8(Canonical.bytes(Envelope.timerCause(Envelope.REPLAYED, 999))), "spec 583: the replayed timer cause");
+        assertNull(Envelope.timerDeadline(Envelope.inputCause(Envelope.REPLAYED, "occupancy", Json.object().put("deadline", 999))), "a replayed input is no timer");
+        assertNull(Envelope.timerDeadline(Envelope.inputCause(Envelope.ONLINE, "occupancy", A)));
+        assertThrows(IllegalArgumentException.class, () -> Envelope.timerCause("timer", 1));
+    }
+
     @Test void progressRecordsCarryTheSpecFieldsAndOnlySafeIntegers() {
         Progress.Stage1 p1 = progress(1, -1);
         assertEquals(List.of("type", "generation", "station", "cutId", "producerEpoch", "W1", "admissionW", "barrierRefs", "restartEpoch",
