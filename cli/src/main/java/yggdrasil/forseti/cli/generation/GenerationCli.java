@@ -44,7 +44,7 @@ public final class GenerationCli {
 
     /** {@link #run(String[], PrintStream, PrintStream, Clock)} with the repository root {@code promote} reads the committed manifest and
      *  plan from (the directory the command runs in; a test passes the repository root). */
-    static int run(String[] args, PrintStream out, PrintStream err, Clock clock, Path root) {
+    public static int run(String[] args, PrintStream out, PrintStream err, Clock clock, Path root) {
         if (args.length < 1) return usage(err);
         Args f;
         try {

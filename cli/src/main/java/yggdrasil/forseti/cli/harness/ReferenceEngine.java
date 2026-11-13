@@ -95,6 +95,10 @@ public final class ReferenceEngine {
         FileGenerationStore store = new FileGenerationStore(o.state());
         Optional<GenerationStore.Entry> registered = store.registered(o.generation());
         if (registered.isEmpty()) throw new Refused("generation-unregistered", Json.putSafe(Json.object(), "generation", o.generation()));
+        // a retired generation is never run again (plan Step 21.5, F-GEN-LIFECYCLE): its rows would be evaluated under a generation the
+        // control store has taken out of service
+        if (Generation.RETIRED.equals(store.latestStatus(o.generation()).orElse(null)))
+            throw new Refused("generation-retired", Json.putSafe(Json.object(), "generation", o.generation()));
         Generation g = registered.get().row();
         String scope = registered.get().scope(), registeredRowSha256 = store.registeredRowSha256(o.generation()).orElseThrow();
         JsonNode evidence = g.releaseEvidence();

@@ -10,9 +10,11 @@ import yggdrasil.forseti.core.Json;
 import yggdrasil.forseti.core.canon.Canonical;
 
 /** The core gate split across CI jobs ({@code gate/core-shards.json}). Each shard names the scenarios it makes, the scenarios whose
- *  {@code --shuffle} runs it makes, and the manifest assertions it evaluates; {@code aggregate} names the assertions evaluated over the
- *  summaries of every shard ({@link Summaries}). The plan partitions the manifest: every manifest id is in exactly one shard or in
- *  {@code aggregate}, and every scenario of {@link Scenarios#all()} is made by at least one shard.
+ *  {@code --shuffle} runs it makes, the manifest assertions it evaluates and the generation runs it makes ({@code generationRuns},
+ *  required); {@code aggregate} names the assertions evaluated over the summaries of every shard ({@link Summaries}). The plan partitions
+ *  the manifest: every manifest id is in exactly one shard or in {@code aggregate}, every shard owns at least one assertion, every
+ *  scenario of {@link Scenarios#all()} is made by at least one shard, and every generation run of {@link Scenarios#GENERATION_RUNS} by
+ *  exactly one shard that also makes its scenario.
  *
  *  <p>{@code forseti gate --engine core --shard <name>} runs one shard: its assertions, every scenario it names (each compared with the
  *  oracle at every cut, as in a full run), and writes {@code report.json} and {@code summaries.json}. {@code --aggregate <dir>} reads
@@ -29,7 +31,11 @@ final class Shards {
     /** Summary fields two shards that made the same scenario may differ on: timings and the evidence text that embeds them. */
     static final Set<String> NOT_COMPARED = Set.of("ms", "summary");
 
-    record Shard(String name, List<String> scenarios, List<String> shuffled, List<String> assertions) {}
+    /** One shard: its scenarios, the scenarios whose {@code --shuffle} runs it makes, its assertions and the generation runs it makes
+     *  ({@link Scenarios#GENERATION_RUNS}, by name). */
+    record Shard(String name, List<String> scenarios, List<String> shuffled, List<String> assertions, List<String> generationRuns) {
+        Shard(String name, List<String> scenarios, List<String> shuffled, List<String> assertions) { this(name, scenarios, shuffled, assertions, List.of()); }
+    }
     record Plan(List<Shard> shards, List<String> aggregate, String sha256) {
         Shard shard(String name) {
             for (Shard s : shards) if (s.name().equals(name)) return s;
@@ -44,7 +50,7 @@ final class Shards {
         try { bytes = Files.readAllBytes(f); } catch (IOException e) { throw new IllegalArgumentException("cannot read " + PLAN + ": " + e); }
         JsonNode n = Json.read(bytes);
         List<Shard> shards = new ArrayList<>();
-        for (JsonNode s : n.path("shards")) shards.add(new Shard(Json.text(s, "name"), texts(s, "scenarios"), texts(s, "shuffled"), texts(s, "assertions")));
+        for (JsonNode s : n.path("shards")) shards.add(new Shard(Json.text(s, "name"), texts(s, "scenarios"), texts(s, "shuffled"), texts(s, "assertions"), texts(s, "generationRuns")));
         return new Plan(List.copyOf(shards), texts(n, "aggregate"), Canonical.digestOf(bytes));
     }
 
@@ -60,6 +66,7 @@ final class Shards {
         List<String> p = new ArrayList<>();
         Map<String, String> owner = new HashMap<>();
         Set<String> names = new HashSet<>(), made = new HashSet<>(), shuffledBy = new HashSet<>();
+        Map<String, String> generationRunBy = new HashMap<>();
         for (Shard s : plan.shards()) {
             if (!s.name().matches("[a-z0-9][a-z0-9-]*")) p.add("shard name " + s.name() + " is not [a-z0-9-]");
             if (!names.add(s.name())) p.add("shard " + s.name() + " listed twice");
@@ -70,6 +77,13 @@ final class Shards {
                 if (!shuffledBy.add(sc)) p.add("the shuffled runs of " + sc + " are made by two shards");
             }
             for (String id : s.assertions()) if (owner.put(id, s.name()) != null) p.add(id + " is in two places of the plan");
+            if (s.assertions().isEmpty()) p.add("shard " + s.name() + " owns no assertion");
+            for (String g : s.generationRuns()) {
+                Scenarios.GenerationRun run = Scenarios.generationRun(g);
+                if (run == null) { p.add("shard " + s.name() + ": no generation run " + g); continue; }
+                if (!s.scenarios().contains(run.scenario())) p.add("shard " + s.name() + ": generation run " + g + " needs its scenario " + run.scenario() + " in the shard");
+                if (generationRunBy.put(g, s.name()) != null) p.add("generation run " + g + " is made by two shards");
+            }
         }
         for (String id : plan.aggregate()) {
             if (owner.put(id, "aggregate") != null) p.add(id + " is in two places of the plan");
@@ -79,6 +93,7 @@ final class Shards {
         for (String id : owner.keySet()) if (!manifestIds.contains(id)) p.add(id + " (" + owner.get(id) + ") is not in the manifest");
         for (String sc : Scenarios.all()) if (!made.contains(sc)) p.add("no shard makes scenario " + sc);
         for (String sc : Scenarios.SHUFFLED) if (!shuffledBy.contains(sc)) p.add("no shard makes the shuffled runs of " + sc);
+        for (Scenarios.GenerationRun g : Scenarios.GENERATION_RUNS) if (!generationRunBy.containsKey(g.name())) p.add("no shard makes generation run " + g.name());
         return p;
     }
 
@@ -167,6 +182,13 @@ final class Shards {
             }
             for (String sc : s.shuffled()) for (long seed : Scenarios.SHUFFLE_SEEDS)
                 if (!shuffled.contains(sc + "@" + seed)) problems.add("shard " + s.name() + " has no summary of shuffled run " + sc + "@" + seed);
+            JsonNode gr = summaries.path("generationRuns");
+            if (!gr.isObject()) problems.add("shard " + s.name() + ": " + SUMMARIES + " has no generationRuns object keyed by name");
+            else gr.fields().forEachRemaining(e -> {
+                if (!s.generationRuns().contains(e.getKey())) { problems.add("shard " + s.name() + " summarised generation run " + e.getKey() + ", which the plan does not give it"); return; }
+                merged.generationRuns.put(e.getKey(), e.getValue());
+            });
+            for (String g : s.generationRuns()) if (!gr.has(g)) problems.add("shard " + s.name() + " has no summary of generation run " + g);
         }
         for (String sc : Scenarios.all()) {
             List<JsonNode> l = byScenario.get(sc);
@@ -183,6 +205,8 @@ final class Shards {
         }
         for (String sc : Scenarios.SHUFFLED) for (long seed : Scenarios.SHUFFLE_SEEDS)
             if (!merged.shuffled.containsKey(sc + "@" + seed)) merged.missing.add(sc + " seed " + seed + " not run: no shard summarised it");
+        for (Scenarios.GenerationRun g : Scenarios.GENERATION_RUNS)
+            if (!merged.generationRuns.containsKey(g.name())) merged.missing.add(g.name() + " not run: no shard summarised it");
         problems.addAll(merged.missing);
         return merged;
     }

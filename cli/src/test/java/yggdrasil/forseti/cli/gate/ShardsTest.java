@@ -48,7 +48,7 @@ class ShardsTest {
         List<String> lessAssertions = new ArrayList<>(first.assertions());
         String dropped = lessAssertions.remove(0);
         List<Shards.Shard> l = new ArrayList<>(p.shards());
-        l.set(0, new Shards.Shard(first.name(), first.scenarios(), first.shuffled(), lessAssertions));
+        l.set(0, new Shards.Shard(first.name(), first.scenarios(), first.shuffled(), lessAssertions, first.generationRuns()));
         assertTrue(Shards.validate(new Shards.Plan(l, p.aggregate(), "x"), manifest(), aggregatable()).contains(dropped + " is in no shard and not in aggregate"));
 
         List<String> twice = new ArrayList<>(p.aggregate());
@@ -58,11 +58,11 @@ class ShardsTest {
         List<String> noBaseline = new ArrayList<>(first.scenarios());
         noBaseline.remove("stage2-early");
         l = new ArrayList<>(p.shards());
-        l.set(0, new Shards.Shard(first.name(), noBaseline, first.shuffled(), first.assertions()));
+        l.set(0, new Shards.Shard(first.name(), noBaseline, first.shuffled(), first.assertions(), first.generationRuns()));
         assertTrue(Shards.validate(new Shards.Plan(l, p.aggregate(), "x"), manifest(), aggregatable()).contains("no shard makes scenario stage2-early"));
 
         l = new ArrayList<>(p.shards());
-        l.set(0, new Shards.Shard(first.name(), first.scenarios(), List.of("baseline"), first.assertions()));
+        l.set(0, new Shards.Shard(first.name(), first.scenarios(), List.of("baseline"), first.assertions(), first.generationRuns()));
         assertTrue(Shards.validate(new Shards.Plan(l, p.aggregate(), "x"), manifest(), aggregatable()).contains("no shard makes the shuffled runs of stage2"));
 
         l = new ArrayList<>(p.shards());
@@ -70,7 +70,7 @@ class ShardsTest {
         foreign.add("I-1");
         List<String> noI1 = new ArrayList<>(first.assertions());
         noI1.remove("I-1");
-        l.set(0, new Shards.Shard(first.name(), first.scenarios(), first.shuffled(), noI1));
+        l.set(0, new Shards.Shard(first.name(), first.scenarios(), first.shuffled(), noI1, first.generationRuns()));
         assertTrue(Shards.validate(new Shards.Plan(l, foreign, "x"), manifest(), aggregatable()).contains("I-1 is not an assertion the aggregate run can evaluate"));
     }
 
@@ -176,6 +176,7 @@ class ShardsTest {
         e.put("cutLog", "runs/" + name + ".cuts.json").put("cutLogSha256", Canonical.digestOf(cb));
         e.put("recordingManifestSha256", lock(scenario).path("files").path("manifest.json").asText()).putNull("originalRecordingManifestSha256");
         e.set("offsetRanges", rr.get("offsetRanges").deepCopy());
+        e.putNull("journals").putNull("journalsIndexSha256");
         return e;
     }
 
@@ -209,7 +210,8 @@ class ShardsTest {
 
     /** A complete, passing set of shard outputs under {@code dir}: every shard a bundle whose pipeline store registered one generation per
      *  scenario (shard {@code hand-made} for real, through {@code generation new} into its {@code state/}, {@code shared}; the others
-     *  {@code isolated}), with one kept run per scenario and per shuffled seed and the summaries of decision 12. {@code edit} changes one
+     *  {@code isolated}), with one kept run per scenario and per shuffled seed and the summaries of decision 12, and its planned generation
+     *  runs ({@link FixtureBundles#generationRuns}: the replay with its kept journals, the rule change in its assertion store). {@code edit} changes one
      *  shard before its report and summaries are written; the report's {@code summariesSha256} is the written file's unless the edit set it. */
     Path outputs(Edit edit) throws Exception {
         Path dir = Files.createDirectories(tmp.resolve("shards-" + UUID.randomUUID()));
@@ -264,6 +266,7 @@ class ShardsTest {
                 ordered.putObject("ms");
                 shuffled.add(ordered);
             }
+            FixtureBundles.generationRuns(ROOT, d, s.name(), shared, s.generationRuns(), expect(), gens, runEntries, summaries);
             ObjectNode[] both = {report, summaries};
             edit.edit(s.name(), both, d);
             byte[] sb = Json.pretty(both[1]);
@@ -422,8 +425,8 @@ class ShardsTest {
         assertTrue(r.summaries().missing.stream().anyMatch(x -> x.startsWith("baseline seed ")), r.summaries().missing.toString());
     }
 
-    /** A shard that owns no assertion (its scenarios feed only the aggregate run) holds when its scenarios do: exit 0, not "0 / 0 failed". */
-    @Test void aShardWithoutAssertionsOfItsOwnExitsZero() throws Exception {
+    /** A shard that owns no assertion is refused by the plan (Amendment 2026-11-13, decision 7): no code path writes an exit-0 "0 / 0" report. */
+    @Test void aShardWithoutAssertionsIsRefusedByThePlan() throws Exception {
         Path root = Files.createDirectories(tmp.resolve("root"));
         Files.createDirectories(root.resolve("gate"));
         ObjectNode planJson = Json.object();
@@ -433,21 +436,25 @@ class ShardsTest {
         Scenarios.SHUFFLED.forEach(all.putArray("shuffled")::add);
         ArrayNode ids = all.putArray("assertions");
         for (String id : manifest()) if (!Injections.AGGREGATE.contains(id)) ids.add(id);
+        all.putArray("generationRuns");
+        Scenarios.GENERATION_RUNS.forEach(g -> ((ArrayNode) all.get("generationRuns")).add(g.name()));
         ObjectNode none = shards.addObject().put("name", "nothing");
         none.putArray("scenarios");
         none.putArray("shuffled");
         none.putArray("assertions");
+        none.putArray("generationRuns");
         Injections.AGGREGATE.forEach(planJson.putArray("aggregate")::add);
         Json.write(root.resolve(Shards.PLAN), planJson);
+        assertTrue(Shards.validate(Shards.load(root), manifest(), aggregatable()).contains("shard nothing owns no assertion"), Shards.validate(Shards.load(root), manifest(), aggregatable()).toString());
         Path out = tmp.resolve("out-nothing");
-        java.io.ByteArrayOutputStream so = new java.io.ByteArrayOutputStream();
+        java.io.ByteArrayOutputStream so = new java.io.ByteArrayOutputStream(), se = new java.io.ByteArrayOutputStream();
         int exit = CoreGate.run(new CoreGate.Options(root, ROOT.resolve(CoreGate.MANIFEST), out, CoreGateTest.PYTHON, null, List.of(), CoreGate.DEFAULT_SEED, "test",
-            "nothing", null), CoreGate.registered(), new java.io.PrintStream(so, true, java.nio.charset.StandardCharsets.UTF_8), new java.io.PrintStream(new java.io.ByteArrayOutputStream()));
+            "nothing", null), CoreGate.registered(), new java.io.PrintStream(so, true, java.nio.charset.StandardCharsets.UTF_8), new java.io.PrintStream(se, true, java.nio.charset.StandardCharsets.UTF_8));
         JsonNode report = Json.read(out.resolve("report.json"));
-        assertEquals(0, exit, so.toString(java.nio.charset.StandardCharsets.UTF_8) + report);
-        assertEquals("nothing", report.path("shard").asText());
-        assertTrue(Files.isRegularFile(out.resolve(Shards.SUMMARIES)));
-        assertEquals(0, Json.read(out.resolve(Shards.SUMMARIES)).path("runs").size());
+        assertEquals(1, exit, so.toString(java.nio.charset.StandardCharsets.UTF_8) + report);
+        assertEquals(1, report.path("exit").asInt());
+        assertTrue(report.path("error").asText().contains("shard nothing owns no assertion"), report.toString());
+        assertTrue(se.toString(java.nio.charset.StandardCharsets.UTF_8).contains("shard nothing owns no assertion"), se.toString(java.nio.charset.StandardCharsets.UTF_8));
     }
 
     // --- decisions 10 and 11: the evidence of every shard --------------------------------------------------------------------
@@ -476,7 +483,11 @@ class ShardsTest {
         assertEquals(List.of(), r.problems());
         List<String> order = new ArrayList<>();
         int gens = 0, runs = 0;
-        for (Shards.Shard s : plan().shards()) { gens += s.scenarios().size(); runs += s.scenarios().size() + s.shuffled().size() * Scenarios.SHUFFLE_SEEDS.size(); }
+        for (Shards.Shard s : plan().shards()) {
+            gens += s.scenarios().size();
+            runs += s.scenarios().size() + s.shuffled().size() * Scenarios.SHUFFLE_SEEDS.size() + s.generationRuns().size();
+            for (String g : s.generationRuns()) gens += GateEvidence.PIPELINE.equals(Scenarios.generationRun(g).store()) ? 1 : 2;   // a rule change registers two
+        }
         assertEquals(gens, r.merged().get("generations").size());
         assertEquals(runs, r.merged().get("runs").size());
         for (JsonNode g : r.merged().get("generations")) { String sh = g.path("shard").asText(); if (order.isEmpty() || !order.get(order.size() - 1).equals(sh)) order.add(sh); }
@@ -629,5 +640,174 @@ class ShardsTest {
         assertTrue(unequal.problems().contains("shard hand-made: baseline seed 7: its comparison with the oracle is not equal (equal false)"), unequal.problems().toString());
         Read failed = read(outputs((s, b) -> { if (s.equals("hand-made")) shuffledSummary(b[1], "stage2", 7).put("failure", "crashed: oracle exit 1"); }));
         assertTrue(failed.problems().contains("shard hand-made: stage2 seed 7: crashed: oracle exit 1"), failed.problems().toString());
+    }
+
+    // --- generation runs (plan Step 21.4) ----------------------------------------------------------------------------------------
+
+    static final String REPLAY = "horizon-planned-late@replay", PLANNED_LATE = "horizon-planned-late";
+
+    static ObjectNode generationSummary(ObjectNode summaries, String name) { return (ObjectNode) summaries.get("generationRuns").get(name); }
+
+    @Test void aPlannedGenerationRunMissingFromItsShardIsAProblem() throws Exception {
+        Read r = read(outputs((s, b) -> { if (s.equals(PLANNED_LATE)) ((ObjectNode) b[1].get("generationRuns")).remove(REPLAY); }));
+        assertTrue(r.problems().contains("shard horizon-planned-late has no summary of generation run " + REPLAY), r.problems().toString());
+        assertTrue(r.summaries().missing.contains(REPLAY + " not run: no shard summarised it"), r.summaries().missing.toString());
+        Read array = read(outputs((s, b) -> { if (s.equals(PLANNED_LATE)) b[1].putArray("generationRuns").add(Json.object().put("name", REPLAY)); }));
+        assertTrue(array.problems().contains("shard horizon-planned-late: summaries.json has no generationRuns object keyed by name"), array.problems().toString());
+        // the plan: a generation run no shard makes, or two shards make, is refused
+        Shards.Plan p = plan();
+        List<Shards.Shard> none = new ArrayList<>(), two = new ArrayList<>();
+        for (Shards.Shard s : p.shards()) {
+            none.add(s.name().equals(PLANNED_LATE) ? new Shards.Shard(s.name(), s.scenarios(), s.shuffled(), s.assertions(), List.of()) : s);
+            List<String> gr = new ArrayList<>(s.generationRuns());
+            if (s.name().equals("hand-made")) gr.add(REPLAY);
+            two.add(new Shards.Shard(s.name(), s.scenarios(), s.shuffled(), s.assertions(), gr));
+        }
+        assertTrue(Shards.validate(new Shards.Plan(none, p.aggregate(), "x"), manifest(), aggregatable()).contains("no shard makes generation run " + REPLAY));
+        List<String> twice = Shards.validate(new Shards.Plan(two, p.aggregate(), "x"), manifest(), aggregatable());
+        assertTrue(twice.contains("generation run " + REPLAY + " is made by two shards"), twice.toString());
+        assertTrue(twice.contains("shard hand-made: generation run " + REPLAY + " needs its scenario horizon-planned-late in the shard"), twice.toString());
+        assertEquals(List.of(), Shards.validate(p, manifest(), aggregatable()));
+        for (Scenarios.GenerationRun g : Scenarios.GENERATION_RUNS) {
+            long makers = p.shards().stream().filter(s -> s.generationRuns().contains(g.name())).count();
+            assertEquals(1, makers, g.name());
+        }
+    }
+
+    @Test void aReplayRunIsCheckedAgainstItsReplayLock() throws Exception {
+        String original = lock(PLANNED_LATE).path("files").path("manifest.json").asText();
+        String replay = FixtureBundles.replayLock(ROOT, PLANNED_LATE).path("files").path("manifest.json").asText();
+        assertNotEquals(original, replay);
+        Read ok = read(outputs((s, b) -> {}));
+        assertEquals(List.of(), ok.problems());
+        assertEquals(replay, ok.summaries().generationRuns.get(REPLAY).path("recordingManifestSha256").asText(), "the replay summary pins the replay lock's manifest");
+        // the summary of the replay naming the original recording
+        Read onOriginal = read(outputs((s, b) -> { if (s.equals(PLANNED_LATE)) generationSummary(b[1], REPLAY).put("recordingManifestSha256", original); }));
+        assertTrue(onOriginal.problems().contains("shard horizon-planned-late: " + REPLAY + ": its run read recording manifest " + original + ", its lock pins " + replay),
+            onOriginal.problems().toString());
+        // a replay summary of other cut ids than the replay lock plans
+        long n = FixtureBundles.replayLock(ROOT, PLANNED_LATE).path("counts").path("cuts").asLong();
+        Read shortList = read(outputs((s, b) -> { if (s.equals(PLANNED_LATE)) ((ArrayNode) generationSummary(b[1], REPLAY).get("comparedCutIds")).remove((int) n - 1); }));
+        assertTrue(shortList.problems().stream().anyMatch(x -> x.startsWith("shard horizon-planned-late: " + REPLAY + ": the gate compared cuts (at position " + (n - 1))),
+            shortList.problems().toString());
+        // a replay run that does not name its original recording, or whose run record is not a replay
+        Read noOriginal = read(outputs((s, b, d) -> {
+            if (!s.equals(PLANNED_LATE)) return;
+            ObjectNode e = GateBundles.generationRunEntry(b[0], REPLAY);
+            rewrite(d, e, "runRecord", rr -> rr.putNull("replay"));
+            e.putNull("originalRecordingManifestSha256");
+        }));
+        assertTrue(noOriginal.problems().stream().anyMatch(x -> x.contains(": run record replay null for an event-time replay")), noOriginal.problems().toString());
+        assertTrue(noOriginal.problems().stream().anyMatch(x -> x.contains(": originalRecordingManifestSha256 null, its run record's")), noOriginal.problems().toString());
+        // two run entries for the one replay summary
+        Read two = read(outputs((s, b) -> { if (s.equals(PLANNED_LATE)) ((ArrayNode) b[0].get("runs")).add(GateBundles.generationRunEntry(b[0], REPLAY).deepCopy().put("runId", "another")); }));
+        assertTrue(two.problems().contains("shard horizon-planned-late: " + REPLAY + ": two run entries for one summary"), two.problems().toString());
+    }
+
+    static final String KEPT = "horizon-planned-late/journals/horizon-planned-late/";
+
+    @Test void keptJournalsMissingOrChangedInTheArtifactAreAProblem() throws Exception {
+        String file = "journals/" + RunFold.WR + "/0.jsonl";
+        Path dir = outputs((s, b) -> {});
+        assertEquals(List.of(), read(dir).problems());
+        assertTrue(Files.isRegularFile(dir.resolve(KEPT + "online/" + file)) && Files.isRegularFile(dir.resolve(KEPT + "event-time-replay/" + file)), "both runs' journals are kept");
+        Files.writeString(dir.resolve(KEPT + "event-time-replay/" + file), "{\"changed\":1}\n", StandardCharsets.UTF_8);
+        Read changed = read(dir);
+        assertTrue(changed.problems().stream().anyMatch(x -> x.endsWith(": journal journals/horizon-planned-late/event-time-replay/" + file + " changed")), changed.problems().toString());
+
+        dir = outputs((s, b) -> {});
+        Files.delete(dir.resolve(KEPT + "online/" + file));
+        Read missing = read(dir);
+        assertTrue(missing.problems().stream().anyMatch(x -> x.endsWith(": journal journals/horizon-planned-late/online/" + file + " is missing")), missing.problems().toString());
+
+        dir = outputs((s, b) -> {});
+        Files.writeString(dir.resolve(KEPT + "online/journals/extra.jsonl"), "{}\n", StandardCharsets.UTF_8);
+        Read extra = read(dir);
+        assertTrue(extra.problems().stream().anyMatch(x -> x.endsWith(": journal journals/horizon-planned-late/online/journals/extra.jsonl is not in its index")), extra.problems().toString());
+
+        dir = outputs((s, b) -> {});
+        Files.delete(dir.resolve(KEPT + "event-time-replay.index.json"));
+        Read noIndex = read(dir);
+        assertTrue(noIndex.problems().stream().anyMatch(x -> x.endsWith(": no journal index journals/horizon-planned-late/event-time-replay.index.json")), noIndex.problems().toString());
+
+        Read unkept = read(outputs((s, b) -> { if (s.equals(PLANNED_LATE)) entry(b[0], "pipeline", PLANNED_LATE, false).putNull("journals").putNull("journalsIndexSha256"); }));
+        assertTrue(unkept.problems().stream().anyMatch(x -> x.endsWith(": its journals are not kept, journals/horizon-planned-late/online expected")), unkept.problems().toString());
+        Read foreign = read(outputs((s, b) -> { if (s.equals("hand-made")) entry(b[0], "pipeline", "baseline", false).put("journals", "journals/baseline/online").put("journalsIndexSha256", "0".repeat(64)); }));
+        assertTrue(foreign.problems().stream().anyMatch(x -> x.endsWith(": journals \"journals/baseline/online\", none expected")), foreign.problems().toString());
+    }
+
+    /** A context whose aggregate summaries are {@code s}. */
+    CoreGate.Context aggregateContext(Summaries s) throws Exception {
+        Path base = Files.createDirectories(tmp.resolve("ctx-" + UUID.randomUUID()));
+        CoreGate.Context c = new CoreGate.Context(ROOT, Files.createDirectories(base.resolve("tmp")), Files.createDirectories(base.resolve("out").resolve("logs")), CoreGateTest.PYTHON);
+        c.aggregate = s;
+        return c;
+    }
+
+    /** The {@code afterHorizon} values of a run of {@code scenario}: {@code need} from its visit facts (the scenario's visits, as the
+     *  replay recording's {@code expected.visits} carry them) and the rule's H and L, then a last W1 past it, online visits falling and
+     *  every visit's work record remaining. */
+    static ObjectNode afterHorizonValues(String scenario) {
+        JsonNode sc = Json.read(ROOT.resolve("fixtures/scenarios").resolve(scenario + ".json"));
+        long t0 = sc.path("T0").asLong();
+        ObjectNode expected = Json.object();
+        ArrayNode visits = expected.putArray("visits");
+        for (JsonNode v : sc.path("visits")) {
+            ObjectNode x = visits.addObject().put("station", v.path("station").asText());
+            Json.putSafe(x, "enter", t0 + v.path("enter").asLong());
+            if (v.path("leave").isNumber()) Json.putSafe(x, "leave", t0 + v.path("leave").asLong()); else x.putNull("leave");
+        }
+        Injections.Need n = Injections.afterHorizonNeed(expected, 86400000L, 720000L);
+        ObjectNode a = Json.object();
+        Json.putSafe(a, "t0", t0);
+        Json.putSafe(a, "need", n.at());
+        a.put("station", n.station()).put("what", n.what());
+        Json.putSafe(a, "lastW1", n.at() + 1000);
+        Json.putSafe(a, "maxOnlineVisits", 3L);
+        Json.putSafe(a, "lastOnlineVisits", 0L);
+        Json.putSafe(a, "workRecords", (long) visits.size());
+        Json.putSafe(a, "visits", (long) visits.size());
+        return a;
+    }
+
+    Summaries withAfterHorizon(boolean replayToo) throws Exception {
+        Summaries s = read(outputs((x, b) -> {})).summaries();
+        for (String h : Scenarios.HORIZON) ((ObjectNode) s.runs.get(h)).set("afterHorizon", afterHorizonValues(h));
+        if (replayToo) ((ObjectNode) s.generationRuns.get(REPLAY)).set("afterHorizon", afterHorizonValues(PLANNED_LATE));
+        return s;
+    }
+
+    @Test void aReplaySummaryWithoutAfterHorizonValuesFailsJAfterHorizonCuts() throws Exception {
+        CoreGate.Result r = Injections.afterHorizon(aggregateContext(withAfterHorizon(false)));
+        assertFalse(r.ok(), r.evidence());
+        assertTrue(r.evidence().contains(REPLAY + ": no afterHorizon values"), r.evidence());
+        Summaries absent = withAfterHorizon(true);
+        absent.generationRuns.remove(REPLAY);
+        CoreGate.Result a = Injections.afterHorizon(aggregateContext(absent));
+        assertFalse(a.ok(), a.evidence());
+        assertTrue(a.evidence().contains(REPLAY + " not run: no afterHorizon values"), a.evidence());
+        Summaries failed = withAfterHorizon(true);
+        ((ObjectNode) failed.generationRuns.get(REPLAY)).put("failure", "afterHorizon: no visit facts").put("ok", false);
+        CoreGate.Result f = Injections.afterHorizon(aggregateContext(failed));
+        assertFalse(f.ok(), f.evidence());
+        assertTrue(f.evidence().contains(REPLAY + ": afterHorizon: no visit facts"), f.evidence());
+    }
+
+    @Test void theAggregateReadsTheAfterHorizonValuesOfThePlannedLateReplay() throws Exception {
+        CoreGate.Result r = Injections.afterHorizon(aggregateContext(withAfterHorizon(true)));
+        assertTrue(r.ok(), r.evidence());
+        assertTrue(r.evidence().contains(REPLAY + " last W1 T0 + "), "the evidence names the replay run: " + r.evidence());
+        Map<String, Consumer<ObjectNode>> broken = new LinkedHashMap<>();
+        broken.put("last W1 ", a -> Json.putSafe(a, "lastW1", a.path("need").asLong() - 1));
+        broken.put("onlineVisits max 0", a -> Json.putSafe(a, "maxOnlineVisits", 0L));
+        broken.put("onlineVisits max 3, last 3", a -> Json.putSafe(a, "lastOnlineVisits", 3L));
+        broken.put("work records in the fold at the last cut", a -> Json.putSafe(a, "workRecords", a.path("visits").asLong() - 1));
+        for (Map.Entry<String, Consumer<ObjectNode>> e : broken.entrySet()) {
+            Summaries s = withAfterHorizon(true);
+            e.getValue().accept((ObjectNode) s.generationRuns.get(REPLAY).get("afterHorizon"));
+            CoreGate.Result x = Injections.afterHorizon(aggregateContext(s));
+            assertFalse(x.ok(), e.getKey() + ": " + x.evidence());
+            assertTrue(x.evidence().contains(REPLAY + (e.getKey().startsWith("work") ? " " : ": ") + e.getKey()), e.getKey() + ": " + x.evidence());
+        }
     }
 }

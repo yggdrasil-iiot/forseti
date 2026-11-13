@@ -307,6 +307,32 @@ final class RunFold implements Closeable {
         ledger.values().removeIf(d -> d.topic().equals("ot.messages"));
     }
 
+    /** What two folds of the same journals must agree on (injection 23 folds the kept online journals again after the replay): the
+     *  records per topic ({@link #rows}), per topic the SHA-256 of every key's final revision and digest (deleted keys included, in key
+     *  order), and the SHA-256 of every partition's fingerprint at every cut. Taken before {@link #compact}. */
+    ObjectNode digest() {
+        ObjectNode o = Json.object(), r = o.putObject("rows"), finals = o.putObject("finalRevisions");
+        rows.forEach((k, v) -> Json.putSafe(r, k, v));
+        for (String t : ROWS) {
+            MessageDigest md = sha256();
+            List<String> keys = new ArrayList<>(live.get(t).keySet());
+            Collections.sort(keys);
+            for (String k : keys) {
+                Rev x = live.get(t).get(k);
+                md.update((k + "\u0000" + x.revision() + "\u0000" + (x.deleted() ? "deleted" : x.digest()) + "\n").getBytes(StandardCharsets.UTF_8));
+            }
+            finals.put(t, HexFormat.of().formatHex(md.digest()));
+        }
+        MessageDigest md = sha256();
+        fingerprints.forEach((p, m) -> m.forEach((k, f) -> md.update((p + "\u0000" + k + "\u0000" + f + "\n").getBytes(StandardCharsets.UTF_8))));
+        o.put("fingerprints", HexFormat.of().formatHex(md.digest()));
+        return o;
+    }
+
+    private static MessageDigest sha256() {
+        try { return MessageDigest.getInstance("SHA-256"); } catch (java.security.NoSuchAlgorithmException e) { throw new IllegalStateException(e); }
+    }
+
     // --- views ---------------------------------------------------------------------------------------------------------------
 
     long cut() { return cut; }

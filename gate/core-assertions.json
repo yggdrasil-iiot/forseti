@@ -375,6 +375,26 @@
       "id": "F-GEN-FLOOR",
       "pr": 5,
       "description": "in its own temporary store (never the gate's --state): generation new on registry (floor 1), on registry-next (floor 2), on registry again: head-rollback; the two registered generations listed store assertion:F-GEN-FLOOR, isolated, self-test"
+    },
+    {
+      "id": "F-GEN-LIFECYCLE",
+      "pr": 5,
+      "description": "in its own temporary store through the CLI only (store assertion:F-GEN-LIFECYCLE, isolated, self-test): new -> one registered row; forseti run on smoke -> still one row, one declaration; promote without a report -> exit 2, no row; retire -> retired; retire again refused generation-transition and forseti run on the retired generation refused generation-retired, the store unchanged; every status pair GenerationPolicy does not allow refused. No replaying, verified or current row; no gate is launched inside the gate"
+    },
+    {
+      "id": "F-GEN-PROMOTE-REQUIRES-REPORT",
+      "pr": 5,
+      "description": "in its own temporary store with a registered generation and its smoke run: promote without a report or without a run exits 2; a complete full fixture bundle passes GateReportReader with scope core accepted (without calling promote); then each of twenty single changes (shard or control report, exit 1, another manifest digest, 0/0, k/k, above N, a repeated id, an aggregate report missing a shard, with another plan digest, with a result under the wrong owner, without --shards, an inserted run, a removed compared cut, another registeredRowSha256, the digest only under an assertion store, state isolated, another runRecordSha256, a shuffled run, scope core without --accept-scope) is refused by promote with its code and leaves the store's bytes unchanged"
+    },
+    {
+      "id": "I-20",
+      "pr": 5,
+      "description": "rule change in a new generation: A = the pipeline baseline run (rule 1.0.0); in store assertion:I-20 generation 1 on registry and generation 2 on registry-next (rule 1.0.1, that store's floor 2, the pipeline store's 1); B = baseline@rule-1.0.1 under generation 2, compared with the oracle at every cut; every row of B carries the new rulesDigest, rule version 1.0.1 and evaluationGeneration 2, every row of A the old digest, the digests differ, each fold holds only its own; A and B named by (store, registeredRowSha256), both I-20 generations isolated"
+    },
+    {
+      "id": "I-23",
+      "pr": 5,
+      "description": "horizon-planned-late online: W1 = A at the planned cut, holeAt and holeAt - 1 admitted, holeAt - 2 replay-required beyond-horizon, visit 3 missingPeriods 1 before the late batch and 0 after; horizon-planned-late@replay on the locked replay recording: every deadline keeps its cut ids and is bracketed by the reported W1, the third sample attributed with cause replayed, no replay-required disposition, every timer row carries the replayed timer cause and precedes its progress; the base journals reread after the replay equal their index and fold alike, the replay journals carry only the replay generation; both generations shared under --state"
     }
   ]
 }

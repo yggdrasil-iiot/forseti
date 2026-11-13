@@ -18,6 +18,7 @@ import yggdrasil.forseti.cli.gate.CoreGate.Proc;
 import yggdrasil.forseti.cli.generation.FileGenerationStore;
 import yggdrasil.forseti.cli.generation.GenerationCli;
 import yggdrasil.forseti.cli.recording.Recording;
+import yggdrasil.forseti.cli.recording.ReplayRecording;
 import yggdrasil.forseti.cli.recording.ScenarioBuilder;
 import yggdrasil.forseti.core.Json;
 import yggdrasil.forseti.core.canon.Canonical;
@@ -32,16 +33,19 @@ import yggdrasil.forseti.core.generation.GenerationStore;
  *  {@code isolated}). Each registration is listed in {@code generations[]}; each harness run in {@code runs[]}, with its {@code run.json}
  *  and {@code cuts.json} kept under {@code <out>/runs/}.
  *
- *  <p>{@link #validate}: a bundle is one output directory ({@code report.json}, {@code summaries.json}, {@code runs/}, and {@code state/}
- *  when the run had {@code --state}). It binds every run to its generation inside its store, every pipeline run to exactly one
- *  successful summary and every summary to exactly one run, each summary to its committed lock and exact cut ids, each run record to
- *  its entry, its cut log and the report, and every {@code shared} generation to the row in {@code state/generations.jsonl}. Every
- *  problem it returns is a coverage problem. */
+ *  <p>{@link #validate}: a bundle is one output directory ({@code report.json}, {@code summaries.json}, {@code runs/}, {@code journals/}
+ *  when it kept journals, and {@code state/} when the run had {@code --state}). It binds every run to its generation inside its store,
+ *  every pipeline run and every generation run ({@code summaries.json} {@code generationRuns}, keyed by name) to exactly one successful
+ *  summary and every summary to exactly one run, each summary to its committed lock (an event-time replay's: the replay lock) and exact
+ *  cut ids, each run record to its entry, its cut log and the report, the replay fields of every run, the kept journals of the
+ *  event-time replay and of its scenario's online run to their index (every listed file with its digest, no other file) and no other
+ *  run to any, and every {@code shared} generation to the row in {@code state/generations.jsonl}. Every problem it returns is a
+ *  coverage problem. */
 final class GateEvidence {
     private GateEvidence() {}
 
-    static final String PIPELINE = "pipeline", RUNS = "runs", STATE = "state", SHARED = "shared", ISOLATED = "isolated";
-    static final String ONLINE = "online", SELF_TEST = "self-test";
+    static final String PIPELINE = "pipeline", RUNS = "runs", STATE = "state", SHARED = "shared", ISOLATED = "isolated", JOURNALS = "journals";
+    static final String ONLINE = "online", SELF_TEST = "self-test", REPLAY = "event-time-replay", RULE_CHANGE = "rule-change";
 
     /** A control store of this gate run: its bundle-local name ({@code pipeline}, {@code assertion:<ID>}, {@code assertion:<ID>#2}, ...),
      *  its directory, and whether its registrations are {@code shared} (the executable verb, the system clock, kept). */
@@ -135,9 +139,33 @@ final class GateEvidence {
 
     // --- kept runs -------------------------------------------------------------------------------------------------------------
 
-    /** Copies the run's {@code run.json} and {@code cuts.json} to {@code <out>/runs/<name>.run.json} and {@code .cuts.json} and lists the
-     *  run in {@code runs[]}. */
+    /** {@link #keep(Context, Registered, Path, String, String, String, long, boolean, String, Path)} with the digest of {@code recording}'s
+     *  manifest and no kept journals. */
     static ObjectNode keep(Context c, Registered g, Path runOut, Path recording, String scenario, String variant, long seed, boolean shuffle, String base) throws IOException {
+        return keep(c, g, runOut, Canonical.digestOf(Files.readAllBytes(recording.resolve(Recording.MANIFEST))), scenario, variant, seed, shuffle, base, null);
+    }
+
+    /** {@code <out>/journals/<scenario>/<variant>}, emptied: where the harness of a run whose journals are kept writes. */
+    static Path journalDir(Context c, String scenario, String variant) throws IOException {
+        Path d = c.out.resolve(JOURNALS).resolve(scenario).resolve(variant);
+        CoreGate.delete(d);
+        CoreGate.delete(d.resolveSibling(variant + ".index.json"));
+        return Files.createDirectories(d.getParent()).resolve(variant);
+    }
+
+    /** {@code {relative file: raw SHA-256}} of every file under {@code dir}, in canonical bytes. */
+    static byte[] journalIndex(Path dir) throws IOException {
+        ObjectNode index = Json.object();
+        Scenarios.Pipeline.digests(dir).forEach(index::put);
+        return Canonical.bytes(index);
+    }
+
+    /** Copies the run's {@code run.json} and {@code cuts.json} to {@code <out>/runs/<name>.run.json} and {@code .cuts.json} and lists the
+     *  run in {@code runs[]}; {@code manifestSha256} is the raw digest of the manifest of the recording the run read. When
+     *  {@code journals} is non-null (a directory {@code <out>/journals/<scenario>/<variant>}) its index {@code <variant>.index.json} beside
+     *  it is written and the entry names both ({@code journals}, {@code journalsIndexSha256}); both are null otherwise. */
+    static ObjectNode keep(Context c, Registered g, Path runOut, String manifestSha256, String scenario, String variant, long seed, boolean shuffle, String base,
+                           Path journals) throws IOException {
         Path dir = Files.createDirectories(c.out.resolve(RUNS));
         String name = c.evidence.keptName(base);
         byte[] record = Files.readAllBytes(runOut.resolve("run.json")), cuts = Files.readAllBytes(runOut.resolve("cuts.json"));
@@ -152,9 +180,17 @@ final class GateEvidence {
         e.put("registeredRowSha256", g.registeredRowSha256()).put("state", g.store().state());
         e.put("runRecord", RUNS + "/" + name + ".run.json").put("runRecordSha256", Canonical.digestOf(record));
         e.put("cutLog", RUNS + "/" + name + ".cuts.json").put("cutLogSha256", Canonical.digestOf(cuts));
-        e.put("recordingManifestSha256", Canonical.digestOf(Files.readAllBytes(recording.resolve(Recording.MANIFEST))));
-        e.putNull("originalRecordingManifestSha256");
+        e.put("recordingManifestSha256", manifestSha256);
+        e.put("originalRecordingManifestSha256", rr.path("originalRecordingManifestSha256").isTextual() ? rr.path("originalRecordingManifestSha256").textValue() : null);
         e.set("offsetRanges", rr.path("offsetRanges").deepCopy());
+        if (journals == null) e.putNull(JOURNALS).putNull("journalsIndexSha256");
+        else {
+            byte[] index = journalIndex(journals);
+            Files.write(journals.resolveSibling(journals.getFileName() + ".index.json"), index);
+            List<String> parts = new ArrayList<>();
+            for (Path x : c.out.relativize(journals)) parts.add(x.toString());
+            e.put(JOURNALS, String.join("/", parts)).put("journalsIndexSha256", Canonical.digestOf(index));
+        }
         c.evidence.run(e);
         return e;
     }
@@ -188,13 +224,16 @@ final class GateEvidence {
                 p.add("registeredRowSha256 " + g.path("registeredRowSha256").asText() + " is listed twice in store " + store);
         }
 
-        // the summaries, by key, and what each must hold
+        // the summaries, by kind and key ("run:<scenario>", "shuffled:<scenario>@<seed>", "generation:<name>"), and what each must hold
         Map<String, JsonNode> summaryByKey = new LinkedHashMap<>();
-        for (JsonNode s : summaries.path("runs")) if (summaryByKey.put(s.path("name").asText(), s) != null) p.add(s.path("name").asText() + " is summarised twice");
+        for (JsonNode s : summaries.path("runs")) if (summaryByKey.put(RUN + s.path("name").asText(), s) != null) p.add(s.path("name").asText() + " is summarised twice");
         for (JsonNode s : summaries.path("shuffled")) {
             String key = s.path("name").asText() + "@" + s.path("seed").asLong();
-            if (summaryByKey.put(key, s) != null) p.add("shuffled run " + key + " is summarised twice");
+            if (summaryByKey.put(SHUFFLED + key, s) != null) p.add("shuffled run " + key + " is summarised twice");
         }
+        JsonNode generationRuns = summaries.path("generationRuns");
+        if (!generationRuns.isObject()) p.add(Shards.SUMMARIES + " has no generationRuns object keyed by name");
+        else generationRuns.fields().forEachRemaining(e -> summaryByKey.put(GENERATION + e.getKey(), e.getValue()));
         Map<String, List<Long>> summaryCuts = new HashMap<>();
         for (Map.Entry<String, JsonNode> e : summaryByKey.entrySet()) summaryCuts.put(e.getKey(), summary(root, e.getKey(), e.getValue(), p));
 
@@ -227,7 +266,11 @@ final class GateEvidence {
             if (!g.path("scope").asText("").equals(reg.get(0).scope())) p.add(label + ": scope " + g.path("scope").asText() + ", the stored row's key " + reg.get(0).scope());
         }
 
-        // every run: its generation, its files, its record, its summary
+        // kept journals: an event-time replay's and its scenario's online pipeline run's, at their stable paths, and no other run's
+        Set<String> replayed = new HashSet<>();
+        for (JsonNode r : runs) if (REPLAY.equals(r.path("variant").asText())) replayed.add(r.path("scenario").asText());
+
+        // every run: its generation, its files, its record, its journals, its summary
         Set<String> runIds = new HashSet<>();
         Map<String, Integer> covered = new HashMap<>();
         for (JsonNode r : runs) {
@@ -244,14 +287,26 @@ final class GateEvidence {
             if (rr != null && cl != null) runRecord(r, g, rr, cl, report, stored, p, label);
             if (rr != null && !r.path("recordingManifestSha256").asText("").equals(rr.path("fixtureDigests").path("recordingManifestSha256").asText(null)))
                 p.add(label + ": recording manifest " + r.path("recordingManifestSha256").asText() + ", its run record's " + rr.path("fixtureDigests").path("recordingManifestSha256"));
-            if (!PIPELINE.equals(store)) continue;
-            String key;
-            if (r.path("shuffle").asBoolean()) key = r.path("scenario").asText() + "@" + r.path("seed").asLong();
-            else if (ONLINE.equals(r.path("variant").asText())) key = r.path("scenario").asText();
+            String scenario = r.path("scenario").asText(), variant = r.path("variant").asText();
+            if (rr != null) replay(root, r, rr, p, label);
+            String wantJournals = REPLAY.equals(variant) ? JOURNALS + "/" + scenario + "/" + REPLAY
+                : PIPELINE.equals(store) && ONLINE.equals(variant) && !r.path("shuffle").asBoolean() && replayed.contains(scenario) ? JOURNALS + "/" + scenario + "/" + ONLINE : null;
+            journals(bundle, r, wantJournals, p, label);
+            Scenarios.GenerationRun gr = REPLAY.equals(variant) || RULE_CHANGE.equals(variant) ? Scenarios.generationRun(scenario, variant) : null;
+            String key, shown;
+            if (gr != null) {
+                if (!gr.store().equals(store)) { p.add(label + ": generation run " + gr.name() + " lives in store " + gr.store() + ", not " + store); continue; }
+                if (r.path("shuffle").asBoolean()) { p.add(label + ": generation run " + gr.name() + " is not a shuffled run"); continue; }
+                key = GENERATION + gr.name();
+                shown = gr.name();
+            } else if (REPLAY.equals(variant) || RULE_CHANGE.equals(variant)) { p.add(label + ": no generation run of " + scenario + " with variant " + variant + " is planned"); continue; }
+            else if (!PIPELINE.equals(store)) continue;
+            else if (r.path("shuffle").asBoolean()) { shown = scenario + "@" + r.path("seed").asLong(); key = SHUFFLED + shown; }
+            else if (ONLINE.equals(variant)) { shown = scenario; key = RUN + shown; }
             else { p.add(label + ": variant " + r.path("variant") + " is not a pipeline run of this gate"); continue; }
             JsonNode s = summaryByKey.get(key);
-            if (s == null) { p.add(label + ": no summary " + key + " in " + Shards.SUMMARIES); continue; }
-            if (covered.merge(key, 1, Integer::sum) > 1) { p.add(key + ": two run entries for one summary"); continue; }
+            if (s == null) { p.add(label + ": no summary " + shown + " in " + Shards.SUMMARIES); continue; }
+            if (covered.merge(key, 1, Integer::sum) > 1) { p.add(shown + ": two run entries for one summary"); continue; }
             if (!r.path("recordingManifestSha256").asText("").equals(s.path("recordingManifestSha256").asText(null)))
                 p.add(label + ": recording manifest " + r.path("recordingManifestSha256").asText() + ", its summary's " + s.path("recordingManifestSha256"));
             if (cl != null) {
@@ -261,18 +316,80 @@ final class GateEvidence {
                 if (want != null && !logged.equals(want)) p.add(label + ": its kept cut log holds cuts " + Shards.firstDifference(logged, want) + " other than its summary's");
             }
         }
-        for (String key : summaryByKey.keySet()) if (!covered.containsKey(key)) p.add(key + ": a summary without a pipeline run entry");
+        for (String key : summaryByKey.keySet())
+            if (!covered.containsKey(key)) p.add(key.substring(key.indexOf(':') + 1) + ": a summary without a " + (key.startsWith(GENERATION) ? "generation-run" : "pipeline") + " run entry");
         return p;
     }
 
+    static final String RUN = "run:", SHUFFLED = "shuffled:", GENERATION = "generation:";
+
+    /** The replay fields of a run entry and its run record: an event-time replay names {@code replay: "event-time"} and the original
+     *  recording's manifest digest, which its scenario's committed lock pins, in the entry and the record alike; every other run names
+     *  neither. */
+    static void replay(Path root, JsonNode r, JsonNode rr, List<String> p, String label) {
+        JsonNode orig = r.path("originalRecordingManifestSha256"), rrOrig = rr.path("originalRecordingManifestSha256"), mode = rr.path("replay");
+        if (REPLAY.equals(r.path("variant").asText())) {
+            if (!"event-time".equals(mode.asText(null))) p.add(label + ": run record replay " + mode + " for an event-time replay");
+            String pinned = null;
+            try { pinned = Json.read(ScenarioBuilder.lockOf(root.resolve("fixtures").resolve("scenarios").resolve(r.path("scenario").asText() + ".json"))).path("files").path("manifest.json").asText(null); }
+            catch (RuntimeException e) { p.add(label + ": cannot read its scenario lock: " + e.getMessage()); }
+            if (!orig.isTextual() || !orig.textValue().equals(rrOrig.asText(null)) || (pinned != null && !orig.textValue().equals(pinned)))
+                p.add(label + ": originalRecordingManifestSha256 " + orig + ", its run record's " + rrOrig + ", its scenario lock pins " + pinned);
+        } else {
+            if (!orig.isNull() || !(rrOrig.isNull() || rrOrig.isMissingNode())) p.add(label + ": originalRecordingManifestSha256 " + orig + " (run record " + rrOrig + ") on a run that is no replay");
+            if (!(mode.isNull() || mode.isMissingNode())) p.add(label + ": run record replay " + mode + " on a run that is no replay");
+        }
+    }
+
+    /** The kept journals an entry names: exactly {@code want} ({@code journals/<scenario>/<variant>}, or null); when present, the index
+     *  {@code <journals>.index.json} has the digest {@code journalsIndexSha256} and lists exactly the files under the directory, each with
+     *  its raw digest. */
+    static void journals(Path bundle, JsonNode r, String want, List<String> p, String label) {
+        JsonNode j = r.get(JOURNALS), d = r.get("journalsIndexSha256");
+        if (j == null || d == null) { p.add(label + ": no journals or journalsIndexSha256 field"); return; }
+        if (j.isNull()) {
+            if (!d.isNull()) p.add(label + ": journalsIndexSha256 without journals");
+            if (want != null) p.add(label + ": its journals are not kept, " + want + " expected");
+            return;
+        }
+        if (!j.asText().equals(want)) { p.add(label + ": journals " + j + ", " + (want == null ? "none" : want) + " expected"); return; }
+        Path dir = bundle.resolve(want), index = bundle.resolve(want + ".index.json");
+        byte[] ib;
+        try { ib = Files.readAllBytes(index); } catch (IOException e) { p.add(label + ": no journal index " + want + ".index.json"); return; }
+        if (!Canonical.digestOf(ib).equals(d.asText(null))) { p.add(label + ": " + want + ".index.json has another digest than journalsIndexSha256"); return; }
+        JsonNode idx;
+        try { idx = Json.read(ib); } catch (RuntimeException e) { p.add(label + ": " + want + ".index.json: " + e.getMessage()); return; }
+        TreeMap<String, String> listed = new TreeMap<>(), have;
+        idx.fields().forEachRemaining(e -> listed.put(e.getKey(), e.getValue().asText(null)));
+        try { have = Files.isDirectory(dir) ? Scenarios.Pipeline.digests(dir) : new TreeMap<>(); }
+        catch (IOException e) { p.add(label + ": " + want + ": " + e); return; }
+        for (String f : listed.keySet()) {
+            if (!have.containsKey(f)) p.add(label + ": journal " + want + "/" + f + " is missing");
+            else if (!have.get(f).equals(listed.get(f))) p.add(label + ": journal " + want + "/" + f + " changed");
+        }
+        for (String f : have.keySet()) if (!listed.containsKey(f)) p.add(label + ": journal " + want + "/" + f + " is not in its index");
+    }
+
     /** One summary against its committed lock (the rules {@code Shards.coverage} held before): it held, the recording it read is the one its
-     *  lock pins, and its planned, completed and compared cut ids are one strictly increasing list of the lock's length. Returns the list. */
+     *  lock pins (for an event-time replay the replay lock {@code <scenario>.replay.lock.json}), and its planned, completed and compared cut
+     *  ids are one strictly increasing list of the lock's length. {@code key} is {@code run:}, {@code shuffled:} or {@code generation:} and
+     *  the summary's name. Returns the list. */
     static List<Long> summary(Path root, String key, JsonNode r, List<String> p) {
         String name = r.path("name").asText();
-        boolean shuffled = key.contains("@");
+        boolean shuffled = key.startsWith(SHUFFLED), generation = key.startsWith(GENERATION);
         String label = shuffled ? name + " seed " + r.path("seed").asLong() : name;
+        Path scenarios = root.resolve("fixtures").resolve("scenarios");
+        Path lockFile;
+        if (generation) {
+            String shown = key.substring(GENERATION.length());
+            Scenarios.GenerationRun g = Scenarios.generationRun(shown);
+            if (!shown.equals(name)) p.add("generation run " + shown + ": its summary is named " + r.path("name"));
+            if (g == null) { p.add("generation run " + shown + " is not planned"); return null; }
+            label = g.name();
+            lockFile = REPLAY.equals(g.variant()) ? ReplayRecording.lockOf(scenarios.resolve(g.scenario() + ".json")) : ScenarioBuilder.lockOf(scenarios.resolve(g.scenario() + ".json"));
+        } else lockFile = ScenarioBuilder.lockOf(scenarios.resolve(name + ".json"));
         JsonNode lock;
-        try { lock = Json.read(ScenarioBuilder.lockOf(root.resolve("fixtures").resolve("scenarios").resolve(name + ".json"))); }
+        try { lock = Json.read(lockFile); }
         catch (RuntimeException e) { p.add(label + ": cannot read its lock: " + e.getMessage()); return null; }
         long lockCuts = lock.path("counts").path("cuts").asLong(-1);
         if (shuffled) {

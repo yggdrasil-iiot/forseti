@@ -12,8 +12,8 @@ import yggdrasil.forseti.cli.gate.Scenarios.Shuffled;
 import yggdrasil.forseti.core.Json;
 import yggdrasil.forseti.core.canon.Canonical;
 
-/** What the assertions over every scenario run ({@code J-*}, {@code C-2-REFERENCE}) read: one summary per scenario run and per
- *  {@code --shuffle} run, made where the run was compared with the oracle. A gate run that makes every scenario takes them from its own
+/** What the assertions over every scenario run ({@code J-*}, {@code C-2-REFERENCE}) read: one summary per scenario run, per
+ *  {@code --shuffle} run and per generation run ({@link Scenarios#GENERATION_RUNS}), made where the run was compared with the oracle. A gate run that makes every scenario takes them from its own
  *  pipeline; a shard run ({@code --shard}) writes the summaries of its scenarios to {@code summaries.json}, and the aggregate run
  *  ({@code --aggregate}) reads them back from every shard ({@link Shards}), so these assertions are evaluated on the same values either way.
  *
@@ -31,6 +31,9 @@ final class Summaries {
     final Map<String, JsonNode> runs = new LinkedHashMap<>();
     /** {@code name@seed} -> shuffled-run summary. */
     final Map<String, JsonNode> shuffled = new LinkedHashMap<>();
+    /** Generation-run name -> its run summary (the fields of {@link #runs}, {@code name} being the generation run's), in
+     *  {@link Scenarios#GENERATION_RUNS} order. */
+    final Map<String, JsonNode> generationRuns = new LinkedHashMap<>();
     /** One line per scenario or shuffled run this gate run does not have, with the reason. */
     final List<String> missing = new ArrayList<>();
 
@@ -51,6 +54,13 @@ final class Summaries {
         for (String name : Scenarios.SHUFFLED) for (long seed : Scenarios.SHUFFLE_SEEDS) {
             if (!Scenarios.shuffles(c, name)) { s.missing.add(name + " seed " + seed + " not run in this gate run"); continue; }
             s.shuffled.put(name + "@" + seed, of(Scenarios.pipeline(c).shuffled(name, seed)));
+        }
+        for (Scenarios.GenerationRun g : Scenarios.GENERATION_RUNS) {
+            String why = Scenarios.notRun(c, g);
+            if (why != null) { s.missing.add(g.name() + " " + why); continue; }
+            ObjectNode o = of(Scenarios.pipeline(c).generationRun(g.name()));
+            o.put("name", g.name());
+            s.generationRuns.put(g.name(), o);
         }
         return s;
     }
@@ -103,7 +113,8 @@ final class Summaries {
             ArrayNode planned = o.putArray("plannedCutIds");
             for (JsonNode b : r.manifest.path("batches")) planned.add(b.path("cutId").asLong());
         }
-        if (r.recording != null) {
+        if (r.manifestSha256 != null) o.put("recordingManifestSha256", r.manifestSha256);
+        else if (r.recording != null) {
             try { o.put("recordingManifestSha256", Canonical.digestOf(Files.readAllBytes(r.recording.resolve("manifest.json")))); }
             catch (IOException e) { o.putNull("recordingManifestSha256"); }
         }
@@ -176,12 +187,14 @@ final class Summaries {
         return o;
     }
 
-    /** {@code summaries.json}: {@code {runs: [...], shuffled: [...]}}. */
+    /** {@code summaries.json}: {@code {runs: [...], shuffled: [...], generationRuns: {<name>: {...}}}}. */
     ObjectNode toJson() {
         ObjectNode o = Json.object();
         ArrayNode a = o.putArray("runs"), b = o.putArray("shuffled");
         runs.values().forEach(a::add);
         shuffled.values().forEach(b::add);
+        ObjectNode g = o.putObject("generationRuns");
+        generationRuns.forEach(g::set);
         return o;
     }
 

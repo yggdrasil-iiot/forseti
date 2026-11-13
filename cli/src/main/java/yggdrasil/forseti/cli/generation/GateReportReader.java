@@ -39,9 +39,9 @@ import yggdrasil.forseti.core.generation.GenerationStore;
  *  </ol>
  *
  *  <p>Digests establish integrity between the files; the report itself is not authenticated (the operator-selected bundle or the CI run
- *  that produced it is what makes it trustworthy). Fields PR 5b's later steps add are read when present: {@code summaries.json}
- *  {@code generationRuns}, the plan's per-shard {@code generationRuns} (absent = none planned), and {@code runs[].journals} /
- *  {@code journalsIndexSha256} (absent or null = no kept journals). */
+ *  that produced it is what makes it trustworthy). {@code summaries.json} holds {@code generationRuns}, an object keyed by generation-run
+ *  name; the plan's per-shard {@code generationRuns} is required; {@code runs[].journals} / {@code journalsIndexSha256} are null for a
+ *  run whose journals are not kept, and the gate's validator requires them on the runs that keep them. */
 public final class GateReportReader {
     private GateReportReader() {}
 
@@ -162,7 +162,7 @@ public final class GateReportReader {
             sameSet(shuffled, GateBundle.shuffledKeys(), "shuffled summaries", ev);
             List<String> planned = new ArrayList<>();
             plan.generationRuns().values().forEach(planned::addAll);
-            sameSet(generationRunKeys(summaries), planned, "generation-run summaries", ev);
+            sameSet(generationRunKeys(summaries, ev), planned, "generation-run summaries", ev);
             for (JsonNode r : report.get("runs")) {
                 if (!r.get("shard").isNull()) ev.add("run " + r.get("runId").textValue() + " names shard " + r.get("shard") + " in a full report");
                 inside(reportDir, r, ev);
@@ -180,7 +180,7 @@ public final class GateReportReader {
                     if (!Canonical.digestOf(sb).equals(s.get("summariesSha256").textValue())) ev.add("shard " + name + ": " + GateBundle.SUMMARIES + " is not the one the aggregate report binds");
                     JsonNode summaries = Json.read(sb);
                     bundleSummaries.put(name, summaries);
-                    sameSet(generationRunKeys(summaries), plan.generationRuns().getOrDefault(name, List.of()), "shard " + name + ": generation-run summaries", ev);
+                    sameSet(generationRunKeys(summaries, ev), plan.generationRuns().getOrDefault(name, List.of()), "shard " + name + ": generation-run summaries", ev);
                 } catch (IOException | IllegalArgumentException e) { ev.add("shard " + name + ": " + e.getMessage()); }
             }
             if (ev.isEmpty()) {
@@ -289,8 +289,7 @@ public final class GateReportReader {
         JsonNode summaries = bundleSummaries.get(shardOfState), summary = null;
         String lockFile;
         if (replayed) {
-            String key = scenario + "@replay";
-            for (Map.Entry<String, JsonNode> s : generationRuns(summaries).entrySet()) if (s.getKey().equals(key)) summary = s.getValue();
+            summary = summaries.path("generationRuns").get(scenario + "@replay");
             lockFile = scenario + ".replay.lock.json";
         } else {
             for (JsonNode s : summaries.path("runs")) if (scenario.equals(s.path("name").asText(null))) summary = s;
@@ -375,8 +374,7 @@ public final class GateReportReader {
             fields(x, w, p, "shard", NULL_TEXT, "store", TEXT, "scenario", TEXT, "variant", TEXT, "seed", INT, "shuffle", BOOL, "runId", TEXT, "generation", INT,
                 "registeredRowSha256", TEXT, "state", TEXT, "runRecord", TEXT, "runRecordSha256", TEXT, "cutLog", TEXT, "cutLogSha256", TEXT,
                 "recordingManifestSha256", TEXT, "originalRecordingManifestSha256", NULL_TEXT, "offsetRanges", OBJ);
-            if (x.isObject()) for (String f : List.of("journals", "journalsIndexSha256"))
-                if (x.has(f) && !(x.get(f).isNull() || x.get(f).isTextual())) p.add(w + "." + f + " is not null or text");
+            if (x.isObject()) fields(x, w, p, "journals", NULL_TEXT, "journalsIndexSha256", NULL_TEXT);
         }
         return p;
     }
@@ -397,23 +395,16 @@ public final class GateReportReader {
         }
     }
 
-    /** The {@code generationRuns} summaries of a {@code summaries.json} by name (an array of summaries with {@code name}, or an object
-     *  keyed by name); absent = none. */
-    static Map<String, JsonNode> generationRuns(JsonNode summaries) {
-        Map<String, JsonNode> m = new LinkedHashMap<>();
-        JsonNode g = summaries == null ? null : summaries.get("generationRuns");
-        if (g == null || g.isNull()) return m;
-        if (g.isObject()) g.fields().forEachRemaining(e -> m.put(e.getKey(), e.getValue()));
-        else for (JsonNode s : g) m.put(s.path("name").asText(), s);
-        return m;
-    }
-
-    static List<String> generationRunKeys(JsonNode summaries) {
+    /** The names of the {@code generationRuns} summaries of a {@code summaries.json}: an object keyed by generation-run name, each
+     *  summary's {@code name} its key. Anything else is a problem in {@code p}. */
+    static List<String> generationRunKeys(JsonNode summaries, List<String> p) {
         List<String> l = new ArrayList<>();
         JsonNode g = summaries.get("generationRuns");
-        if (g == null || g.isNull()) return l;
-        if (g.isObject()) g.fieldNames().forEachRemaining(l::add);
-        else for (JsonNode s : g) l.add(s.path("name").asText());
+        if (g == null || !g.isObject()) { p.add(GateBundle.SUMMARIES + " has no generationRuns object keyed by name: " + g); return l; }
+        g.fields().forEachRemaining(e -> {
+            l.add(e.getKey());
+            if (!e.getKey().equals(e.getValue().path("name").asText(null))) p.add("generation-run summary " + e.getKey() + " is named " + e.getValue().path("name"));
+        });
         return l;
     }
 
@@ -451,8 +442,8 @@ public final class GateReportReader {
         return b.resolve(rel).normalize().startsWith(b);
     }
 
-    /** When the entry names kept journals: the index {@code <journals>.index.json} has {@code journalsIndexSha256}, and every file it lists
-     *  ({@code {relative file: raw SHA-256}}, relative to the journals directory, inside it) has its digest. */
+    /** When the entry names kept journals: the index {@code <journals>.index.json} has {@code journalsIndexSha256}, every file it lists
+     *  ({@code {relative file: raw SHA-256}}, relative to the journals directory, inside it) has its digest, and no other file is there. */
     static void journals(Path bundle, JsonNode entry, List<String> p) {
         JsonNode j = entry.get("journals"), d = entry.get("journalsIndexSha256");
         if (j == null || j.isNull()) {
@@ -468,12 +459,14 @@ public final class GateReportReader {
         JsonNode idx;
         try { idx = Json.read(ib); } catch (IllegalArgumentException e) { p.add("the journal index is not JSON"); return; }
         if (!idx.isObject()) { p.add("the journal index is not an object"); return; }
+        Map<String, String> have;
+        try { have = Files.isDirectory(dir) ? GateBundle.digests(dir) : Map.of(); } catch (IOException x) { p.add("journals " + rel + ": " + x.getMessage()); return; }
         idx.fields().forEachRemaining(e -> {
             if (!relativeInside(dir, e.getKey())) { p.add("journal " + e.getKey() + " is not inside " + rel); return; }
-            try {
-                if (!Canonical.digestOf(Files.readAllBytes(dir.resolve(e.getKey()))).equals(e.getValue().asText(null))) p.add("journal " + e.getKey() + " changed");
-            } catch (IOException x) { p.add("journal " + e.getKey() + " is missing"); }
+            if (!have.containsKey(e.getKey())) p.add("journal " + e.getKey() + " is missing");
+            else if (!have.get(e.getKey()).equals(e.getValue().asText(null))) p.add("journal " + e.getKey() + " changed");
         });
+        for (String f : have.keySet()) if (!idx.has(f)) p.add("journal " + f + " is not in the journal index");
     }
 
     /** The real path of {@code p}, null when it does not exist (8.3 short names and links resolved on both sides of a comparison). */

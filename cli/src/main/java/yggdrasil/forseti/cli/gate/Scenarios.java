@@ -16,7 +16,9 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.stream.Stream;
 import yggdrasil.forseti.cli.gate.CoreGate.Context;
 import yggdrasil.forseti.cli.gate.CoreGate.Proc;
+import yggdrasil.forseti.cli.harness.ReferenceEngine;
 import yggdrasil.forseti.cli.recording.Recording;
+import yggdrasil.forseti.cli.recording.ReplayRecording;
 import yggdrasil.forseti.cli.recording.ScenarioBuilder;
 import yggdrasil.forseti.core.Json;
 import yggdrasil.forseti.core.canon.Canonical;
@@ -37,6 +39,14 @@ import yggdrasil.forseti.core.rules.RuleSet;
  *  directories are deleted once folded (the pipeline store is the gate run's and stays); what the assertions read stays in memory. A
  *  {@code --shuffle} run is compared with the oracle at every cut exactly like its scenario's run (plan Task 20 decision 12).
  *
+ *  <p>Generation runs ({@link #GENERATION_RUNS}, plan Step 21.4) are named extra runs of a scenario on a generation of their own, made by
+ *  the shard that plans them: the event-time replay {@code horizon-planned-late@replay} is registered in the pipeline store after the
+ *  scenario generations and run on the heavy executor after its base run, on the replay recording the harness materializes and the
+ *  committed replay lock pins; the rule change {@code baseline@rule-1.0.1} is registered in the store {@code assertion:I-20} (generation 1
+ *  on {@code registry}, generation 2 on {@code registry-next}) and runs under generation 2. Both are compared with the oracle at every cut.
+ *  The journals of the replay and of its scenario's online run are kept under {@code <out>/journals/<scenario>/<variant>/} with an index
+ *  ({@link GateEvidence#keep}); the online journals are indexed before the replay starts.
+ *
  *  <p>Parallelism: {@code -Dforseti.gate.parallel=<n>} hand-made scenarios at a time (default half the processors, at most 4), the
  *  five horizon recordings one at a time beside them (each harness gets {@code -Dforseti.gate.horizonXmx}, default 6g). {@code -Dforseti.gate.skipHorizon=true} (or
  *  {@code FORSETI_GATE_SKIP_HORIZON=true}) leaves the horizon scenarios out for local iteration; every assertion that needs one then
@@ -54,6 +64,43 @@ final class Scenarios {
     /** C-6: the default run and three {@code --shuffle} runs with these seeds. */
     static final List<Long> SHUFFLE_SEEDS = List.of(CoreGate.DEFAULT_SEED, 7L, 20261110L);
     static final List<String> SHUFFLED = List.of("baseline", "stage2");
+
+    /** A generation run (plan Step 21.4): a named extra run of a scenario on a generation of its own, in {@code store} (the gate run's
+     *  pipeline store, or the {@code assertion:} store of the assertion that owns it), with its {@code variant}. Listed in plan order. */
+    record GenerationRun(String name, String scenario, String variant, String store) {
+        /** The name in logs and kept files: {@code <scenario>.<suffix>}. */
+        String label() { return scenario + "." + name.substring(name.indexOf('@') + 1); }
+        /** The assertion whose store it lives in, null for the pipeline store. */
+        String assertion() { return store.startsWith("assertion:") ? store.substring("assertion:".length()) : null; }
+    }
+    static final List<GenerationRun> GENERATION_RUNS = List.of(
+        new GenerationRun("baseline@rule-1.0.1", "baseline", GateEvidence.RULE_CHANGE, "assertion:I-20"),
+        new GenerationRun("horizon-planned-late@replay", "horizon-planned-late", GateEvidence.REPLAY, GateEvidence.PIPELINE));
+    /** The rule-change generation's rule, released in {@code fixtures/registry-next} (injection 20). */
+    static final String RULE_NEXT = "line2-attribution@1.0.1";
+
+    static GenerationRun generationRun(String name) {
+        for (GenerationRun g : GENERATION_RUNS) if (g.name().equals(name)) return g;
+        return null;
+    }
+    /** The generation run of {@code scenario} with {@code variant}, null when none is planned. */
+    static GenerationRun generationRun(String scenario, String variant) {
+        for (GenerationRun g : GENERATION_RUNS) if (g.scenario().equals(scenario) && g.variant().equals(variant)) return g;
+        return null;
+    }
+    /** Why generation run {@code g} is not made in this gate run, null when it is: its scenario is not made, or a shard run does not plan it. */
+    static String notRun(Context c, GenerationRun g) {
+        String why = notRun(c, g.scenario());
+        if (why != null) return why;
+        if (c.shard != null && !c.shard.generationRuns().contains(g.name())) return "not run: not a generation run of shard " + c.shard.name() + " (" + Shards.PLAN + ")";
+        return null;
+    }
+    static boolean makes(Context c, GenerationRun g) { return notRun(c, g) == null; }
+    /** Whether the journals of {@code scenario}'s online run are kept: this gate run makes its event-time replay. */
+    static boolean keepsJournals(Context c, String scenario) {
+        GenerationRun g = generationRun(scenario, GateEvidence.REPLAY);
+        return g != null && makes(c, g);
+    }
 
     static boolean skipHorizon() {
         return Boolean.getBoolean("forseti.gate.skipHorizon") || "true".equalsIgnoreCase(System.getenv("FORSETI_GATE_SKIP_HORIZON"));
@@ -88,6 +135,30 @@ final class Scenarios {
         String label;
         /** The generation this run reads, from the registration table. */
         GateEvidence.Registered generation;
+        /** {@code online}, or the variant of the generation run this is ({@link #genRun}, null for a scenario run). */
+        String variant = GateEvidence.ONLINE;
+        GenerationRun genRun;
+        /** The registry the harness reads the release from and the oracle its mappings ({@code fixtures/registry} unless a rule change). */
+        Path registry;
+        /** The rule the run evaluates ({@code {stream, releaseId, version, attributionRuleId, attributionRuleVersion}}): the recording's,
+         *  unless a rule change names another. */
+        JsonNode rule;
+        /** For an event-time replay: the original recording, the materialized replay recording being {@link #recording}. */
+        Path original;
+        /** Raw SHA-256 of the manifest of {@link #recording}, taken while the recording exists. */
+        String manifestSha256;
+        /** The kept journal directory ({@code <out>/journals/<scenario>/<variant>}), null when the run's journals are not kept. */
+        Path journals;
+        /** The fold's digest before compaction ({@link RunFold#digest}), for a run whose journals are kept. */
+        ObjectNode foldDigest;
+        /** What every journal record of the run carries ({@link JournalCensus}), for the runs injections 20 and 23 read. */
+        JournalCensus census;
+        /** What injection 23 reads of the fold before compaction ({@link Injections#capturePlannedLate}). */
+        JsonNode plannedLate;
+        /** For a rule change: its store's first generation, on the recording's rule. */
+        GateEvidence.Registered previous;
+        /** The bracket check of an event-time replay after its run ({@link ReplayRecording#checkRun}). */
+        List<String> brackets = List.of();
         boolean synthetic;
         Path recording;
         JsonNode manifest, expected, cutLog, runJson;
@@ -116,6 +187,7 @@ final class Scenarios {
         }
         long w1(long cutId, String station) { return perStation(cutId).path(station).path("W1").asLong(); }
         long t0() { return manifest.path("T0").asLong(); }
+        JsonNode rule() { return rule != null ? rule : manifest.get("rule"); }
         JsonNode visit(String ref) {
             for (JsonNode v : expected.path("visits")) if (v.path("visitRef").asText().equals(ref)) return v;
             throw new IllegalStateException(name + ": no ground-truth visit " + ref);
@@ -191,8 +263,37 @@ final class Scenarios {
                 }
                 table.put(e.getKey(), r);
             }
+            // then the generation runs of the pipeline store, in plan order (spec "Gate registration")
+            for (GenerationRun g : GENERATION_RUNS) {
+                if (!GateEvidence.PIPELINE.equals(g.store()) || !makes(c, g)) continue;
+                Run base = table.get(g.scenario()), r = generationRunOf(g, base, registry);
+                if (r.failure == null) {
+                    try {
+                        r.generation = GateEvidence.register(c, c.pipeline, registry, base.recording, g.scenario(), g.variant(), null);
+                        r.rulesDigest = r.generation.rulesDigest();
+                    } catch (Exception | Error x) { r.failure = "crashed: " + x; }
+                }
+                table.put(g.name(), r);
+            }
             return table;
         });
+    }
+
+    /** The run of generation run {@code g} on its scenario's prepared recording ({@code base}), before its registration. */
+    static Run generationRunOf(GenerationRun g, Run base, Path registry) {
+        Run r = new Run();
+        r.name = g.scenario();
+        r.label = g.label();
+        r.genRun = g;
+        r.variant = g.variant();
+        r.registry = registry;
+        if (base == null) { r.failure = "its scenario " + g.scenario() + " is not made"; return r; }
+        r.synthetic = base.synthetic;
+        r.lockLine = base.lockLine;
+        if (base.failure != null) { r.failure = "its scenario's recording failed: " + base.failure; return r; }
+        if (GateEvidence.REPLAY.equals(g.variant())) { r.original = base.recording; r.recording = base.recording; }
+        else { r.recording = base.recording; r.manifest = base.manifest; r.expected = base.expected; r.manifestSha256 = base.manifestSha256; }
+        return r;
     }
 
     static int parallelism() { return Math.max(1, Integer.getInteger("forseti.gate.parallel", Math.min(4, Runtime.getRuntime().availableProcessors() / 2))); }
@@ -222,6 +323,8 @@ final class Scenarios {
         Recording rec = Recording.open(r.recording);
         r.manifest = rec.manifest();
         r.expected = rec.expected();
+        r.manifestSha256 = Canonical.digestOf(Files.readAllBytes(r.recording.resolve(Recording.MANIFEST)));
+        r.registry = registry;
         JsonNode counts = committed.path("counts");
         r.lockLine = (SMOKE.contains(r.name) ? "committed recording" : "built") + " = lock (" + want.size() + " files; " + counts.path("messages").asLong() + " messages, "
             + counts.path("samples").asLong() + " samples, " + counts.path("cuts").asLong() + " cuts)";
@@ -232,6 +335,7 @@ final class Scenarios {
         final Path registry, diffs;
         final Map<String, Future<Run>> runs = new LinkedHashMap<>();
         final Map<String, Future<Shuffled>> shuffled = new LinkedHashMap<>();
+        final Map<String, Future<Run>> generationRuns = new LinkedHashMap<>();
         final ExecutorService pool, heavy;
         final AtomicInteger dirs = new AtomicInteger();
         final long started = System.nanoTime();
@@ -249,6 +353,16 @@ final class Scenarios {
             for (String s : HAND_MADE) if (table.containsKey(s)) runs.put(s, pool.submit(() -> run(table.get(s))));
             for (String s : SMOKE) if (table.containsKey(s)) runs.put(s, pool.submit(() -> run(table.get(s))));
             for (String s : SHUFFLED) if (shuffles(c, s)) for (long seed : SHUFFLE_SEEDS) shuffled.put(s + "@" + seed, pool.submit(() -> shuffle(s, seed)));
+            for (GenerationRun g : GENERATION_RUNS) {
+                if (!makes(c, g)) continue;
+                if (GateEvidence.PIPELINE.equals(g.store())) {
+                    Run r = table.get(g.name());
+                    generationRuns.put(g.name(), heavy.submit(() -> replay(r)));   // after its base run: the heavy executor is one thread
+                } else {
+                    Run r = ruleChange(g, table.get(g.scenario()));   // registered here, sequentially, in its owner's assertion store
+                    generationRuns.put(g.name(), pool.submit(() -> run(r)));
+                }
+            }
             pool.shutdown();
             heavy.shutdown();
         }
@@ -269,6 +383,28 @@ final class Scenarios {
             }
             return f.get();
         }
+        Run generationRun(String name) throws Exception {
+            GenerationRun g = Scenarios.generationRun(name);
+            if (g == null) throw new IllegalArgumentException("no generation run " + name);
+            Future<Run> f = generationRuns.get(name);
+            if (f == null) { String why = notRun(c, g); throw new IllegalStateException(why != null ? why : "not run"); }
+            return f.get();
+        }
+
+        private Run ruleChange(GenerationRun g, Run base) { return Scenarios.ruleChange(c, g, base, registry); }
+
+        /** The event-time replay of a scenario on its own pipeline generation, after its base run: {@code forseti run --replay event-time
+         *  --replay-lock <committed lock>} into {@code <out>/journals/<scenario>/event-time-replay/}; the gate checks the materialized bytes
+         *  against the committed replay lock again, compares the run with the oracle at every cut of the replay recording, and after it
+         *  requires {@link ReplayRecording#checkRun} to hold on the {@code W1} the run reported. */
+        private Run replay(Run r) {
+            try {
+                Run base = get(r.name);
+                if (r.failure == null && base.failure != null) r.failure = "its base run failed: " + base.failure;
+            } catch (Exception | Error e) { if (r.failure == null) r.failure = "its base run: " + e; }
+            return run(r);
+        }
+
         Shuffled shuffled(String name, long seed) throws Exception {
             Future<Shuffled> f = shuffled.get(name + "@" + seed);
             if (f == null) throw new IllegalStateException(c.shard != null ? "not run: the shuffled runs of " + name + " are not in shard " + c.shard.name()
@@ -276,28 +412,67 @@ final class Scenarios {
             return f.get();
         }
 
-        /** The scenario's run on its registered generation: harness, fold and comparison, the run record and cut log kept. */
+        /** A scenario's run or a generation run on its registered generation: harness, fold and comparison, the run record and cut log
+         *  kept. The journals of an event-time replay and of its scenario's online run are kept under {@code <out>/journals/} with their
+         *  index ({@link GateEvidence#keep}); every other run directory is deleted once folded. */
         private Run run(Run r) {
-            String name = r.name;
+            String label = r.label();
             try {
                 if (r.failure == null) {
-                    Path out = dir(name + "-run").resolve("out");
+                    boolean replay = GateEvidence.REPLAY.equals(r.variant);
+                    boolean kept = replay || (r.genRun == null && keepsJournals(c, r.name));
+                    Path out = kept ? GateEvidence.journalDir(c, r.name, r.variant) : dir(label + "-run").resolve("out");
+                    if (kept) r.journals = out;
                     long t = System.nanoTime();
-                    harness(r, c.pipeline.dir(), out, null);
+                    harness(r, r.generation.store().dir(), out, null);
                     r.ms.put("harness", ms(t));
-                    Path oracle = dir(name + "-oracle").resolve("out");
-                    try { fold(r, out, oracle); }
-                    finally { GateEvidence.keep(c, r.generation, out, r.recording, name, GateEvidence.ONLINE, CoreGate.DEFAULT_SEED, false, name); }
+                    if (replay) materialized(r, out);
+                    Path oracle = dir(label + "-oracle").resolve("out");
+                    String base = r.genRun == null ? r.name : r.genRun.label();
+                    boolean folded = false;
+                    try {
+                        fold(r, out, oracle);
+                        folded = true;
+                        if (replay) {
+                            r.brackets = ReplayRecording.checkRun(r.manifest, r.cutLog);
+                            if (!r.brackets.isEmpty()) throw new IllegalStateException("the reported W1 does not bracket the replay deadlines: " + r.brackets);
+                        }
+                    } finally {
+                        if (replay) CoreGate.delete(out.resolve(ReferenceEngine.REPLAY_DIR));   // locked and reproducible: not kept with the journals
+                        if (folded && (r.genRun != null || r.name.equals(Injections.RULE_CHANGE_BASE))) r.census = JournalCensus.of(out);
+                        GateEvidence.keep(c, r.generation, out, r.manifestSha256, r.name, r.variant, CoreGate.DEFAULT_SEED, false, base, kept ? out : null);
+                    }
                     CoreGate.delete(oracle.getParent());
-                    CoreGate.delete(out.getParent());
+                    if (!kept) CoreGate.delete(out.getParent());
                 }
             } catch (Exception | Error e) {
                 r.failure = "crashed: " + e;
             }
             try {
-                Files.writeString(c.logs.resolve("scenario-" + name + ".log"), r.summary() + "\n" + r.ms + "\n", StandardCharsets.UTF_8);
+                Files.writeString(c.logs.resolve("scenario-" + label + ".log"), r.summary() + "\n" + r.ms + "\n", StandardCharsets.UTF_8);
             } catch (Exception | Error e) { /* the log is for reading, not a gate result */ }
             return r;
+        }
+
+        /** The replay recording the harness materialized ({@code <out>/replay-recording}): its bytes are the committed replay lock's
+         *  ({@code fixtures/scenarios/<scenario>.replay.lock.json}); it is then the recording the run is folded and compared on. */
+        private void materialized(Run r, Path out) throws IOException {
+            Path dir = out.resolve(ReferenceEngine.REPLAY_DIR), lock = ReplayRecording.lockOf(c.fixtures().resolve("scenarios").resolve(r.name + ".json"));
+            JsonNode committed = Json.read(lock);
+            TreeMap<String, String> have = digests(dir), want = new TreeMap<>();
+            committed.path("files").fields().forEachRemaining(e -> want.put(e.getKey(), e.getValue().asText()));
+            if (!have.equals(want)) {
+                List<String> d = new ArrayList<>();
+                for (String k : want.keySet()) if (!want.get(k).equals(have.get(k))) d.add(k);
+                for (String k : have.keySet()) if (!want.containsKey(k)) d.add("unexpected " + k);
+                throw new IllegalStateException("the materialized replay recording differs from " + c.root.relativize(lock) + ": " + d);
+            }
+            r.recording = dir;
+            Recording rec = Recording.open(dir);
+            r.manifest = rec.manifest();
+            r.expected = rec.expected();
+            r.manifestSha256 = have.get(Recording.MANIFEST);
+            r.lockLine = "materialized = replay lock (" + want.size() + " files; " + committed.path("counts").path("cuts").asLong() + " cuts)";
         }
 
         static long ms(long t) { return (System.nanoTime() - t) / 1_000_000; }
@@ -321,10 +496,13 @@ final class Scenarios {
         private void harness(Run r, Path state, Path out, Long seed) throws IOException, InterruptedException {
             String xmx = r.synthetic ? System.getProperty("forseti.gate.horizonXmx", "6g") : System.getProperty("forseti.gate.harnessXmx", "2g");
             List<String> cmd = new ArrayList<>(CoreGate.java(xmx));
-            cmd.addAll(List.of("run", "--engine", "core", "--recording", r.recording.toString(), "--registry", registry.toString(), "--state", state.toString(),
+            Path recording = r.original != null ? r.original : r.recording, reg = r.registry != null ? r.registry : registry;
+            cmd.addAll(List.of("run", "--engine", "core", "--recording", recording.toString(), "--registry", reg.toString(), "--state", state.toString(),
                 "--generation", Long.toString(r.generation.generation()), "--out", out.toString()));
             if (seed != null) cmd.addAll(List.of("--seed", Long.toString(seed), "--shuffle"));
-            Proc p = Proc.run(c.root, c.logs.resolve("harness-" + r.name + (seed == null ? "" : "-shuffle-" + seed) + ".log"), Duration.ofHours(2), cmd);
+            if (GateEvidence.REPLAY.equals(r.variant))
+                cmd.addAll(List.of("--replay", ReferenceEngine.EVENT_TIME, "--replay-lock", ReplayRecording.lockOf(c.fixtures().resolve("scenarios").resolve(r.name + ".json")).toString()));
+            Proc p = Proc.run(c.root, c.logs.resolve("harness-" + r.label() + ".log"), Duration.ofHours(2), cmd);
             if (p.exit() != 0) throw new IllegalStateException("forseti run exit " + p.exit() + ": " + p.lastLine());
             r.cutLog = Json.read(out.resolve("cuts.json"));
             r.runJson = Json.read(out.resolve("run.json"));
@@ -332,9 +510,10 @@ final class Scenarios {
 
         /** {@code python -I -m forseti_oracle.cli all} on the harness's cut log, the recording's rule and subscription. */
         private List<String> oracleCommand(Run r, Path run, Path out) {
-            JsonNode rule = r.manifest.path("rule");
+            JsonNode rule = r.rule();
+            Path reg = r.registry != null ? r.registry : registry;
             List<String> cmd = new ArrayList<>(List.of(c.python, "-I", "-m", "forseti_oracle.cli", "all", "--recording", r.recording.toString(),
-                "--cuts", run.resolve("cuts.json").toString(), "--mappings", registry.resolve("mappings").toString(),
+                "--cuts", run.resolve("cuts.json").toString(), "--mappings", reg.resolve("mappings").toString(),
                 "--release", Json.text(rule, "releaseId") + "@" + Json.text(rule, "version"),
                 "--rule", Json.text(rule, "attributionRuleId") + "@" + Json.text(rule, "attributionRuleVersion"),
                 "--definitions", r.recording.resolve(Recording.MANIFEST).toString(), "--out", out.toString()));
@@ -408,6 +587,8 @@ final class Scenarios {
                 r.runJson.path("subscribed").fields().forEachRemaining(e -> { List<Integer> l = new ArrayList<>(); e.getValue().forEach(x -> l.add(x.asInt())); subscribed.put(e.getKey(), l); });
                 r.measures = Integrity.check(f, r.recording, r.cutLog, subscribed, r.rules, r.manifest.path("definitions"), stations);
                 r.outcome = Expectations.check(f, r.expected, r::perStation);
+                if (r.name.equals(Injections.PLANNED_LATE)) r.plannedLate = Injections.capturePlannedLate(c, f, r);
+                if (r.journals != null) r.foldDigest = f.digest();
                 if (r.synthetic) f.compact();
             } finally {
                 if (p.isAlive()) p.destroyForcibly();
@@ -433,8 +614,8 @@ final class Scenarios {
 
         /** The rule set the recording names, from its release in the fixture registry (head verified at its signedAt + 60 s). */
         private RuleSet ruleSet(Run r) throws IOException {
-            Path m = registry.resolve("mappings");
-            JsonNode rule = r.manifest.get("rule");
+            Path m = (r.registry != null ? r.registry : registry).resolve("mappings");
+            JsonNode rule = r.rule();
             yggdrasil.forseti.core.release.HeadVerifier.Head h = yggdrasil.forseti.core.release.HeadVerifier.verify(m, Json.text(rule, "stream"), Foundation.fixtureKeys(c),
                 new yggdrasil.forseti.core.release.FloorStore(dir(r.name + "-floors")), GateSigner.now(m, Json.text(rule, "stream")));
             return RuleSet.load(yggdrasil.forseti.core.release.ReleaseReader.read(m, h), Json.text(rule, "attributionRuleId"), Json.text(rule, "attributionRuleVersion"), r.manifest.get("definitions"));
@@ -454,15 +635,17 @@ final class Scenarios {
                 r.expected = base.expected;
                 r.synthetic = false;
                 r.lockLine = base.lockLine;
+                r.manifestSha256 = base.manifestSha256;
+                r.registry = base.registry;
                 r.generation = base.generation;
                 r.rulesDigest = base.rulesDigest;
                 Path out = dir(name + "-shuffle-" + seed).resolve("out");
                 long t = System.nanoTime();
-                harness(r, c.pipeline.dir(), out, seed);
+                harness(r, r.generation.store().dir(), out, seed);
                 r.ms.put("harness", ms(t));
                 Path oracle = dir(name + "-shuffle-" + seed + "-oracle").resolve("out");
                 try { fold(r, out, oracle); }
-                finally { GateEvidence.keep(c, r.generation, out, r.recording, name, GateEvidence.ONLINE, seed, true, name + ".shuffle-" + seed); }
+                finally { GateEvidence.keep(c, r.generation, out, r.manifestSha256, name, GateEvidence.ONLINE, seed, true, name + ".shuffle-" + seed, null); }
                 CoreGate.delete(oracle.getParent());
                 CoreGate.delete(out.getParent());
                 return new Shuffled(name, seed, r.cutLog, r.fold.fingerprints(), r.fold.rows(), r.fold.findings, null, r);
@@ -471,6 +654,29 @@ final class Scenarios {
                 return new Shuffled(name, seed, r.cutLog, null, null, null, "crashed: " + e, r);
             }
         }
+    }
+
+    /** Registers a rule change's two generations in its owner's assertion store ({@code g.store()}), sequentially: generation 1 on
+     *  {@code registry} (the recording's rule), generation 2 on {@code fixtures/registry-next} ({@link #RULE_NEXT}), both with
+     *  {@code --recording} of {@code base}; the run reads generation 2, with that registry and rule. */
+    static Run ruleChange(Context c, GenerationRun g, Run base, Path registry) {
+        Path next = c.fixtures().resolve("registry-next");
+        Run r = generationRunOf(g, base, next);
+        if (r.failure != null) return r;
+        try {
+            GateEvidence.Store store = new GateEvidence.Store(c.evidence.storeName(g.assertion()), c.newDir("store"), false);
+            r.previous = GateEvidence.register(c, store, registry, base.recording, g.scenario(), GateEvidence.SELF_TEST, g.assertion());
+            String stream = Json.text(base.manifest.get("rule"), "stream");
+            r.generation = GateEvidence.register(c, store, next, stream, RULE_NEXT, base.recording, g.scenario(), g.variant(), g.assertion());
+            r.rulesDigest = r.generation.rulesDigest();
+            JsonNode head = Json.read(next.resolve("mappings").resolve("heads").resolve(stream + ".json"));
+            ObjectNode rule = ((ObjectNode) base.manifest.get("rule")).deepCopy();
+            rule.put("releaseId", Json.text(head, "id")).put("version", Json.text(head, "version"));
+            int at = RULE_NEXT.lastIndexOf('@');
+            rule.put("attributionRuleId", RULE_NEXT.substring(0, at)).put("attributionRuleVersion", RULE_NEXT.substring(at + 1));
+            r.rule = rule;
+        } catch (Exception | Error x) { r.failure = "crashed: " + x; }
+        return r;
     }
 
     static Pipeline pipeline(Context c) throws Exception { return c.memo("scenario-pipeline", () -> new Pipeline(c)); }

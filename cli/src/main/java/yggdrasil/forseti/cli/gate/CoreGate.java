@@ -237,7 +237,10 @@ public final class CoreGate {
             tmp = Files.createTempDirectory("forseti-gate-");
             ctx = new Context(o.root(), tmp, o.out().resolve("logs"), o.python());
             ctx.shard = shard;
-            if (o.aggregate() == null) CoreGate.delete(o.out().resolve(GateEvidence.RUNS));   // the runs this gate run keeps, none of an earlier one
+            if (o.aggregate() == null) {   // the runs and journals this gate run keeps, none of an earlier one
+                CoreGate.delete(o.out().resolve(GateEvidence.RUNS));
+                CoreGate.delete(o.out().resolve(GateEvidence.JOURNALS));
+            }
             if (o.state() != null) ctx.pipeline = new GateEvidence.Store(GateEvidence.PIPELINE, Files.createDirectories(o.state()), true);
             measurements = ctx.measurements;
             pins = pins(ctx);
@@ -295,9 +298,7 @@ public final class CoreGate {
         } finally {
             if (tmp != null) delete(tmp);
         }
-        // A shard may own no assertion of its own (its scenarios feed only the aggregate assertions): it holds when its scenarios do.
-        boolean emptyShard = o.shard() != null && acc != null && acc.expected().isEmpty() && acc.failed().isEmpty();
-        int exit = acc == null || error != null ? 1 : emptyShard ? 0 : acc.exitCode();
+        int exit = acc == null || error != null ? 1 : acc.exitCode();
         ObjectNode report = Json.object();
         Json.putSafe(report, "exit", exit);
         report.put("kind", o.negativeControl() != null ? "negative-control" : "gate").put("layout", layout).put("negativeControl", o.negativeControl());

@@ -395,21 +395,41 @@ class GateReportReaderTest {
         refusedIn(GateReportReader.EVIDENCE, q, "two run entries for one summary");
     }
 
+    static final String REPLAY = "horizon-planned-late@replay";
+
     @Test void aFullReportMissingVariantOrCutCoverageIsRefused() throws IOException {
-        // the replay generation run planned but absent from summaries.json
+        // the replay generation run planned (gate/core-shards.json) but absent from summaries.json
         Bundle b = full();
-        Path planned = copyRoot(tmp.resolve("planned-root"));
-        GateBundles.rewrite(planned.resolve("gate/core-shards.json"), p -> {
-            for (JsonNode s : p.get("shards")) if (s.get("name").asText().equals("horizon-planned-late")) ((ObjectNode) s).putArray("generationRuns").add("horizon-planned-late@replay");
-        });
         GateReportReader.Request q = request(b, TARGET);
-        refusedIn(GateReportReader.EVIDENCE, with(q, planned, q.report(), null, q.state(), q.generation(), q.registeredRowSha256(), q.run(), true), "horizon-planned-late@replay");
-        // and a generation-run summary nothing plans
+        byte[] good = Files.readAllBytes(b.summaries());
         ObjectNode s = b.summariesJson();
-        ObjectNode extra = s.putArray("generationRuns").addObject();
-        extra.setAll(GateBundles.runEntry(b.reportJson(), null, TARGET).deepCopy().put("name", "smoke@replay"));
+        ((ObjectNode) s.get("generationRuns")).remove(REPLAY);
+        GateBundles.rewriteSummaries(b, s);
+        refusedIn(GateReportReader.EVIDENCE, q, REPLAY);
+        // and a generation-run summary nothing plans
+        s = (ObjectNode) Json.read(good);
+        ((ObjectNode) s.get("generationRuns")).set("smoke@replay", ((ObjectNode) s.get("runs").get(0)).deepCopy().put("name", "smoke@replay"));
         GateBundles.rewriteSummaries(b, s);
         refusedIn(GateReportReader.EVIDENCE, q, "smoke@replay");
+        // generation runs that are not an object keyed by name
+        s = (ObjectNode) Json.read(good);
+        ArrayNode list = Json.JSON.createArrayNode();
+        s.get("generationRuns").forEach(list::add);
+        s.set("generationRuns", list);
+        GateBundles.rewriteSummaries(b, s);
+        refusedIn(GateReportReader.EVIDENCE, q, "generationRuns object keyed by name");
+        // the replay summary with a compared cut removed
+        s = (ObjectNode) Json.read(good);
+        ArrayNode compared = (ArrayNode) s.get("generationRuns").get(REPLAY).get("comparedCutIds");
+        compared.remove(compared.size() - 1);
+        GateBundles.rewriteSummaries(b, s);
+        refusedIn(GateReportReader.EVIDENCE, q, REPLAY + ": the gate compared cuts");
+        // the replay summary on the original recording instead of its replay lock's
+        s = (ObjectNode) Json.read(good);
+        String original = Json.read(ROOT.resolve("fixtures/scenarios/horizon-planned-late.lock.json")).path("files").path("manifest.json").asText();
+        ((ObjectNode) s.get("generationRuns").get(REPLAY)).put("recordingManifestSha256", original);
+        GateBundles.rewriteSummaries(b, s);
+        refusedIn(GateReportReader.EVIDENCE, q, REPLAY + ": its run read recording manifest " + original);
         // a compared cut id removed
         Bundle c = full();
         ObjectNode cs = c.summariesJson();
@@ -460,24 +480,36 @@ class GateReportReaderTest {
         assertEquals(GateBundles.HAND_MADE, read(qs).generation().get("shard").asText());
     }
 
+    /** The target is the event-time replay, whose journals are kept (and those of its scenario's online run): accepted as built; a changed
+     *  journal file of either, a file added beside them, or a changed index is refused at the evidence check, before the run check reads
+     *  them again. */
     @Test void aTargetWhoseJournalsChangedIsRefused() throws IOException {
         Bundle b = full();
-        GateReportReader.Request q = request(b, TARGET);
-        Path dir = Files.createDirectories(b.file("journals/smoke/online"));
-        Files.writeString(dir.resolve("forseti.work-records.jsonl"), "{\"k\":1}\n", StandardCharsets.UTF_8);
-        Files.writeString(dir.resolve("forseti.samples.jsonl"), "{\"k\":2}\n", StandardCharsets.UTF_8);
-        ObjectNode index = Json.object();
-        index.put("forseti.samples.jsonl", Canonical.digestOf(Files.readAllBytes(dir.resolve("forseti.samples.jsonl"))));
-        index.put("forseti.work-records.jsonl", Canonical.digestOf(Files.readAllBytes(dir.resolve("forseti.work-records.jsonl"))));
-        byte[] ib = Canonical.bytes(index);
-        Files.write(b.file("journals/smoke/online.index.json"), ib);
-        edit(b.report(), r -> GateBundles.runEntry(r, null, TARGET).put("journals", "journals/smoke/online").put("journalsIndexSha256", Canonical.digestOf(ib)));
+        JsonNode rep = b.reportJson();
+        ObjectNode e = GateBundles.generationRunEntry(rep, REPLAY);
+        GateReportReader.Request q = new GateReportReader.Request(ROOT, b.report(), null, b.state(), e.get("generation").longValue(), e.get("registeredRowSha256").asText(),
+            b.file(e.get("runRecord").asText()), true);
+        GateReportReader.Accepted a = read(q);
+        assertEquals("event-time-replay", a.runEntry().get("variant").asText());
+        assertEquals("journals/horizon-planned-late/event-time-replay", a.runEntry().get("journals").asText());
+        Path replayJournal = b.file("journals/horizon-planned-late/event-time-replay/journals/forseti.work-records/0.jsonl");
+        Path onlineJournal = b.file("journals/horizon-planned-late/online/journals/forseti.work-records/0.jsonl");
+        byte[] replayBytes = Files.readAllBytes(replayJournal), onlineBytes = Files.readAllBytes(onlineJournal);
+        Files.writeString(replayJournal, "{\"k\":3}\n", StandardCharsets.UTF_8);
+        refusedIn(GateReportReader.EVIDENCE, q, "journal journals/horizon-planned-late/event-time-replay/journals/forseti.work-records/0.jsonl changed");
+        Files.write(replayJournal, replayBytes);
+        Files.writeString(onlineJournal, "{\"k\":4}\n", StandardCharsets.UTF_8);
+        refusedIn(GateReportReader.EVIDENCE, q, "journal journals/horizon-planned-late/online/journals/forseti.work-records/0.jsonl changed");
+        Files.write(onlineJournal, onlineBytes);
+        Files.writeString(replayJournal.resolveSibling("1.jsonl"), "{}\n", StandardCharsets.UTF_8);
+        refusedIn(GateReportReader.EVIDENCE, q, "is not in its index");
+        Files.delete(replayJournal.resolveSibling("1.jsonl"));
+        Path index = b.file("journals/horizon-planned-late/event-time-replay.index.json");
+        byte[] ib = Files.readAllBytes(index);
+        Files.write(index, (new String(ib, StandardCharsets.UTF_8) + " ").getBytes(StandardCharsets.UTF_8));
+        refusedIn(GateReportReader.EVIDENCE, q, "event-time-replay.index.json has another digest than journalsIndexSha256");
+        Files.write(index, ib);
         read(q);
-        Files.writeString(dir.resolve("forseti.samples.jsonl"), "{\"k\":3}\n", StandardCharsets.UTF_8);
-        refusedIn(GateReportReader.RUN, q, "journal forseti.samples.jsonl changed");
-        Files.writeString(dir.resolve("forseti.samples.jsonl"), "{\"k\":2}\n", StandardCharsets.UTF_8);
-        Files.write(b.file("journals/smoke/online.index.json"), Canonical.bytes(index.put("forseti.samples.jsonl", "0".repeat(64))));
-        refusedIn(GateReportReader.RUN, q, "journal index");
     }
 
     @Test void aFullReportPromotedInAStateOutsideItsBundleIsRefused() throws IOException {

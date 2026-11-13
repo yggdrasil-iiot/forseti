@@ -21,7 +21,7 @@ public final class GateBundle {
 
     /** The committed shard plan of {@code root}: its raw digest, shard names in plan order, the owner of every id (a shard name or
      *  {@code aggregate}), the problems {@link Shards#validate} finds against {@code manifestIds}, and the generation runs every shard plans
-     *  ({@code generationRuns}, absent = none). */
+     *  (its required field {@code generationRuns}). */
     public record Plan(String sha256, List<String> shards, Map<String, String> owner, List<String> problems, Map<String, List<String>> generationRuns) {}
 
     public static Plan plan(Path root, List<String> manifestIds) {
@@ -29,13 +29,8 @@ public final class GateBundle {
         Map<String, String> owner = new HashMap<>();
         for (Shards.Shard s : p.shards()) for (String id : s.assertions()) owner.putIfAbsent(id, s.name());
         for (String id : p.aggregate()) owner.putIfAbsent(id, "aggregate");
-        JsonNode raw = Json.read(root.resolve(Shards.PLAN));
         Map<String, List<String>> runs = new LinkedHashMap<>();
-        for (JsonNode s : raw.path("shards")) {
-            List<String> l = new ArrayList<>();
-            s.path("generationRuns").forEach(x -> l.add(x.asText()));
-            runs.put(s.path("name").asText(), List.copyOf(l));
-        }
+        for (Shards.Shard s : p.shards()) runs.put(s.name(), s.generationRuns());
         return new Plan(p.sha256(), p.names(), Map.copyOf(owner), Shards.validate(p, manifestIds, new HashSet<>(Injections.AGGREGATE)), runs);
     }
 
@@ -60,6 +55,9 @@ public final class GateBundle {
         Shards.read(root, dir, Shards.load(root), e, recorded, problems, merged);
         return new Read(List.copyOf(problems), merged, recorded.stream().map(r -> new Recorded(r.shard(), r.id(), r.ok())).toList());
     }
+
+    /** Raw SHA-256 of every file under {@code dir}, by relative path ({@code /}-separated), streamed. */
+    public static Map<String, String> digests(Path dir) throws java.io.IOException { return Scenarios.Pipeline.digests(dir); }
 
     /** The scenarios a full run makes ({@link Scenarios#all()}) and its shuffled keys {@code <scenario>@<seed>}. */
     public static List<String> scenarios() { return List.copyOf(Scenarios.all()); }
