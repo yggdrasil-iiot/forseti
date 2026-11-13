@@ -15,6 +15,8 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       shards: ${{ steps.shards.outputs.names }}
+      controls: ${{ steps.controls.outputs.runs }}
+      control-aggregates: ${{ steps.controls.outputs.aggregates }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with: {path: forseti}
@@ -41,6 +43,19 @@ jobs:
         id: shards
         working-directory: forseti
         run: echo "names=$(python -I -c 'import json;print(json.dumps([s["name"] for s in json.load(open("gate/core-shards.json"))["shards"]]))')" >> "$GITHUB_OUTPUT"
+      # The control runs, one per (control, shard) of gate/core-negative-controls.json (the gate refuses a shard the file does not give
+      # the control), and the controls with an intended id of the plan's aggregate list, which an aggregate control run proves.
+      - name: Negative control runs
+        id: controls
+        working-directory: forseti
+        run: |
+          python -I - >> "$GITHUB_OUTPUT" <<'PY'
+          import json
+          c = json.load(open("gate/core-negative-controls.json"))["controls"]
+          agg = set(json.load(open("gate/core-shards.json"))["aggregate"])
+          print("runs=" + json.dumps([{"control": x["name"], "shard": s} for x in c for s in x["shards"]]))
+          print("aggregates=" + json.dumps([x["name"] for x in c if agg & set(x["intended"])]))
+          PY
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with: {name: forseti-jar, path: forseti/cli/target/forseti.jar, if-no-files-found: error}
   # The core gate in shards (gate/core-shards.json): each horizon recording in its own job, the hand-made scenarios in one; every
@@ -76,16 +91,96 @@ jobs:
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with: {name: "gate-shard-${{ matrix.shard }}", path: forseti/build/shards/, if-no-files-found: error}
+  # Negative controls (spec Negative controls; owner decision of 2026-11-12): each control runs only on the shards that own or feed its
+  # intended ids, against the same manifest, shard plan, fixtures, seed and jar, without --state (every generation isolated, so a control
+  # report never authorizes a promotion). A run passes here only when it exits 1 (0 is allowed only for a shard that owns none of the
+  # control's intended ids and only feeds an aggregate one), its report is that control's shard run, its intended ids are a subset of
+  # its failed ones, and its control verdict holds: no crash, no missing run, every cut compared with the oracle.
+  control:
+    name: negative control ${{ matrix.run.control }} on shard ${{ matrix.run.shard }}
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        run: ${{ fromJSON(needs.build.outputs.controls) }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with: {path: forseti}
+      - uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3 # v4
+        with: {java-version: '17.0.21', distribution: temurin}
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with: {python-version: '3.13.18'}
+      - name: Install the oracle
+        working-directory: forseti/oracle
+        run: python -m pip install -e ".[dev]"
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with: {name: forseti-jar, path: forseti/cli/target}
+      - name: Control run
+        working-directory: forseti
+        env: {CONTROL: "${{ matrix.run.control }}", SHARD: "${{ matrix.run.shard }}"}
+        run: |
+          set +e
+          java -Dforseti.gate.horizonXmx=6g -jar cli/target/forseti.jar gate --engine core --negative-control "$CONTROL" --shard "$SHARD" \
+            --out "build/controls/$CONTROL/$SHARD" --python "$(command -v python)"
+          rc=$?
+          set -e
+          python -I scripts/check-control-report.py "build/controls/$CONTROL/$SHARD/report.json" "$rc" "$CONTROL" "$SHARD"
+      - name: Control report
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with: {name: "control--${{ matrix.run.control }}--${{ matrix.run.shard }}", path: forseti/build/controls/, if-no-files-found: error}
+  # A control whose intended ids include an aggregate id (drop-late: J-DISPOSITION-COVERAGE; no-cascade: J-BASIS-CURRENT) is proved by
+  # an aggregate control run over that control's shard runs only: it requires each to be that control's held shard run, evaluates the
+  # aggregate assertions over their summaries, and must exit 1 with its intended aggregate ids in failed and its verdict held.
+  control-aggregate:
+    name: negative control ${{ matrix.control }} over its shards
+    needs: [build, control]
+    if: always() && needs.build.result == 'success'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        control: ${{ fromJSON(needs.build.outputs.control-aggregates) }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with: {path: forseti}
+      - uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3 # v4
+        with: {java-version: '17.0.21', distribution: temurin}
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with: {python-version: '3.13.18'}
+      - name: Install the oracle
+        working-directory: forseti/oracle
+        run: python -m pip install -e ".[dev]"
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with: {name: forseti-jar, path: forseti/cli/target}
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with: {pattern: "control--${{ matrix.control }}--*", path: forseti/build/controls, merge-multiple: true}
+      - name: Aggregate control run
+        working-directory: forseti
+        env: {CONTROL: "${{ matrix.control }}"}
+        run: |
+          set +e
+          java -jar cli/target/forseti.jar gate --engine core --aggregate "build/controls/$CONTROL" --negative-control "$CONTROL" \
+            --out "build/control-aggregate/$CONTROL" --python "$(command -v python)"
+          rc=$?
+          set -e
+          python -I scripts/check-control-report.py "build/control-aggregate/$CONTROL/report.json" "$rc" "$CONTROL" aggregate
+      - name: Aggregate control report
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with: {name: "control-aggregate--${{ matrix.control }}", path: forseti/build/control-aggregate/, if-no-files-found: error}
   core-gate:
     name: core gate, every assertion, scenario and cut
-    needs: [build, gate]
+    needs: [build, gate, control, control-aggregate]
     if: always()
     runs-on: ubuntu-latest
     steps:
-      - name: Build and every shard job succeeded
-        if: needs.build.result != 'success' || needs.gate.result != 'success'
+      - name: Build, every shard job and every control job succeeded
+        if: needs.build.result != 'success' || needs.gate.result != 'success' || needs.control.result != 'success' || needs.control-aggregate.result != 'success'
         run: |
-          echo "build: ${{ needs.build.result }}; gate shards: ${{ needs.gate.result }}"
+          echo "build: ${{ needs.build.result }}; gate shards: ${{ needs.gate.result }}; controls: ${{ needs.control.result }}; control aggregates: ${{ needs.control-aggregate.result }}"
           exit 1
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with: {path: forseti}
@@ -103,14 +198,11 @@ jobs:
       - name: Core gate over every shard, then promote through the CLI
         working-directory: forseti
         run: bash scripts/gate-then-promote.sh --from-shards build/shards build/gate "$(command -v python)"
-      - name: Negative controls exit 1 for their intended assertion
+      - name: An unlisted negative control is a usage error
         working-directory: forseti
         run: |
-          for c in $(python -I -c 'import json;print(" ".join(json.load(open("gate/core-negative-controls.json"))["controls"]))'); do
-            set +e; java -jar cli/target/forseti.jar gate --engine core --negative-control "$c" --out "build/gate-$c" --python "$(command -v python)"; rc=$?; set -e
-            [ "$rc" -eq 1 ] || { echo "negative control $c exited $rc, expected 1"; exit 1; }
-            python -I -c "import json,sys;r=json.load(open('build/gate-$c/report.json'));sys.exit(0 if set(r['intendedFailures'])<=set(r['failed']) else 1)" || { echo "$c did not fail its intended assertion"; exit 1; }
-          done
+          set +e; java -jar cli/target/forseti.jar gate --engine core --negative-control no-such-control --out build/gate-no-such-control; rc=$?; set -e
+          [ "$rc" -eq 2 ] || { echo "an unlisted negative control exited $rc, expected 2"; exit 1; }
       - name: Gate reports
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
