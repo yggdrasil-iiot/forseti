@@ -44,7 +44,10 @@ jobs:
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with: {name: forseti-jar, path: forseti/cli/target/forseti.jar, if-no-files-found: error}
   # The core gate in shards (gate/core-shards.json): each horizon recording in its own job, the hand-made scenarios in one; every
-  # scenario is still compared with the oracle at every cut. The core-gate job below passes only when every shard ran and held.
+  # scenario is still compared with the oracle at every cut. Each shard registers its generations through `generation new` into its
+  # own store, build/shards/<shard>/state, inside the uploaded path: the artifact holds report.json, summaries.json, logs/, diffs/ (on
+  # failure), runs/*.run.json, runs/*.cuts.json and state/ (upload-artifact leaves out the hidden head-floors/.lock, which FloorStore
+  # recreates; no lock file is evidence). The core-gate job below passes only when every shard ran and held.
   gate:
     name: core gate shard ${{ matrix.shard }}
     needs: build
@@ -68,7 +71,7 @@ jobs:
         with: {name: forseti-jar, path: forseti/cli/target}
       - name: Core gate shard
         working-directory: forseti
-        run: java -Dforseti.gate.horizonXmx=6g -jar cli/target/forseti.jar gate --engine core --shard "${{ matrix.shard }}" --out "build/shards/${{ matrix.shard }}" --python "$(command -v python)"
+        run: java -Dforseti.gate.horizonXmx=6g -jar cli/target/forseti.jar gate --engine core --shard "${{ matrix.shard }}" --out "build/shards/${{ matrix.shard }}" --state "build/shards/${{ matrix.shard }}/state" --python "$(command -v python)"
       - name: Shard report
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
@@ -79,6 +82,11 @@ jobs:
     if: always()
     runs-on: ubuntu-latest
     steps:
+      - name: Build and every shard job succeeded
+        if: needs.build.result != 'success' || needs.gate.result != 'success'
+        run: |
+          echo "build: ${{ needs.build.result }}; gate shards: ${{ needs.gate.result }}"
+          exit 1
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with: {path: forseti}
       - uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3 # v4
