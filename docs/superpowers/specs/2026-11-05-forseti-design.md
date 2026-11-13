@@ -684,7 +684,7 @@ The injection manifest records, for each restart injection, the jobs restarted, 
 
 ### Negative controls
 
-Negative controls execute via `--negative-control <name>`. The gate must exit non-zero for each control.
+Negative controls execute via `--negative-control <name>`. The gate must exit non-zero for each control. A control run uses the same manifest, shard plan, fixtures, seed and jar as the gate, and evaluates its declared assertions.
 
 | Control | Flag name | Target failure |
 | :--- | :--- | :--- |
