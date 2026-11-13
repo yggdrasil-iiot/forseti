@@ -150,6 +150,22 @@ class GateReportReaderTest {
         refused(GateReportReader.NEGATIVE_CONTROL, q);
     }
 
+    /** A control run's report as the gate writes it (owner decision of 2026-11-12: a control report never authorizes a promotion): an
+     *  aggregate control run's ({@code kind: negative-control}, its {@code negativeControl}, its intended ids, a held {@code control}
+     *  verdict) is refused whatever its counts, as is one that only names the control. */
+    @Test void anAggregateControlReportIsRefused() throws IOException {
+        Aggregate agg = aggregate();
+        GateReportReader.Request q = request(agg, aggTarget());
+        edit(agg.report(), r -> {
+            r.put("kind", "negative-control").put("negativeControl", "drop-late");
+            ((ArrayNode) r.get("intendedFailures")).add("J-DISPOSITION-COVERAGE");
+            r.putObject("control").put("name", "drop-late").put("held", true);
+        });
+        refused(GateReportReader.NEGATIVE_CONTROL, q);
+        edit(agg.report(), r -> { r.put("kind", "gate"); ((ArrayNode) r.get("intendedFailures")).removeAll(); });
+        refused(GateReportReader.NEGATIVE_CONTROL, q);
+    }
+
     @Test void aShardReportIsRefused() throws IOException {
         Aggregate agg = aggregate();
         GateReportReader.Request q = request(agg, aggTarget());

@@ -35,6 +35,8 @@ final class StationTask {
     private final List<Inputs.InputRecord> pending = new ArrayList<>();
     private Long maxTelemetryTs;
     private Long w1;
+    /** Inputs delivered to this station so far: the delivery sequence number of the {@code processing-time} control. */
+    private long delivered;
 
     StationTask(Stage1 stage1, long generation, String station, int partition, long outOfOrdernessMs, Pins pins, Progress.InitEvidence init) {
         this.stage1 = stage1;
@@ -48,6 +50,7 @@ final class StationTask {
     }
 
     void add(Inputs.InputRecord r) {
+        if (stage1.controls().processingTime()) r = Stage1.processingTime(r, ++delivered);   // the processing-time control, before decide
         pending.add(r);
         if (InputParser.MESSAGES.equals(r.origin().topic())) {
             Long t = Events.eventTime(r);

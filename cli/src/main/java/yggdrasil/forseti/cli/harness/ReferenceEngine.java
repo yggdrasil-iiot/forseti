@@ -74,8 +74,11 @@ public final class ReferenceEngine {
      *  materialize the recording's retained input in event-time order into {@code <out>/replay-recording/} and run on that, compared with
      *  {@code replayLock} first when given. A replay with {@code shuffle} is refused. */
     public record Options(Path recording, Path registry, Path state, long generation, Path out, long seed, boolean shuffle,
-                          Map<String, List<Integer>> subscribe, String artifactSha256, String command, String replay, Path replayLock) {
+                          Map<String, List<Integer>> subscribe, String artifactSha256, String command, String replay, Path replayLock, String negativeControl) {
         public Options {
+            if (negativeControl != null && !Controls.harness(negativeControl))
+                throw new IllegalArgumentException("--negative-control " + negativeControl + ": not a control the harness applies (" + Controls.NAMES + "; "
+                    + Controls.LENIENT_ORACLE + " is the oracle's)");
             subscribe = subscribe == null ? Map.of() : Map.copyOf(subscribe);
             if (command == null) command = "forseti run --engine core";
             if (replay != null && !replay.equals(EVENT_TIME)) throw new IllegalArgumentException("--replay " + replay + ": the only replay is " + EVENT_TIME);
@@ -84,7 +87,11 @@ public final class ReferenceEngine {
         }
         public Options(Path recording, Path registry, Path state, long generation, Path out, long seed, boolean shuffle,
                        Map<String, List<Integer>> subscribe, String artifactSha256, String command) {
-            this(recording, registry, state, generation, out, seed, shuffle, subscribe, artifactSha256, command, null, null);
+            this(recording, registry, state, generation, out, seed, shuffle, subscribe, artifactSha256, command, null, null, null);
+        }
+        public Options(Path recording, Path registry, Path state, long generation, Path out, long seed, boolean shuffle,
+                       Map<String, List<Integer>> subscribe, String artifactSha256, String command, String replay, Path replayLock) {
+            this(recording, registry, state, generation, out, seed, shuffle, subscribe, artifactSha256, command, replay, replayLock, null);
         }
     }
 
@@ -185,18 +192,21 @@ public final class ReferenceEngine {
         Pins pins = pins(rules, rec.manifest().path("definitions"),
             new Pins.Job(ENGINE, ENGINE_VERSION, artifact, runId, "payload", TextNode.valueOf("off"), routing.routingDigest()));
         String causeKind = o.replay() == null ? Envelope.ONLINE : Envelope.REPLAYED;
-        Stage1 stage1 = new Stage1(rules, NegativeControls.NONE, causeKind);
+        NegativeControls controls = Controls.of(o.negativeControl());
+        // the wrong-rules-pin control: the rows' envelope pins name another release's attribution rule; the run record keeps the true pins
+        Pins stamped = controls.wrongRulesPin() ? wrongRulesPin(pins, mappings, head) : pins;
+        Stage1 stage1 = new Stage1(rules, controls, causeKind);
         Routing router = new Routing(rules);
         Map<String, StationTask> tasks = new LinkedHashMap<>();
-        for (String s : stations) tasks.put(s, new StationTask(stage1, g.generation(), s, routing.partitionOf(s), oo, pins, initEvidence(o.state(), g.generation())));
+        for (String s : stations) tasks.put(s, new StationTask(stage1, g.generation(), s, routing.partitionOf(s), oo, stamped, initEvidence(o.state(), g.generation())));
         RejectCollector rejects = new RejectCollector(g.generation(), initEvidence(o.state(), g.generation()));
         // stage 2: one writer per station sharing one progress tracker, the stage-2 reject collector (partition 6, no initEvidence)
-        Stage2 stage2 = new Stage2(rules, NegativeControls.NONE, causeKind);
+        Stage2 stage2 = new Stage2(rules, controls, causeKind);
         ProgressTracker tracker = new ProgressTracker();
         Map<String, SetCoverage.EvidenceRange> evidenceRanges = new TreeMap<>();
         rec.evidenceRange().forEach((d, r) -> evidenceRanges.put(d, new SetCoverage.EvidenceRange(r.from(), r.to())));
         Map<String, Stage2Task> tasks2 = new LinkedHashMap<>();
-        for (String s : stations) tasks2.put(s, new Stage2Task(stage2, tracker, g.generation(), s, routing.partitionOf(s), pins, evidenceRanges));
+        for (String s : stations) tasks2.put(s, new Stage2Task(stage2, tracker, g.generation(), s, routing.partitionOf(s), stamped, evidenceRanges));
         RejectCollector rejects2 = new RejectCollector(g.generation(), 2, null);
         List<Integer> incidentPartitions = routing.subscribed(InputParser.INCIDENTS);
         if (!incidentPartitions.equals(List.of(0, 1, 2, 3, 4, 5)))
@@ -305,7 +315,7 @@ public final class ReferenceEngine {
         ObjectNode digests = Json.object();
         rec.digests().forEach(digests::put);
         ObjectNode record = RunRecord.build(new RunRecord.Facts(runId, g.generation(), registeredRowSha256, scope, o.seed(), o.shuffle(), o.replay(), originalSha,
-            pins, manifestSha, digests, head.releaseSha256(), rules.rulesDigest(), jcsJava(), subscribedAll, consumed, cutLog.size(), o.command()));
+            pins, manifestSha, digests, head.releaseSha256(), rules.rulesDigest(), jcsJava(), subscribedAll, consumed, cutLog.size(), o.command(), o.negativeControl()));
         RunRecord.write(o.out(), record);
         return new Result(runId, o.out(), cutLog.size(), record);
     }
@@ -400,6 +410,35 @@ public final class ReferenceEngine {
         }
         if (found < 0) throw new IllegalStateException("no recovery declaration of generation " + generation + " in " + RECOVERY_CONTROL);
         return new Progress.InitEvidence(found, count, "none");
+    }
+
+    /** {@code pins} with {@code rules.attribution.sha256} replaced by the digest of the attribution rule of another release of the same
+     *  registry (the first other release, by path, whose {@code payload/attribution-rules/0.json} has another digest), the body's
+     *  {@code rulesDigest} untouched (the {@code wrong-rules-pin} control). No such release is an {@link IllegalStateException}. */
+    static Pins wrongRulesPin(Pins pins, Path mappings, HeadVerifier.Head head) {
+        String own = pins.rules().path("attribution").path("sha256").asText(), other = null;
+        Path releases = mappings.resolve("releases"), mine = releases.resolve(head.releaseId()).resolve(head.version()).resolve("release.json");
+        List<String> files = new ArrayList<>();
+        try (java.util.stream.Stream<Path> w = Files.walk(releases)) {
+            w.filter(p -> p.getFileName().toString().equals("release.json") && !p.equals(mine)).forEach(p -> {
+                List<String> parts = new ArrayList<>();
+                for (Path x : releases.relativize(p)) parts.add(x.toString());
+                files.add(String.join("/", parts));
+            });
+        } catch (IOException e) { throw new UncheckedIOException(e); }
+        Collections.sort(files);
+        for (String f : files) {
+            for (JsonNode x : Json.read(releases.resolve(f)).path("files"))
+                if ("payload/attribution-rules/0.json".equals(x.path("path").asText()) && x.path("sha256").isTextual() && !own.equals(x.path("sha256").asText())) {
+                    other = x.path("sha256").asText();
+                    break;
+                }
+            if (other != null) break;
+        }
+        if (other == null) throw new IllegalStateException("wrong-rules-pin: no other release under " + releases + " pins another attribution rule");
+        ObjectNode rulesPins = pins.rules().deepCopy();
+        ((ObjectNode) rulesPins.path("attribution")).put("sha256", other);
+        return new Pins(rulesPins, pins.hierarchy(), pins.bindings(), pins.definitions(), pins.job());
     }
 
     static Pins pins(RuleSet rules, JsonNode definitions, Pins.Job job) {

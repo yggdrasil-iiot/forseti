@@ -72,7 +72,7 @@ public final class Main {
         err.println("                    [--shard <name> | --aggregate <dir>] [--state <out>/state]");
         err.println("       forseti run --engine core --recording <dir> --registry <dir> --state <dir> --generation <n> --out <run dir>");
         err.println("                   [--seed <n>] [--shuffle | --replay event-time [--replay-lock <file>]] [--subscribe <topic>=<p,p>[;<topic>=<p,p>]]");
-        err.println("                   [--artifact-sha256 <hex>]");
+        err.println("                   [--artifact-sha256 <hex>] [--negative-control <name>]");
         err.println("       forseti generation new --state <dir> --mappings <dir> --trusted-keys <file> --stream <s> [--stream <s2>] --rule <id>@<version>");
         err.println("                   [--recording <dir>] [--definitions <file>]");
         err.println("       forseti generation retire --state <dir> --generation <n>");
@@ -87,7 +87,8 @@ public final class Main {
     private static int run(Args f, String command, PrintStream out, PrintStream err) {
         ReferenceEngine.Options o;
         try {
-            f.only(Set.of("engine", "recording", "registry", "state", "generation", "out", "seed", "shuffle", "subscribe", "artifact-sha256", "replay", "replay-lock"));
+            f.only(Set.of("engine", "recording", "registry", "state", "generation", "out", "seed", "shuffle", "subscribe", "artifact-sha256", "replay", "replay-lock",
+                "negative-control"));
             if (!"core".equals(f.required("engine"))) throw new IllegalArgumentException("--engine core is the only engine of this step");
             long generation = number(f.required("generation"), "--generation", 1);
             long seed = number(f.get("seed", Long.toString(ReferenceEngine.DEFAULT_SEED)), "--seed", 0);
@@ -95,7 +96,7 @@ public final class Main {
             if (artifact != null && !artifact.matches("[0-9a-f]{64}")) throw new IllegalArgumentException("--artifact-sha256 is 64 lowercase hex digits");
             o = new ReferenceEngine.Options(Path.of(f.required("recording")), Path.of(f.required("registry")), Path.of(f.required("state")), generation,
                 Path.of(f.required("out")), seed, f.has("shuffle"), subscribe(f.get("subscribe").orElse(null)), artifact, command,
-                f.get("replay").orElse(null), f.get("replay-lock").map(Path::of).orElse(null));
+                f.get("replay").orElse(null), f.get("replay-lock").map(Path::of).orElse(null), f.get("negative-control").orElse(null));
         } catch (IllegalArgumentException e) { err.println(e.getMessage()); return usage(err); }
         try {
             GenerationCli.prepareRun(o.state(), o.generation(), o.recording());

@@ -105,10 +105,26 @@ final class Shards {
      *  fixtureDigests}. {@code out} receives {@code shards[]} ({@code {name, exit, reportSha256, summariesSha256}} per shard of the plan,
      *  in plan order) and the shards' {@code generations[]} and {@code runs[]} concatenated in plan order, unchanged. */
     static Summaries read(Path root, Path dir, Plan plan, ObjectNode expect, List<Recorded> recorded, List<String> problems, ObjectNode out) {
+        return read(root, dir, plan, expect, recorded, problems, out, null);
+    }
+
+    /** {@code control}: an aggregate control run ({@code --aggregate <dir> --negative-control <name>}): only the shards the control runs on
+     *  are read, each must be that control's shard run ({@code kind: negative-control}, its {@code negativeControl}, a held
+     *  {@code control} verdict) and may exit 1, and only the scenarios, shuffled runs and generation runs of those shards are required;
+     *  everything else is checked as for an aggregate gate run. */
+    static Summaries read(Path root, Path dir, Plan plan, ObjectNode expect, List<Recorded> recorded, List<String> problems, ObjectNode out, ControlPlan.Control control) {
         Summaries merged = new Summaries();
         ArrayNode shardsOut = out.putArray("shards"), gensOut = out.putArray("generations"), runsOut = out.putArray("runs");
         Map<String, List<JsonNode>> byScenario = new LinkedHashMap<>();
+        Set<String> scope = new HashSet<>(), shuffledScope = new HashSet<>(), generationScope = new HashSet<>();
         for (Shard s : plan.shards()) {
+            if (control != null && !control.shards().contains(s.name())) continue;
+            scope.addAll(s.scenarios());
+            shuffledScope.addAll(s.shuffled());
+            generationScope.addAll(s.generationRuns());
+        }
+        for (Shard s : plan.shards()) {
+            if (control != null && !control.shards().contains(s.name())) continue;
             Path d = dir.resolve(s.name());
             JsonNode report, summaries;
             byte[] reportBytes, summariesBytes;
@@ -122,7 +138,14 @@ final class Shards {
             ObjectNode entry = shardsOut.addObject().put("name", s.name());
             entry.set("exit", report.path("exit").isMissingNode() ? null : report.path("exit"));
             entry.put("reportSha256", reportSha).put("summariesSha256", summariesSha);
-            if (!"gate".equals(report.path("kind").asText(null))) problems.add("shard " + s.name() + ": its report is of kind " + report.path("kind") + ", not gate");
+            String kind = control == null ? "gate" : GateEvidence.CONTROL_KIND;
+            if (!kind.equals(report.path("kind").asText(null))) problems.add("shard " + s.name() + ": its report is of kind " + report.path("kind") + ", not " + kind);
+            if (control != null) {
+                if (!control.name().equals(report.path("negativeControl").asText(null)))
+                    problems.add("shard " + s.name() + ": its report is the control run of " + report.path("negativeControl") + ", not " + control.name());
+                if (!report.path("control").path("held").asBoolean(false))
+                    problems.add("shard " + s.name() + ": its control run did not hold: " + report.path("control").path("problems"));
+            } else if (!report.path("negativeControl").isNull()) problems.add("shard " + s.name() + ": its report names negative control " + report.path("negativeControl"));
             if (!"shard".equals(report.path("layout").asText(null))) problems.add("shard " + s.name() + ": its report has layout " + report.path("layout") + ", not shard");
             if (!summariesSha.equals(report.path("summariesSha256").asText(null)))
                 problems.add("shard " + s.name() + ": its report binds summaries " + report.path("summariesSha256") + ", " + SUMMARIES + " is " + summariesSha);
@@ -145,7 +168,8 @@ final class Shards {
             for (String f : List.of("manifestSha256", "seed", "pins", "fixtureDigests"))
                 if (!same(expect.path(f), report.path(f))) problems.add("shard " + s.name() + ": " + f + " " + report.path(f) + ", the aggregate run's " + expect.path(f));
             if (!report.path("error").isNull()) problems.add("shard " + s.name() + ": " + report.path("error").asText());
-            if (report.path("exit").asLong(-1) != 0) problems.add("shard " + s.name() + ": exited " + report.path("exit"));
+            long exit = report.path("exit").asLong(-1);
+            if (control == null ? exit != 0 : exit != 0 && exit != 1) problems.add("shard " + s.name() + ": exited " + report.path("exit"));
             Set<String> seen = new HashSet<>(), notOk = new TreeSet<>();
             for (JsonNode r : report.path("results")) {
                 String id = r.path("id").asText();
@@ -192,7 +216,7 @@ final class Shards {
         }
         for (String sc : Scenarios.all()) {
             List<JsonNode> l = byScenario.get(sc);
-            if (l == null) { merged.missing.add(sc + " not run: no shard summarised it"); continue; }
+            if (l == null) { if (control == null || scope.contains(sc)) merged.missing.add(sc + " not run: no shard summarised it"); continue; }
             merged.runs.put(sc, l.get(0));
             for (JsonNode other : l.subList(1, l.size())) {
                 Set<String> fields = new TreeSet<>();
@@ -204,9 +228,9 @@ final class Shards {
             }
         }
         for (String sc : Scenarios.SHUFFLED) for (long seed : Scenarios.SHUFFLE_SEEDS)
-            if (!merged.shuffled.containsKey(sc + "@" + seed)) merged.missing.add(sc + " seed " + seed + " not run: no shard summarised it");
+            if (!merged.shuffled.containsKey(sc + "@" + seed) && (control == null || shuffledScope.contains(sc))) merged.missing.add(sc + " seed " + seed + " not run: no shard summarised it");
         for (Scenarios.GenerationRun g : Scenarios.GENERATION_RUNS)
-            if (!merged.generationRuns.containsKey(g.name())) merged.missing.add(g.name() + " not run: no shard summarised it");
+            if (!merged.generationRuns.containsKey(g.name()) && (control == null || generationScope.contains(g.name()))) merged.missing.add(g.name() + " not run: no shard summarised it");
         problems.addAll(merged.missing);
         return merged;
     }

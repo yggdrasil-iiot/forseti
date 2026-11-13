@@ -47,9 +47,10 @@ final class Driver {
     /** When set, the state is serialized and read back after every cut (the adapters' store round trip). */
     boolean roundTrip;
 
-    Driver(RuleSet rules, String station) {
+    Driver(RuleSet rules, String station) { this(rules, station, NegativeControls.NONE); }
+    Driver(RuleSet rules, String station, NegativeControls controls) {
         this.rules = rules;
-        this.stage1 = new Stage1(rules, NegativeControls.NONE);
+        this.stage1 = new Stage1(rules, controls);
         this.routing = new Routing(rules);
         this.station = station;
         this.state = stage1.newState(1, station);

@@ -1,3 +1,12 @@
 {
-  "controls": []
+  "controls": [
+    {"name": "processing-time", "intended": ["I-1"], "shards": ["hand-made"]},
+    {"name": "drop-late", "intended": ["J-DISPOSITION-COVERAGE"], "shards": ["horizon-planned-late"]},
+    {"name": "no-cascade", "intended": ["I-18", "J-BASIS-CURRENT"], "shards": ["hand-made"]},
+    {"name": "lenient-oracle", "intended": ["I-2", "I-6"], "shards": ["hand-made", "horizon-no-departure"]},
+    {"name": "first-wins", "intended": ["I-4"], "shards": ["hand-made"]},
+    {"name": "station-granularity", "intended": ["I-16"], "shards": ["hand-made"]},
+    {"name": "ignore-session-gap", "intended": ["I-8"], "shards": ["hand-made"]},
+    {"name": "wrong-rules-pin", "intended": ["I-1", "I-2", "I-2b", "I-3", "I-4", "I-5", "I-6", "I-7", "I-8", "I-9", "I-9b", "I-10", "I-10b", "I-10c", "I-10d", "I-10e", "I-10f", "I-11", "I-11b", "I-11c", "I-11d", "I-11e", "I-12", "I-13", "I-14", "I-15", "I-16", "I-17", "I-18", "I-19", "I-25", "I-26", "I-20", "I-23"], "shards": ["hand-made", "horizon-no-departure", "horizon-reopened", "horizon-correction-beyond", "horizon-planned-late", "plc-horizon-no-end"]}
+  ]
 }

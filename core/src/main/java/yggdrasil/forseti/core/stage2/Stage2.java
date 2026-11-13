@@ -145,6 +145,7 @@ public final class Stage2 {
     private void basis(Stage2State s, Events2.Basis b, Long w2, List<Object> out) {
         JsonNode visitRef = b.entry() instanceof Row r ? r.logicalKey() : ((Delete) b.entry()).logicalKey();
         String key = text(visitRef);
+        if (controls.noCascade() && s.bases.containsKey(key) && cited(s, s.bases.get(key))) return;   // the no-cascade control
         if (b.entry() instanceof Row r) {
             s.bases.put(key, new Stage2State.Basis(visitRef.deepCopy(), (ObjectNode) r.body().deepCopy(), r.bodyDigest(), r.envelope().revision()));
             JsonNode in = r.body().path("interval");
@@ -156,6 +157,14 @@ public final class Stage2 {
         }
         Ctx c = new Ctx(s, out, inputCause("work-record", visitRef), null, effective(s, w2));
         for (String k : new ArrayList<>(s.incidents.keySet())) judge(c, k);
+    }
+
+    /** Whether an assessment row exists that {@code basis} can stand behind: a live unit row of its unit in some incident. The
+     *  {@code no-cascade} control ignores every basis revision after that (plan Task 22). */
+    private static boolean cited(Stage2State s, Stage2State.Basis basis) {
+        String unit = basis.body().path("unitId").asText();
+        for (TreeMap<String, AffectedSet.Unit> live : s.units.values()) if (live.containsKey(unit)) return true;
+        return false;
     }
 
     /** T8 index: a sample row of a member; only rows of an equipment's activity member are kept, every row moves lastObservation. */
@@ -273,7 +282,7 @@ public final class Stage2 {
                 if (k != Relatedness.Kind.UNRELATED) judged.add(new DecisionTable.Judged(b.visitRef(), b.body(), b.bodyDigest(), k));
             }
             judged.sort((x, y) -> Arrays.compareUnsigned(Canonical.bytes(x.visitRef()), Canonical.bytes(y.visitRef())));
-            DecisionTable.Decision d = DecisionTable.decide(match, onWithdrawn, onBasisRetracted, cur, judged);
+            DecisionTable.Decision d = DecisionTable.decide(match, onWithdrawn, onBasisRetracted, cur, judged, controls.stationGranularity());
             ArrayNode basisRevisions = Json.JSON.createArrayNode();
             for (DecisionTable.Judged j : judged) {
                 ObjectNode e = basisRevisions.addObject();

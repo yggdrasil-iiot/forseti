@@ -26,6 +26,9 @@ final class VisitClaim {
     boolean missingVisitClose, inconsistentBoundary;
     String errorReason;
     Long attributionEnd;
+    /** The delivery offset of the visit's first arriving delivery (its station's occupancy partition), {@code Long.MAX_VALUE} when it has
+     *  none (an expired or plc-stamped visit); read only by the {@code first-wins} negative control. */
+    long arrivalDelivery = Long.MAX_VALUE;
 
     private VisitClaim(ObjectNode visitRef, String source, String arrivalEventId, String unitId, String readPoint, Long visitSeq, long enter, Stage1State.Expired frozen) {
         this.visitRef = visitRef; this.key = keyOf(visitRef); this.mode = visitRef.path("mode").asText(); this.source = source; this.arrivalEventId = arrivalEventId; this.unitId = unitId;
@@ -63,7 +66,11 @@ final class VisitClaim {
     }
 
     /** Every visit of the station: one per stored arrival identity, plus the expired ones; overlap and attributionEnd decided. */
-    static List<VisitClaim> derive(Stage1State s) {
+    static List<VisitClaim> derive(Stage1State s) { return derive(s, false); }
+
+    /** {@code firstWins}: the {@code first-wins} negative control (S7 keeps the visit whose arrival was delivered first and retracts
+     *  only the later one); false outside a control run. */
+    static List<VisitClaim> derive(Stage1State s, boolean firstWins) {
         Map<String, List<Stage1State.Occupancy>> departures = new HashMap<>();
         for (Stage1State.Occupancy o : s.deliveries.values()) {
             Set<String> arrivalIds = new TreeSet<>();
@@ -80,6 +87,7 @@ final class VisitClaim {
             VisitClaim c = new VisitClaim(visitRef(o.source, o.eventId), o.source, o.eventId, rep.get("unitId").asText(), rep.get("readPoint").asText(),
                 seq == null || seq.isNull() ? null : Json.safeLong(seq, "visitSeq", Json.NON_NEGATIVE), Json.safeLong(rep.get("eventTime"), "eventTime", Json.NON_NEGATIVE), null);
             c.inputConflict = variants.size() > 1;
+            for (Stage1State.OccDelivery d : o.list) if (d.arriving()) c.arrivalDelivery = Math.min(c.arrivalDelivery, d.origin.offset());
             TreeMap<String, JsonNode> decls = declarations(o);
             if (decls.size() == 1) { c.arrivalDeclared = true; c.errorReason = decls.firstEntry().getValue().path("reason").asText(); }
             else if (decls.size() > 1) c.correctionConflict = true;
@@ -103,17 +111,23 @@ final class VisitClaim {
             c.attributionEnd = x.attributionEnd();
             visits.add(c);
         }
-        decide(visits);
+        decide(visits, firstWins);
         return visits;
     }
 
-    /** S7 overlap between visits with a valid arrival and a valid leave, then attributionEnd of each open visit (S4). */
-    static void decide(List<VisitClaim> visits) {
+    static void decide(List<VisitClaim> visits) { decide(visits, false); }
+
+    /** S7 overlap between visits with a valid arrival and a valid leave, then attributionEnd of each open visit (S4). Under the
+     *  {@code first-wins} control only the overlapping visit whose arrival was delivered later is retracted. */
+    static void decide(List<VisitClaim> visits, boolean firstWins) {
         List<VisitClaim> valid = new ArrayList<>();
         for (VisitClaim v : visits) if (v.online() && !v.arrivalDeclared && !v.inputConflict && v.leave != null) valid.add(v);
         for (int i = 0; i < valid.size(); i++) for (int j = i + 1; j < valid.size(); j++) {
             VisitClaim a = valid.get(i), b = valid.get(j);
-            if (a.readPoint.equals(b.readPoint) && a.enter < b.leave && b.enter < a.leave) { a.overlap = true; b.overlap = true; }
+            if (!(a.readPoint.equals(b.readPoint) && a.enter < b.leave && b.enter < a.leave)) continue;
+            if (!firstWins) { a.overlap = true; b.overlap = true; }
+            else if (a.arrivalDelivery != b.arrivalDelivery) (a.arrivalDelivery > b.arrivalDelivery ? a : b).overlap = true;
+            else (a.key.compareTo(b.key) > 0 ? a : b).overlap = true;
         }
         for (VisitClaim v : visits) {
             if (!v.online() || v.leave != null) continue;

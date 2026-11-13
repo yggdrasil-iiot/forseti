@@ -123,7 +123,7 @@ final class WorkRecord {
         // session reasons (non-retracted visits only), missing departure, correction conflict
         if (!v.retracted() && nonEmpty) {
             for (String q : cfg.equipmentOf(station)) {
-                for (Interval g : view.gaps(q)) if (g.overlaps(enter, end)) reasons.add("session-gap");
+                if (!cfg.controls.ignoreSessionGap()) for (Interval g : view.gaps(q)) if (g.overlaps(enter, end)) reasons.add("session-gap");   // the ignore-session-gap control adds none
                 for (Interval u : view.unknown(q)) if (u.overlaps(enter, end)) reasons.add("session-ambiguous");
             }
         }
