@@ -46,7 +46,7 @@ jobs:
   # The core gate in shards (gate/core-shards.json): each horizon recording in its own job, the hand-made scenarios in one; every
   # scenario is still compared with the oracle at every cut. Each shard registers its generations through `generation new` into its
   # own store, build/shards/<shard>/state, inside the uploaded path: the artifact holds report.json, summaries.json, logs/, diffs/ (on
-  # failure), runs/*.run.json, runs/*.cuts.json and state/ (upload-artifact leaves out the hidden head-floors/.lock, which FloorStore
+  # failure), runs/*.run.json, runs/*.cuts.json, journals/ (kept for a scenario with a generation run) and state/ (upload-artifact leaves out the hidden head-floors/.lock, which FloorStore
   # recreates; no lock file is evidence). The core-gate job below passes only when every shard ran and held.
   gate:
     name: core gate shard ${{ matrix.shard }}
@@ -100,9 +100,9 @@ jobs:
         with: {name: forseti-jar, path: forseti/cli/target}
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with: {pattern: gate-shard-*, path: forseti/build/shards, merge-multiple: true}
-      - name: Core gate over every shard
+      - name: Core gate over every shard, then promote through the CLI
         working-directory: forseti
-        run: java -jar cli/target/forseti.jar gate --engine core --aggregate build/shards --out build/gate --python "$(command -v python)"
+        run: bash scripts/gate-then-promote.sh --from-shards build/shards build/gate "$(command -v python)"
       - name: Negative controls exit 1 for their intended assertion
         working-directory: forseti
         run: |
@@ -114,7 +114,12 @@ jobs:
       - name: Gate reports
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
-        with: {name: core-gate, path: forseti/build/gate*/, if-no-files-found: error}
+        with:
+          name: core-gate
+          path: |
+            forseti/build/gate*/
+            forseti/build/shards/horizon-planned-late/state/
+          if-no-files-found: error
   bifrost-seam:
     name: release reader against a head Bifrost publishes now
     runs-on: ubuntu-latest
