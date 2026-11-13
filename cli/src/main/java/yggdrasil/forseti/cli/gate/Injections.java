@@ -881,27 +881,37 @@ final class Injections {
             JsonNode r = all.runs.get(s);
             if (r == null) { p.list.add(s + " not run"); continue; }
             p.use(r);
-            if (Summaries.failed(r)) continue;
-            JsonNode a = r.path("afterHorizon");
-            if (!a.isObject()) { p.list.add(s + ": no afterHorizon values"); continue; }
-            long need = a.path("need").asLong(), lastW = a.path("lastW1").asLong(), t0 = a.path("t0").asLong();
-            String what = a.path("what").asText();
-            p.require(lastW >= need, s + ": last W1 " + lastW + " < " + what + " " + need);
-            long maxOnline = a.path("maxOnlineVisits").asLong(), lastOnline = a.path("lastOnlineVisits").asLong();
-            p.require(maxOnline > 0 && lastOnline < maxOnline, s + ": onlineVisits max " + maxOnline + ", last " + lastOnline);
-            long rows = a.path("workRecords").asLong();
-            p.equal(a.path("visits").asLong(), rows, s + " work records in the fold at the last cut");
-            out.add(s + " last W1 T0 + " + (lastW - t0) + " >= " + what + " T0 + " + (need - t0) + ", onlineVisits " + maxOnline + " -> " + lastOnline + ", " + rows + " work records remain");
+            out.add(afterHorizon(s, r, p.list));
         }
+        out.removeIf(Objects::isNull);
         return p.result(String.join("; ", out));
+    }
+
+    /** {@code J-AFTER-HORIZON-CUTS} on one run summary: its problems go to {@code problems} (a failed summary by its failure); returns the
+     *  evidence line, null when the run failed or has no values. */
+    static String afterHorizon(String s, JsonNode r, List<String> problems) {
+        if (Summaries.failed(r)) { problems.add(s + ": " + r.path("failure").asText()); return null; }
+        JsonNode a = r.path("afterHorizon");
+        if (!a.isObject()) { problems.add(s + ": no afterHorizon values"); return null; }
+        long need = a.path("need").asLong(), lastW = a.path("lastW1").asLong(), t0 = a.path("t0").asLong();
+        String what = a.path("what").asText();
+        if (lastW < need) problems.add(s + ": last W1 " + lastW + " < " + what + " " + need);
+        long maxOnline = a.path("maxOnlineVisits").asLong(), lastOnline = a.path("lastOnlineVisits").asLong();
+        if (!(maxOnline > 0 && lastOnline < maxOnline)) problems.add(s + ": onlineVisits max " + maxOnline + ", last " + lastOnline);
+        long rows = a.path("workRecords").asLong();
+        if (a.path("visits").asLong() != rows) problems.add(s + " work records in the fold at the last cut: expected " + a.path("visits").asLong() + ", got " + rows);
+        return s + " last W1 T0 + " + (lastW - t0) + " >= " + what + " T0 + " + (need - t0) + ", onlineVisits " + maxOnline + " -> " + lastOnline + ", " + rows + " work records remain";
     }
 
     record Need(long at, String station, String what) {}
 
     /** The W1 the last cut of a horizon recording must reach: the latest {@code enter + H + L} of its open visits (every open visit's
      *  online state expired); a recording without an open visit, the first {@code onlineExpiresAt} ({@code leave + H + L}), so that at
-     *  least one visit's online state is dropped while its row stays. */
+     *  least one visit's online state is dropped while its row stays. The visit facts ({@code station}, {@code enter}, {@code leave}) are
+     *  those of the recording's {@code expected.json}, online or replay; without a visit there is no threshold and this throws. */
     static Need afterHorizonNeed(JsonNode expected, long H, long L) {
+        if (!expected.path("visits").isArray() || expected.path("visits").isEmpty())
+            throw new IllegalStateException("no visit facts: expected.json (scope " + expected.path("scope").asText("none") + ") has no visits[] to compute the after-horizon need from");
         long need = Long.MIN_VALUE;
         String station = S1;
         for (JsonNode v : expected.path("visits")) {

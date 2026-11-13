@@ -1,5 +1,7 @@
 package yggdrasil.forseti.cli.recording;
 
+import com.fasterxml.jackson.core.JsonParser;
+import com.fasterxml.jackson.core.JsonToken;
 import com.fasterxml.jackson.databind.JsonNode;
 import java.io.IOException;
 import java.io.InputStream;
@@ -239,6 +241,26 @@ public final class Recording {
         if (key == null || !key.isTextual() || headers == null || !headers.isObject() || value == null)
             throw malformed(name + " line " + offset + " key, headers or value");
         return new Record(offset, timestamp, key.textValue(), headers, value);
+    }
+
+    /** The {@code value} bytes of one partition line as delivered (never re-serialized: a raw-bytes digest and an overflowing literal
+     *  depend on them). */
+    public static byte[] valueBytes(byte[] line) {
+        try (JsonParser p = Json.JSON.getFactory().createParser(line)) {
+            if (p.nextToken() != JsonToken.START_OBJECT) throw new IllegalArgumentException("malformed recording: a line is not an object");
+            while (p.nextToken() == JsonToken.FIELD_NAME) {
+                String name = p.getCurrentName();
+                p.nextToken();
+                if (!"value".equals(name)) { p.skipChildren(); continue; }
+                int from = (int) p.getTokenLocation().getByteOffset();
+                p.skipChildren();
+                p.nextToken();   // the token after the value fixes its end
+                int to = (int) p.getTokenLocation().getByteOffset();
+                while (to > from && (line[to - 1] == ',' || line[to - 1] == ' ')) to--;
+                return Arrays.copyOfRange(line, from, to);
+            }
+        } catch (IOException e) { throw new IllegalArgumentException("malformed recording: " + e.getMessage(), e); }
+        throw new IllegalArgumentException("malformed recording: a line has no value");
     }
 
     /** Every file of the directory except the manifest is listed in {@code digests} with its raw-byte SHA-256, every subscribed

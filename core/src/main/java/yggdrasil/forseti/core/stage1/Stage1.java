@@ -43,7 +43,16 @@ public final class Stage1 {
     private final Map<String, List<String>> equipmentByStation = new HashMap<>();
     private final List<String> stations;
 
-    public Stage1(RuleSet rules, NegativeControls controls) {
+    /** {@link Envelope#ONLINE} or {@link Envelope#REPLAYED}: the cause kind every row this instance emits carries. */
+    private final String causeKind;
+
+    public Stage1(RuleSet rules, NegativeControls controls) { this(rules, controls, Envelope.ONLINE); }
+
+    /** {@code causeKind}: {@link Envelope#ONLINE} for an online generation, {@link Envelope#REPLAYED} for a generation replayed in
+     *  event-time order (spec 583: an input row keeps its {@code inputKind}, {@code identity} and trigger; a timer row carries
+     *  {@code inputKind timer}, {@code identity {deadline}} and no trigger). */
+    public Stage1(RuleSet rules, NegativeControls controls, String causeKind) {
+        this.causeKind = Envelope.causeKind(causeKind);
         this.mode = rules.attribution().mode();
         if (!VisitClaim.MODE.equals(mode) && !PlcStamped.MODE.equals(mode)) throw new IllegalArgumentException("Stage1 decides occupancy-join and plc-stamped; the rule is " + mode);
         this.rules = rules;
@@ -150,8 +159,7 @@ public final class Stage1 {
     private void admit(Stage1State s, Inputs.InputRecord r, Long admissionW, List<Object> out) {
         String topic = r.origin().topic();
         if (plc != null && !plc.crossCheck && InputParser.OCCUPANCY.equals(topic)) return;   // P3: crossCheck none reads no occupancy
-        ObjectNode cause = Json.object().put("kind", "input").put("inputKind", Events.inputKind(topic));
-        cause.set("identity", Events.identity(r));
+        ObjectNode cause = Envelope.inputCause(causeKind, Events.inputKind(topic), Events.identity(r));
         Ctx c = new Ctx(s, out, cause, new Envelope.Trigger(topic, r.origin().partition(), r.origin().offset()), null);
         switch (topic) {
             case InputParser.OCCUPANCY: occupancy(c, r, admissionW); break;
@@ -370,7 +378,7 @@ public final class Stage1 {
     private void timer(Stage1State s, Events.Timer t, long w, List<Object> out) {
         if (s.lastW1 == null || w > s.lastW1) s.lastW1 = w;
         if (!s.deadlines.remove(t.deadline(), t.key(), t.purpose())) return;   // cancelled or replaced meanwhile
-        ObjectNode cause = Json.putSafe(Json.object().put("kind", "timer"), "deadline", t.deadline());
+        ObjectNode cause = Envelope.timerCause(causeKind, t.deadline());
         Ctx c = new Ctx(s, out, cause, null, w);
         if (DeadlineIndex.EXPIRY.equals(t.purpose())) { if (plc != null) expirePlc(s, t.key()); else expire(s, t.key()); }
         recompute(c, w, null);
@@ -429,7 +437,7 @@ public final class Stage1 {
         Long admissionBefore = s.admissionW;
         long w = cc.w1();
         s.lastW1 = w;
-        ObjectNode cause = Json.putSafe(Json.object().put("kind", "timer"), "deadline", w);
+        ObjectNode cause = Envelope.timerCause(causeKind, w);
         recompute(new Ctx(s, out, cause, null, w), w, null);
         // unattributed samples stay until no admissible arrival can claim them (S3: an arrival is admitted while admissionW < enter + H + L)
         dropSamples(s, x -> {

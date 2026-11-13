@@ -331,7 +331,7 @@ final class Stage1Assertions {
                                 long off = t.path("offset").asLong();
                                 if (!range.isArray() || off < range.get(0).asLong() || off >= range.get(1).asLong())
                                     p.list.add(label + " cut " + s.cutId() + ": a row triggered at " + t + " outside the cut's range " + range);
-                            } else if (!"timer".equals(env.path("cause").path("kind").asText()) || env.path("cause").path("deadline").asLong() > s.W1())
+                            } else if (Envelope.timerDeadline(env.path("cause")) == null || Envelope.timerDeadline(env.path("cause")) > s.W1())
                                 p.list.add(label + " cut " + s.cutId() + ": a row with neither a cut input nor a due timer: " + env.path("cause"));
                         }
                         segment.clear();

@@ -83,7 +83,10 @@ final class Summaries {
             if (want == null) o.putNull("heldBackWantMs"); else Json.putSafe(o, "heldBackWantMs", want);
         }
         boolean complete = r.failure == null && r.tally != null && r.fold != null && r.outcome != null;
-        if (r.synthetic && complete) o.set("afterHorizon", afterHorizon(r));
+        if (r.synthetic && complete) {
+            try { o.set("afterHorizon", afterHorizon(r)); }
+            catch (IllegalStateException e) { o.put("failure", "afterHorizon: " + e.getMessage()); o.put("ok", false); }
+        }
         return o;
     }
 
@@ -117,7 +120,9 @@ final class Summaries {
         }
     }
 
-    /** {@code J-AFTER-HORIZON-CUTS}' values of a horizon recording, from its fold at the last cut. */
+    /** {@code J-AFTER-HORIZON-CUTS}' values of a horizon recording, from its fold at the last cut and the visit facts of the recording
+     *  the run read ({@code expected.visits}: an online run's recording, or a replay run's replay recording, whose visits carry the same
+     *  facts and no online outcome). Throws when the recording has no visit facts ({@link Injections#afterHorizonNeed}). */
     static ObjectNode afterHorizon(Run r) {
         Injections.Need n = Injections.afterHorizonNeed(r.expected, r.rules.attribution().horizonMs(), r.rules.attribution().allowedLatenessMs());
         ObjectNode a = Json.object();

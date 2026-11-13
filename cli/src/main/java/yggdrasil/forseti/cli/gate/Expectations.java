@@ -12,7 +12,9 @@ import yggdrasil.forseti.core.Json;
  *  attributedTo; both encodings through {@link ExpectedSamples}), every identity's disposition per part (and its delivery count where
  *  listed; a sampleId not listed is {@code member:<metric> accepted accepted}) and every incident set (units, resolution, coverage);
  *  at the two cuts bracketing each {@code transitions[]} deadline, the reported {@code W1} on both sides of it and the state at
- *  each. A recording whose ground truth has the minimal scope (the smoke recordings) is checked by the S- and T-assertions instead. */
+ *  each. A recording whose ground truth has the minimal scope (the smoke recordings) is checked by the S- and T-assertions instead; a
+ *  replay recording's ({@code scope: replay}, visit facts and replay brackets only) is treated like the minimal one: a replay run is never
+ *  compared with the online run's late-arrival expectations. */
 final class Expectations {
     private Expectations() {}
 
@@ -22,9 +24,11 @@ final class Expectations {
         long visits, samples, dispositions, incidents, transitions, problems;
         final List<String> examples = new ArrayList<>();
         boolean skipped;
+        String scope;
         void problem(String p) { problems++; if (examples.size() < EXAMPLES) examples.add(p); }
         boolean ok() { return problems == 0; }
         String describe() {
+            if (skipped && "replay".equals(scope)) return "expected.json has the replay scope (visit facts only; no online outcome is compared)";
             if (skipped) return "expected.json has the minimal scope (checked by the S-/T-assertions)";
             String counts = visits + " visits, " + samples + " samples, " + dispositions + " identity parts, " + incidents + " incident sets, " + transitions + " transitions";
             return ok() ? "expected.json holds (" + counts + ")" : "expected.json: " + problems + " problems over " + counts + ": " + String.join(" | ", examples);
@@ -34,7 +38,9 @@ final class Expectations {
     /** Checks the fold, advanced to the last cut, against {@code expected}; {@code perStationOf} gives a cut's {@code perStation}. */
     static Outcome check(RunFold fold, JsonNode expected, java.util.function.LongFunction<JsonNode> perStationOf) {
         Outcome o = new Outcome();
-        if (!"full".equals(expected.path("scope").asText())) { o.skipped = true; return o; }
+        String scope = expected.path("scope").asText();
+        if (scope.equals("minimal") || scope.equals("replay")) { o.skipped = true; o.scope = scope; return o; }   // no per-sample ground truth
+        if (!scope.equals("full")) { o.problem("expected.json scope " + expected.path("scope") + " is none of full, minimal, replay"); return o; }
         Map<String, String> refKey = new HashMap<>();
         for (JsonNode v : expected.path("visits")) refKey.put(Json.text(v, "visitRef"), RunFold.keyText(v.path("key")));
         // visits

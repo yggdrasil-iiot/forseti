@@ -96,3 +96,54 @@ def test_malformed_recordings_are_refused(tmp_path):
         f.write(b"\n")
     with pytest.raises(Malformed):
         recording.open_recording(copy).verify_digests()
+
+
+def test_a_replay_recording_is_read_like_any_recording(tmp_path):
+    """A replay of smoke shaped as the materializer writes it (smoke's replay order is its original order: every record and every
+    batch stays, cf. the committed smoke.replay.lock.json): offset maps listed in the digests, the replay source fields, the replay
+    expected.json. The oracle reads it like any recording; the replay fields are checked, never required of an original."""
+    copy = tmp_path / "smoke-replay"
+    shutil.copytree(RECORDINGS / "smoke", copy)
+    original_sha = canon.sha256((RECORDINGS / "smoke" / "manifest.json").read_bytes())
+    m = json.loads((copy / "manifest.json").read_text(encoding="utf-8"))
+    rec0 = recording.open_recording(RECORDINGS / "smoke")
+    assert (rec0.replay_of, rec0.replay_out_of_orderness_ms) == (None, None)
+    for topic in recording.TOPICS:
+        for p in rec0.subscribed(topic):
+            f = copy / "offset-map" / topic / f"{p}.jsonl"
+            f.parent.mkdir(parents=True, exist_ok=True)
+            f.write_bytes(b"".join(b'{"offset":%d,"originalOffset":%d}\n' % (i, i) for i in range(len(rec0.records(topic, p)))))
+            m["digests"][f"offset-map/{topic}/{p}.jsonl"] = canon.sha256(f.read_bytes())
+    (copy / "expected.json").write_text(json.dumps({"expectedVersion": 1, "scope": "replay", "mode": None, "visits": [], "transitions": []}),
+                                        encoding="utf-8", newline="\n")
+    m["digests"]["expected.json"] = canon.sha256((copy / "expected.json").read_bytes())
+    stations = sorted(rec0.routing["stations"])
+    d = m["deadlines"][0]
+    m["source"].update({"replayOf": original_sha, "outOfOrdernessMs": 30000, "deadlines": [
+        {"kind": d["kind"], "ref": d["ref"], "at": d["at"], "stations": stations, "originalCutA": d["cutA"], "originalCutB": d["cutB"],
+         "cutA": d["cutA"], "cutB": d["cutB"], "w1A": {s: d["at"] - 1 for s in stations}, "w1B": {s: d["at"] + 999 for s in stations}}]})
+    (copy / "manifest.json").write_text(json.dumps(m, indent=2), encoding="utf-8", newline="\n")
+
+    rec = recording.open_recording(copy)
+    rec.verify_digests()
+    assert (rec.replay_of, rec.replay_out_of_orderness_ms) == (original_sha, 30000)
+    assert rec.batches() == rec0.batches()
+    for topic in recording.TOPICS:
+        for p in rec.subscribed(topic):
+            assert rec.records(topic, p) == rec0.records(topic, p)
+    # the partitions the Java materializer wrote for smoke are smoke's own bytes
+    lock = json.loads((SCENARIOS / "smoke.replay.lock.json").read_text(encoding="utf-8"))
+    for name, sha in lock["files"].items():
+        if name.split("/")[0] in recording.TOPICS:
+            assert sha == canon.sha256((RECORDINGS / "smoke" / name).read_bytes()), name
+    assert lock["outOfOrdernessMs"] == 30000 and lock["counts"]["cuts"] == len(rec.batches())
+
+    m["source"]["deadlines"][0]["cutA"] = d["cutA"] - 1
+    (copy / "manifest.json").write_text(json.dumps(m, indent=2), encoding="utf-8", newline="\n")
+    with pytest.raises(Malformed, match="source.deadlines differ"):
+        recording.open_recording(copy)
+    m["source"]["deadlines"][0]["cutA"] = d["cutA"]
+    m["source"]["replayOf"] = "XYZ"
+    (copy / "manifest.json").write_text(json.dumps(m, indent=2), encoding="utf-8", newline="\n")
+    with pytest.raises(Malformed, match="source.replayOf"):
+        recording.open_recording(copy)

@@ -83,10 +83,10 @@ public final class JournalFold {
             return covered(p, d.key().inputTopic(), d.key().inputPartition(), d.key().inputOffset());
         }
         Row r = (Row) e;
-        JsonNode cause = r.envelope().cause();
-        if ("timer".equals(cause.path("kind").textValue()) && cause.path("deadline").isIntegralNumber()) {
+        Long deadline = Envelope.timerDeadline(r.envelope().cause());
+        if (deadline != null) {
             Long w = p instanceof Progress.Stage1 s1 ? Long.valueOf(s1.W1()) : p instanceof Progress.Stage2 s2 ? Long.valueOf(s2.W2()) : null;
-            return w != null && cause.path("deadline").longValue() <= w;
+            return w != null && deadline <= w;
         }
         Envelope.Trigger t = r.envelope().trigger();
         return t != null && covered(p, t.topic(), t.partition(), t.offset());

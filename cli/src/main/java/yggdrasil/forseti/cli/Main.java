@@ -12,6 +12,7 @@ import yggdrasil.forseti.cli.gate.CoreGate;
 import yggdrasil.forseti.cli.generation.GenerationCli;
 import yggdrasil.forseti.cli.harness.ReferenceEngine;
 import yggdrasil.forseti.cli.recording.Recording;
+import yggdrasil.forseti.cli.recording.ReplayRecording;
 import yggdrasil.forseti.cli.recording.ScenarioBuilder;
 import yggdrasil.forseti.core.Json;
 import yggdrasil.forseti.core.canon.Canonical;
@@ -41,6 +42,11 @@ public final class Main {
             return GenerationCli.run(Arrays.copyOfRange(args, 1, args.length), out, err, Clock.systemUTC());
         }
         if (args.length < 2) return usage(err);
+        if (args[0].equals("recordings") && args[1].equals("replay")) {
+            Args flags;
+            try { flags = Args.parse(args, 2, Set.of()); } catch (IllegalArgumentException e) { err.println(e.getMessage()); return usage(err); }
+            return replay(flags, out, err);
+        }
         Args flags;
         try { flags = Args.parse(args, 2, Set.of("lock")); }
         catch (IllegalArgumentException e) { err.println(e.getMessage()); return usage(err); }
@@ -61,10 +67,12 @@ public final class Main {
         err.println("usage: forseti recordings build --scenario <file> --out <dir> [--registry <dir>] [--lock]");
         err.println("       forseti recordings synth --scenario <synthetic scenario file> --out <dir> --registry <dir> [--lock]");
         err.println("       forseti recordings verify --scenario <file> --out <dir> [--registry <dir>]");
+        err.println("       forseti recordings replay --recording <dir> --out-of-orderness-ms <n> --out <dir> [--lock <file>]");
         err.println("       forseti gate --engine core [--out <dir>] [--python <interpreter>] [--negative-control <name>] [--seed <n>]");
         err.println("                    [--shard <name> | --aggregate <dir>] [--state <out>/state]");
         err.println("       forseti run --engine core --recording <dir> --registry <dir> --state <dir> --generation <n> --out <run dir>");
-        err.println("                   [--seed <n>] [--shuffle] [--subscribe <topic>=<p,p>[;<topic>=<p,p>]] [--artifact-sha256 <hex>]");
+        err.println("                   [--seed <n>] [--shuffle | --replay event-time [--replay-lock <file>]] [--subscribe <topic>=<p,p>[;<topic>=<p,p>]]");
+        err.println("                   [--artifact-sha256 <hex>]");
         err.println("       forseti generation new --state <dir> --mappings <dir> --trusted-keys <file> --stream <s> [--stream <s2>] --rule <id>@<version>");
         err.println("                   [--recording <dir>] [--definitions <file>]");
         err.println("       forseti generation retire --state <dir> --generation <n>");
@@ -79,14 +87,15 @@ public final class Main {
     private static int run(Args f, String command, PrintStream out, PrintStream err) {
         ReferenceEngine.Options o;
         try {
-            f.only(Set.of("engine", "recording", "registry", "state", "generation", "out", "seed", "shuffle", "subscribe", "artifact-sha256"));
+            f.only(Set.of("engine", "recording", "registry", "state", "generation", "out", "seed", "shuffle", "subscribe", "artifact-sha256", "replay", "replay-lock"));
             if (!"core".equals(f.required("engine"))) throw new IllegalArgumentException("--engine core is the only engine of this step");
             long generation = number(f.required("generation"), "--generation", 1);
             long seed = number(f.get("seed", Long.toString(ReferenceEngine.DEFAULT_SEED)), "--seed", 0);
             String artifact = f.get("artifact-sha256").orElse(null);
             if (artifact != null && !artifact.matches("[0-9a-f]{64}")) throw new IllegalArgumentException("--artifact-sha256 is 64 lowercase hex digits");
             o = new ReferenceEngine.Options(Path.of(f.required("recording")), Path.of(f.required("registry")), Path.of(f.required("state")), generation,
-                Path.of(f.required("out")), seed, f.has("shuffle"), subscribe(f.get("subscribe").orElse(null)), artifact, command);
+                Path.of(f.required("out")), seed, f.has("shuffle"), subscribe(f.get("subscribe").orElse(null)), artifact, command,
+                f.get("replay").orElse(null), f.get("replay-lock").map(Path::of).orElse(null));
         } catch (IllegalArgumentException e) { err.println(e.getMessage()); return usage(err); }
         try {
             GenerationCli.prepareRun(o.state(), o.generation(), o.recording());
@@ -104,6 +113,35 @@ public final class Main {
             out.println(Canonical.utf8(Canonical.bytes(GenerationCli.corrupt(e).toJson())));
             return 1;
         } catch (IllegalArgumentException | UncheckedIOException e) {
+            err.println(e.getMessage());
+            return 2;
+        }
+    }
+
+    /** {@code recordings replay}: the event-time replay of {@code --recording} materialized into {@code --out}
+     *  ({@link ReplayRecording#materialize}); {@code --lock <file>} writes its lock there. Prints
+     *  {@code {cuts, deadlines, manifestSha256, out}} (exit 0), a refusal {@code {"refusal": <code>, ...evidence}} (exit 1), or a usage or
+     *  input error (exit 2). */
+    private static int replay(Args f, PrintStream out, PrintStream err) {
+        Path recording, dir;
+        long oo;
+        try {
+            f.only(Set.of("recording", "out-of-orderness-ms", "out", "lock"));
+            recording = Path.of(f.required("recording"));
+            dir = Path.of(f.required("out"));
+            oo = number(f.required("out-of-orderness-ms"), "--out-of-orderness-ms", 0);
+        } catch (IllegalArgumentException e) { err.println(e.getMessage()); return usage(err); }
+        try {
+            ReplayRecording.Result r = ReplayRecording.materialize(recording, oo, dir);
+            if (f.get("lock").isPresent()) Json.write(Path.of(f.get("lock").get()).toAbsolutePath(), r.lock());
+            ObjectNode n = Json.putSafe(Json.object(), "cuts", r.cutIds().size());
+            Json.putSafe(n, "deadlines", r.manifest().path("deadlines").size());
+            out.println(Canonical.utf8(Canonical.bytes(n.put("manifestSha256", r.manifestSha256()).put("out", dir.toString()))));
+            return 0;
+        } catch (ReplayRecording.Refused e) {
+            out.println(Canonical.utf8(Canonical.bytes(e.toJson())));
+            return 1;
+        } catch (IllegalArgumentException | IllegalStateException | UncheckedIOException e) {
             err.println(e.getMessage());
             return 2;
         }
