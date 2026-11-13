@@ -8,11 +8,13 @@ import java.util.Map;
 import yggdrasil.forseti.core.Json;
 
 /** One row of {@code forseti.generations} (spec "Generations and revisions"): {@code generation}, {@code status}, {@code rulesDigest},
- *  {@code inputReleases}, {@code replayFrom} offsets, {@code headVersion}, {@code releaseEvidence}, {@code gateReportSha256}, {@code at}.
+ *  {@code inputReleases}, {@code replayFrom} offsets, {@code headVersion}, {@code releaseEvidence}, {@code gateReportSha256}, {@code run},
+ *  {@code at}. {@code run} is the run citation (spec "Run citation"): null, or exactly {@code {runId, runRecordSha256, offsetRanges}}
+ *  ({@code runId} text, {@code runRecordSha256} 64 lowercase hex, {@code offsetRanges} an object); a row without the field is refused.
  *  Every integer is written with {@link Json#putSafe} and read with {@link Json#safeLong}; {@code generation >= 1}. {@code replayFrom} is
  *  {@code {topic -> {partition -> offset}}}. The row carries no scope: the scope is the record key of the store. */
 public record Generation(long generation, String status, String rulesDigest, JsonNode inputReleases, JsonNode replayFrom, long headVersion,
-                         JsonNode releaseEvidence, String gateReportSha256, long at) {
+                         JsonNode releaseEvidence, String gateReportSha256, JsonNode run, long at) {
     public static final String REGISTERED = "registered", REPLAYING = "replaying", VERIFIED = "verified", CURRENT = "current", RETIRED = "retired";
     public static final List<String> STATUSES = List.of(REGISTERED, REPLAYING, VERIFIED, CURRENT, RETIRED);
 
@@ -34,6 +36,12 @@ public record Generation(long generation, String status, String rulesDigest, Jso
         if (headVersion < 1 || headVersion > Json.MAX_SAFE) throw new IllegalArgumentException("headVersion >= 1");
         if (releaseEvidence == null || !releaseEvidence.isObject()) throw new IllegalArgumentException("releaseEvidence is an object");
         if (gateReportSha256 != null && !gateReportSha256.matches("[0-9a-f]{64}")) throw new IllegalArgumentException("gateReportSha256 is a SHA-256 or null");
+        if (run != null && !run.isNull()) {
+            if (!run.isObject() || run.size() != 3 || !run.path("runId").isTextual() || !run.path("runRecordSha256").isTextual()
+                || !run.path("runRecordSha256").textValue().matches("[0-9a-f]{64}") || !run.path("offsetRanges").isObject())
+                throw new IllegalArgumentException("run is null or {runId, runRecordSha256, offsetRanges}");
+            run = run.deepCopy();
+        } else run = null;
         if (at < 0 || at > Json.MAX_SAFE) throw new IllegalArgumentException("at >= 0");
         inputReleases = inputReleases.deepCopy();
         replayFrom = replayFrom.deepCopy();
@@ -48,6 +56,7 @@ public record Generation(long generation, String status, String rulesDigest, Jso
         Json.putSafe(n, "headVersion", headVersion);
         n.set("releaseEvidence", releaseEvidence.deepCopy());
         n.put("gateReportSha256", gateReportSha256);
+        if (run == null) n.putNull("run"); else n.set("run", run.deepCopy());
         return Json.putSafe(n, "at", at);
     }
 
@@ -55,9 +64,10 @@ public record Generation(long generation, String status, String rulesDigest, Jso
         if (n == null || !n.isObject()) throw new IllegalArgumentException("a generation row is an object");
         JsonNode gate = n.get("gateReportSha256");
         if (gate == null || !(gate.isNull() || gate.isTextual())) throw new IllegalArgumentException("gateReportSha256 is text or null");
+        JsonNode run = required(n, "run");
         return new Generation(Json.safeLong(n.get("generation"), "generation", 1, Json.MAX_SAFE), Json.text(n, "status"), Json.text(n, "rulesDigest"),
             required(n, "inputReleases"), required(n, "replayFrom"), Json.safeLong(n.get("headVersion"), "headVersion", 1, Json.MAX_SAFE),
-            required(n, "releaseEvidence"), gate.isNull() ? null : gate.textValue(), Json.safeLong(n.get("at"), "at", Json.NON_NEGATIVE));
+            required(n, "releaseEvidence"), gate.isNull() ? null : gate.textValue(), run.isNull() ? null : run, Json.safeLong(n.get("at"), "at", Json.NON_NEGATIVE));
     }
 
     private static JsonNode required(JsonNode n, String field) {

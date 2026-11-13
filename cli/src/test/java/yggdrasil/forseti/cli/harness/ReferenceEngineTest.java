@@ -3,14 +3,15 @@ package yggdrasil.forseti.cli.harness;
 import static org.junit.jupiter.api.Assertions.*;
 
 import com.fasterxml.jackson.databind.JsonNode;
-import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.PrintStream;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.*;
+import java.time.Clock;
 import java.time.Instant;
+import java.time.ZoneOffset;
 import java.util.*;
 import java.util.function.UnaryOperator;
 import java.util.regex.Matcher;
@@ -19,20 +20,16 @@ import java.util.stream.Stream;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import yggdrasil.forseti.cli.Main;
+import yggdrasil.forseti.cli.generation.FileGenerationStore;
+import yggdrasil.forseti.cli.generation.GenerationCli;
 import yggdrasil.forseti.cli.recording.Recording;
 import yggdrasil.forseti.core.Json;
 import yggdrasil.forseti.core.canon.Canonical;
-import yggdrasil.forseti.core.generation.Generation;
 import yggdrasil.forseti.core.journal.*;
-import yggdrasil.forseti.core.release.FloorStore;
-import yggdrasil.forseti.core.release.HeadVerifier;
-import yggdrasil.forseti.core.release.ReleaseReader;
-import yggdrasil.forseti.core.release.TrustedKeys;
-import yggdrasil.forseti.core.rules.RuleSet;
 
 /** The reference harness on the committed {@code smoke} recording and on copies of it edited in temporary directories (the fixtures are
- *  never written). Generations are registered by hand, one {@code registered} row and its initial recovery declaration, the way
- *  {@code generation new} will write them; the head is verified here, by the test, at its signedAt + 60 s, never by the harness. */
+ *  never written). Generations are registered through {@code generation new} on the fixed clock of the head's signedAt + 60 s (the
+ *  verb verifies the head, never the harness), followed by the run preparation that writes the initial recovery declaration. */
 class ReferenceEngineTest {
     static final Path ROOT = Path.of("..").toAbsolutePath().normalize();
     static final Path FIXTURES = ROOT.resolve("fixtures"), SMOKE = FIXTURES.resolve("recordings/smoke"), REGISTRY = FIXTURES.resolve("registry");
@@ -249,10 +246,53 @@ class ReferenceEngineTest {
 
     @Test void aDifferentRulesDigestRefusesToStart() throws IOException {
         Path state = Files.createDirectories(tmp.resolve("state"));
-        register(state, 1, REGISTRY, "0".repeat(64));
+        Path definitions = Files.writeString(tmp.resolve("definitions.json"), "{}\n");   // the rules digest pins the definitions
+        JsonNode printed = register(state, 1, REGISTRY, definitions);
         ReferenceEngine.Refused r = assertThrows(ReferenceEngine.Refused.class, () -> ReferenceEngine.run(options(SMOKE, REGISTRY, state, 1, tmp.resolve("out"))));
         assertEquals("generation-rules-mismatch", r.code);
-        assertEquals("0".repeat(64), r.evidence.get("registered").asText());
+        assertEquals(printed.get("rulesDigest").asText(), r.evidence.get("registered").asText());
+        assertNotEquals(r.evidence.get("registered"), r.evidence.get("loaded"));
+    }
+
+    @Test void aRunOnAnotherRoutingThanTheDeclaredOneIsRefused() throws IOException {
+        Path state = Files.createDirectories(tmp.resolve("state"));
+        generationNew(state, REGISTRY, SMOKE, null);
+        assertEquals(0, forsetiRun(SMOKE, state, 1, tmp.resolve("first")).getKey(), "the first run writes the declaration");
+        byte[] declarations = Files.readAllBytes(state.resolve(ReferenceEngine.RECOVERY_CONTROL));
+        // the same recording under another routing: an extra field changes the routing digest, recomputed so the file stays well-formed
+        Path rec = copyTree(SMOKE, tmp.resolve("rec"));
+        ObjectNode routing = (ObjectNode) Json.read(rec.resolve("routing.json"));
+        routing.put("note", "another routing");
+        routing.remove("routingDigest");
+        routing.put("routingDigest", Canonical.digest(routing));
+        Json.write(rec.resolve("routing.json"), routing);
+        String other = Recording.open(rec).routing().routingDigest();
+        assertNotEquals(Recording.open(SMOKE).routing().routingDigest(), other);
+        Map.Entry<Integer, String> r = forsetiRun(rec, state, 1, tmp.resolve("second"));
+        assertEquals(1, r.getKey(), r.getValue());
+        JsonNode refusal = Json.read(r.getValue().getBytes(StandardCharsets.UTF_8));
+        assertEquals("generation-routing-mismatch", refusal.get("refusal").asText());
+        assertEquals(Recording.open(SMOKE).routing().routingDigest(), refusal.get("declared").asText());
+        assertEquals(other, refusal.get("recording").asText());
+        assertArrayEquals(declarations, Files.readAllBytes(state.resolve(ReferenceEngine.RECOVERY_CONTROL)), "nothing is declared");
+        assertFalse(Files.exists(tmp.resolve("second")), "a refused run writes nothing");
+    }
+
+    @Test void anOnlineRunRecordsItsRegistrationAndNullReplayFields() throws IOException {
+        Path state = Files.createDirectories(tmp.resolve("state"));
+        JsonNode printed = generationNew(state, REGISTRY, SMOKE, null);
+        Map.Entry<Integer, String> r = forsetiRun(SMOKE, state, 1, tmp.resolve("out"));
+        assertEquals(0, r.getKey(), r.getValue());
+        JsonNode run = Json.read(tmp.resolve("out").resolve("run.json"));
+        String stored = Canonical.digestOf(Arrays.copyOf(Files.readAllBytes(state.resolve(FileGenerationStore.FILE)),
+            Files.readAllBytes(state.resolve(FileGenerationStore.FILE)).length - 1));
+        assertEquals(printed.get("registeredRowSha256").asText(), run.get("registeredRowSha256").asText());
+        assertEquals(stored, run.get("registeredRowSha256").asText(), "the raw digest of the stored line");
+        assertEquals("line2", run.get("scope").asText());
+        assertEquals(1, run.get("generation").longValue());
+        assertTrue(run.has("replay") && run.get("replay").isNull(), "replay is null for an online run");
+        assertTrue(run.has("originalRecordingManifestSha256") && run.get("originalRecordingManifestSha256").isNull());
+        assertEquals(printed.get("rulesDigest").asText(), run.path("fixtureDigests").get("rulesDigest").asText());
     }
 
     @Test void aRunUsesThePinnedSnapshotNotTheCurrentHead() throws IOException {
@@ -501,51 +541,50 @@ class ReferenceEngineTest {
         return out;
     }
 
-    /** Appends the {@code registered} row of generation {@code n} and its initial recovery declaration, as {@code generation new} will:
-     *  the head verified at its signedAt + 60 s, the release read, the rule set loaded with the smoke definitions. */
-    static void register(Path state, long n, Path registry, String rulesDigestOverride) throws IOException {
-        register(state, n, registry, SMOKE, rulesDigestOverride);
+    /** Registers generation {@code n} through {@code generation new} on the smoke recording (with {@code definitions} instead of the
+     *  recording's when given) and runs the run preparation, as {@code forseti run} does before the engine. */
+    static JsonNode register(Path state, long n, Path registry, Path definitions) throws IOException {
+        return register(state, n, registry, SMOKE, definitions);
     }
 
-    /** The same for the rule and definitions of {@code recording}'s manifest. */
-    static void register(Path state, long n, Path registry, Path recording, String rulesDigestOverride) throws IOException {
-        Path m = registry.resolve("mappings");
+    /** The same for the stream, rule and definitions of {@code recording}'s manifest: {@code generation new} in-process with the fixed
+     *  clock of the head's signedAt + 60 s and the fixture keys; the number it allocates must be {@code n}. Returns what it printed. */
+    static JsonNode register(Path state, long n, Path registry, Path recording, Path definitions) throws IOException {
+        JsonNode printed = generationNew(state, registry, recording, definitions);
+        assertEquals(n, printed.get("generation").longValue(), "the verb allocates the next number");
+        GenerationCli.prepareRun(state, n, recording);
+        return printed;
+    }
+
+    /** {@code forseti generation new} in-process on the fixed clock; exit 0 required. */
+    static JsonNode generationNew(Path state, Path registry, Path recording, Path definitions) {
         JsonNode rule = Json.read(recording.resolve("manifest.json")).get("rule");
         String stream = rule.get("stream").asText();
-        JsonNode statement = Json.read(Base64.getDecoder().decode(Json.read(m.resolve("head-attestations/" + stream + ".dsse.json")).get("payload").asText()));
-        long now = Instant.parse(statement.path("predicate").path("signedAt").asText()).toEpochMilli() + 60_000;
-        HeadVerifier.Head h = HeadVerifier.verify(m, stream, TrustedKeys.load(FIXTURES.resolve("trusted-keys.jsonl")), new FloorStore(state), now);
-        RuleSet rules = RuleSet.load(ReleaseReader.read(m, h), rule.get("attributionRuleId").asText(), rule.get("attributionRuleVersion").asText(),
-            Json.read(recording.resolve("manifest.json")).get("definitions"));
-        ObjectNode head = Json.object().put("stream", h.stream()).put("releaseId", h.releaseId()).put("version", h.version()).put("releaseSha256", h.releaseSha256())
-            .put("headFile", h.headFile()).put("headSha256", h.headSha256()).put("attestationFile", h.attestationFile()).put("attestationSha256", h.attestationSha256())
-            .put("statementSha256", h.statementSha256());
-        Json.putSafe(head, "headVersion", h.headVersion());
-        head.put("signedAt", h.signedAt()).put("expires", h.expires()).put("publishedBy", h.publishedBy()).put("approvedBy", h.approvedBy());
-        ObjectNode evidence = Json.object();
-        evidence.set("head", head);
-        evidence.put("releaseSha256", h.releaseSha256());
-        evidence.set("pins", rules.pins());
-        ArrayNode inputs = Json.JSON.createArrayNode();
-        ObjectNode in = inputs.addObject().put("stream", h.stream()).put("releaseId", h.releaseId()).put("version", h.version()).put("releaseSha256", h.releaseSha256());
-        Json.putSafe(in, "headVersion", h.headVersion()).put("statementSha256", h.statementSha256());
-        Generation g = new Generation(n, Generation.REGISTERED, rulesDigestOverride != null ? rulesDigestOverride : rules.rulesDigest(), inputs, Json.object(),
-            h.headVersion(), evidence, null, now);
-        ObjectNode line = Json.object().put("topic", "forseti.generations").put("key", stream);
-        line.putObject("headers").put("forseti-generation", Long.toString(n));
-        line.set("value", g.toJson());
-        append(state.resolve("generations.jsonl"), line);
-        ObjectNode decl = Json.putSafe(Json.object(), "generation", n);
-        decl.putNull("injectionId").put("stage", 1).putNull("epochBefore").put("targetEpoch", 0).put("lastWrittenCutId", 0)
-            .put("routingDigest", Recording.open(recording).routing().routingDigest());
-        append(state.resolve("recovery-control.jsonl"), decl);
+        Path m = registry.resolve("mappings");
+        List<String> args = new ArrayList<>(List.of("new", "--state", state.toString(), "--mappings", m.toString(),
+            "--trusted-keys", FIXTURES.resolve("trusted-keys.jsonl").toString(), "--stream", stream,
+            "--rule", rule.get("attributionRuleId").asText() + "@" + rule.get("attributionRuleVersion").asText(), "--recording", recording.toString()));
+        if (definitions != null) args.addAll(List.of("--definitions", definitions.toString()));
+        ByteArrayOutputStream out = new ByteArrayOutputStream(), err = new ByteArrayOutputStream();
+        int exit = GenerationCli.run(args.toArray(String[]::new), new PrintStream(out, true, StandardCharsets.UTF_8),
+            new PrintStream(err, true, StandardCharsets.UTF_8), clock(m, stream));
+        assertEquals(0, exit, out.toString(StandardCharsets.UTF_8) + err.toString(StandardCharsets.UTF_8));
+        return Json.read(out.toString(StandardCharsets.UTF_8).strip().getBytes(StandardCharsets.UTF_8));
     }
 
-    static void append(Path f, JsonNode line) throws IOException {
-        byte[] b = Canonical.bytes(line);
-        byte[] withLf = Arrays.copyOf(b, b.length + 1);
-        withLf[b.length] = '\n';
-        Files.write(f, withLf, StandardOpenOption.CREATE, StandardOpenOption.APPEND);
+    /** The fixture clock: the head's signedAt + 60 s. */
+    static Clock clock(Path mappings, String stream) {
+        JsonNode statement = Json.read(Base64.getDecoder().decode(Json.read(mappings.resolve("head-attestations/" + stream + ".dsse.json")).get("payload").asText()));
+        return Clock.fixed(Instant.parse(statement.path("predicate").path("signedAt").asText()).plusSeconds(60), ZoneOffset.UTC);
+    }
+
+    /** {@code forseti run --engine core} through {@code Main} (the run preparation, then the harness): exit code, stdout. */
+    static Map.Entry<Integer, String> forsetiRun(Path recording, Path state, long generation, Path out) {
+        ByteArrayOutputStream so = new ByteArrayOutputStream(), se = new ByteArrayOutputStream();
+        int exit = Main.run(new String[]{"run", "--engine", "core", "--recording", recording.toString(), "--registry", REGISTRY.toString(),
+            "--state", state.toString(), "--generation", Long.toString(generation), "--out", out.toString(), "--artifact-sha256", ARTIFACT},
+            new PrintStream(so, true, StandardCharsets.UTF_8), new PrintStream(se, true, StandardCharsets.UTF_8));
+        return Map.entry(exit, so.toString(StandardCharsets.UTF_8).strip() + se.toString(StandardCharsets.UTF_8).strip());
     }
 
     static List<Long> cutIds() { return Recording.open(SMOKE).batches().stream().map(Recording.Batch::cutId).toList(); }

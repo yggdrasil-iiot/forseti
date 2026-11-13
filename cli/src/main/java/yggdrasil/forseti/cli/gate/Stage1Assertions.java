@@ -103,7 +103,7 @@ final class Stage1Assertions {
         ArrayNode inputs = Json.JSON.createArrayNode();
         ObjectNode in = inputs.addObject().put("stream", h.stream()).put("releaseId", h.releaseId()).put("version", h.version()).put("releaseSha256", h.releaseSha256());
         Json.putSafe(in, "headVersion", h.headVersion()).put("statementSha256", h.statementSha256());
-        Generation g = new Generation(1, Generation.REGISTERED, rules.rulesDigest(), inputs, Json.object(), h.headVersion(), evidence, null, now);
+        Generation g = new Generation(1, Generation.REGISTERED, rules.rulesDigest(), inputs, Json.object(), h.headVersion(), evidence, null, null, now);
         ObjectNode line = Json.object().put("topic", "forseti.generations").put("key", stream);
         line.putObject("headers").put("forseti-generation", "1");
         line.set("value", g.toJson());

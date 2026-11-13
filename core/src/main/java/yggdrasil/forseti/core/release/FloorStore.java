@@ -5,18 +5,14 @@ import yggdrasil.forseti.core.Json;
 import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.channels.FileChannel;
-import java.nio.channels.FileLock;
 import java.nio.file.*;
 import java.util.*;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.locks.ReentrantLock;
 import java.util.stream.Stream;
 
 /** The head version floor of each stream at {@code <stateDir>/head-floors/<stream>.json}, in Vor's shape
  *  {@code {"headVersion": n, "statementSha256": "<hex>"}} (spec 84, 553): it never goes down, and one version always carries one
- *  statement. {@link #update} reads, compares and raises inside one lock hold: an in-JVM lock keyed by the canonical path of
- *  {@code head-floors/.lock} (overlapping FileLock requests from one JVM throw instead of waiting), then the FileLock on that
- *  file against other processes. A raise is written to a temporary file, forced to disk and moved into place atomically. */
+ *  statement. {@link #update} reads, compares and raises inside one {@link LockedFile} hold of {@code head-floors/.lock} (the
+ *  in-JVM lock, then the FileLock against other processes). A raise is written to a temporary file, forced to disk and moved into place atomically. */
 public final class FloorStore {
     public record Floor(long headVersion, String statementSha256) {}
     public sealed interface Outcome {
@@ -25,7 +21,6 @@ public final class FloorStore {
         record Rollback(Floor floor) implements Outcome {}
     }
     public static final Outcome RAISED = new Outcome.Raised(), UNCHANGED = new Outcome.Unchanged();
-    private static final ConcurrentHashMap<Path, ReentrantLock> LOCKS = new ConcurrentHashMap<>();
 
     private final Path dir;
     public FloorStore(Path stateDir) { this.dir = stateDir.resolve("head-floors"); }
@@ -49,11 +44,7 @@ public final class FloorStore {
     public Outcome update(String stream, long candidate, String statementSha, boolean raise) {
         try {
             Files.createDirectories(dir);
-            Path lockFile = dir.resolve(".lock");
-            if (!Files.exists(lockFile)) { try { Files.createFile(lockFile); } catch (FileAlreadyExistsException ignored) { } }
-            ReentrantLock jvm = LOCKS.computeIfAbsent(lockFile.toRealPath(), k -> new ReentrantLock());
-            jvm.lock();
-            try (FileChannel ch = FileChannel.open(lockFile, StandardOpenOption.WRITE); FileLock ignored = ch.lock()) {
+            return LockedFile.with(dir.resolve(".lock"), () -> {
                 Optional<Floor> floor = get(stream);
                 if (floor.isPresent()) {
                     Floor f = floor.get();
@@ -62,7 +53,7 @@ public final class FloorStore {
                 } else if (!raise) return UNCHANGED;
                 write(stream, new Floor(candidate, statementSha));
                 return RAISED;
-            } finally { jvm.unlock(); }
+            });
         } catch (IOException e) { throw new IllegalStateException("head floor " + stream + ": " + e.getMessage(), e); }
     }
 
