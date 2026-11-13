@@ -149,162 +149,162 @@
     {
       "id": "I-1",
       "pr": 4,
-      "description": "held-back-10min vs baseline: built from its committed scenario into build/recordings/ and verified against its lock, run under a hand-registered generation, equal to the oracle at every cut (recomputed digests, dispositions per identity), integrity and pins cross-check clean, expected.json at the last cut and transitions[] at the bracketing cuts; every work record and sample row digest equal at the settled cut (comparable-cut predicate)"
+      "description": "held-back-10min vs baseline: built from its committed scenario into build/recordings/ and verified against its lock, run under a generation registered through generation new, equal to the oracle at every cut (recomputed digests, dispositions per identity), integrity and pins cross-check clean, expected.json at the last cut and transitions[] at the bracketing cuts; every work record and sample row digest equal at the settled cut (comparable-cut predicate)"
     },
     {
       "id": "I-2",
       "pr": 4,
-      "description": "corrections: built from its committed scenario into build/recordings/ and verified against its lock, run under a hand-registered generation, equal to the oracle at every cut (recomputed digests, dispositions per identity), integrity and pins cross-check clean, expected.json at the last cut and transitions[] at the bracketing cuts; visit 2 provisional at cutA and complete at cutB of leave + L"
+      "description": "corrections: built from its committed scenario into build/recordings/ and verified against its lock, run under a generation registered through generation new, equal to the oracle at every cut (recomputed digests, dispositions per identity), integrity and pins cross-check clean, expected.json at the last cut and transitions[] at the bracketing cuts; visit 2 provisional at cutA and complete at cutB of leave + L"
     },
     {
       "id": "I-2b",
       "pr": 4,
-      "description": "corrections: built from its committed scenario into build/recordings/ and verified against its lock, run under a hand-registered generation, equal to the oracle at every cut (recomputed digests, dispositions per identity), integrity and pins cross-check clean, expected.json at the last cut and transitions[] at the bracketing cuts; visit 5's sample rows unattributed no-occupancy first, then attributed; members[] include them"
+      "description": "corrections: built from its committed scenario into build/recordings/ and verified against its lock, run under a generation registered through generation new, equal to the oracle at every cut (recomputed digests, dispositions per identity), integrity and pins cross-check clean, expected.json at the last cut and transitions[] at the bracketing cuts; visit 5's sample rows unattributed no-occupancy first, then attributed; members[] include them"
     },
     {
       "id": "I-3",
       "pr": 4,
-      "description": "bad-quality: built from its committed scenario into build/recordings/ and verified against its lock, run under a hand-registered generation, equal to the oracle at every cut (recomputed digests, dispositions per identity), integrity and pins cross-check clean, expected.json at the last cut and transitions[] at the bracketing cuts; 7 rows unattributed bad-quality; visit 1 members[nutrunner1-torque] observedPeriods 60, badSlots 7, count 53; insufficient bad-share-exceeded"
+      "description": "bad-quality: built from its committed scenario into build/recordings/ and verified against its lock, run under a generation registered through generation new, equal to the oracle at every cut (recomputed digests, dispositions per identity), integrity and pins cross-check clean, expected.json at the last cut and transitions[] at the bracketing cuts; 7 rows unattributed bad-quality; visit 1 members[nutrunner1-torque] observedPeriods 60, badSlots 7, count 53; insufficient bad-share-exceeded"
     },
     {
       "id": "I-4",
       "pr": 4,
-      "description": "overlap: built from its committed scenario into build/recordings/ and verified against its lock, run under a hand-registered generation, equal to the oracle at every cut (recomputed digests, dispositions per identity), integrity and pins cross-check clean, expected.json at the last cut and transitions[] at the bracketing cuts; visit 3 and the extra visit retracted overlap; samples in one actual interval attributed to it, in [1000000, 1020000) unattributed ambiguous; station2's two visits complete with unknownActivityPeriods 3; 48 station2 Running rows in [1557000, 1605000) unattributed ambiguous"
+      "description": "overlap: built from its committed scenario into build/recordings/ and verified against its lock, run under a generation registered through generation new, equal to the oracle at every cut (recomputed digests, dispositions per identity), integrity and pins cross-check clean, expected.json at the last cut and transitions[] at the bracketing cuts; visit 3 and the extra visit retracted overlap; samples in one actual interval attributed to it, in [1000000, 1020000) unattributed ambiguous; station2's two visits complete with unknownActivityPeriods 3; 48 station2 Running rows in [1557000, 1605000) unattributed ambiguous"
     },
     {
       "id": "I-5",
       "pr": 4,
-      "description": "redelivery: built from its committed scenario into build/recordings/ and verified against its lock, run under a hand-registered generation, equal to the oracle at every cut (recomputed digests, dispositions per identity), integrity and pins cross-check clean, expected.json at the last cut and transitions[] at the bracketing cuts; the second deliveries duplicate identical-redelivery; live row counts equal baseline's"
+      "description": "redelivery: built from its committed scenario into build/recordings/ and verified against its lock, run under a generation registered through generation new, equal to the oracle at every cut (recomputed digests, dispositions per identity), integrity and pins cross-check clean, expected.json at the last cut and transitions[] at the bracketing cuts; the second deliveries duplicate identical-redelivery; live row counts equal baseline's"
     },
     {
       "id": "I-6",
       "pr": 4,
-      "description": "horizon-no-departure: built from its committed scenario into build/recordings/ and verified against its lock, run under a hand-registered generation, equal to the oracle at every cut (recomputed digests, dispositions per identity), integrity and pins cross-check clean, expected.json at the last cut and transitions[] at the bracketing cuts; visit 8 provisional at cutA (missingPeriods 0, reasons []) and insufficient missing-departure at cutB of enter + H = 88260000; visits 1-7 equal baseline's; visit 9 provisional then complete at 89280000, never retracted; visit 8 without overlap"
+      "description": "horizon-no-departure: built from its committed scenario into build/recordings/ and verified against its lock, run under a generation registered through generation new, equal to the oracle at every cut (recomputed digests, dispositions per identity), integrity and pins cross-check clean, expected.json at the last cut and transitions[] at the bracketing cuts; visit 8 provisional at cutA (missingPeriods 0, reasons []) and insufficient missing-departure at cutB of enter + H = 88260000; visits 1-7 equal baseline's; visit 9 provisional then complete at 89280000, never retracted; visit 8 without overlap"
     },
     {
       "id": "I-7",
       "pr": 4,
-      "description": "session: built from its committed scenario into build/recordings/ and verified against its lock, run under a hand-registered generation, equal to the oracle at every cut (recomputed digests, dispositions per identity), integrity and pins cross-check clean, expected.json at the last cut and transitions[] at the bracketing cuts; 120 nutrunner1 sample rows unattributed no-occupancy active true; no complete visit for that window"
+      "description": "session: built from its committed scenario into build/recordings/ and verified against its lock, run under a generation registered through generation new, equal to the oracle at every cut (recomputed digests, dispositions per identity), integrity and pins cross-check clean, expected.json at the last cut and transitions[] at the bracketing cuts; 120 nutrunner1 sample rows unattributed no-occupancy active true; no complete visit for that window"
     },
     {
       "id": "I-8",
       "pr": 4,
-      "description": "session: built from its committed scenario into build/recordings/ and verified against its lock, run under a hand-registered generation, equal to the oracle at every cut (recomputed digests, dispositions per identity), integrity and pins cross-check clean, expected.json at the last cut and transitions[] at the bracketing cuts; visit 3 insufficient session-gap, equipmentEvidence[nutrunner1].coverage.sessionGaps 1"
+      "description": "session: built from its committed scenario into build/recordings/ and verified against its lock, run under a generation registered through generation new, equal to the oracle at every cut (recomputed digests, dispositions per identity), integrity and pins cross-check clean, expected.json at the last cut and transitions[] at the bracketing cuts; visit 3 insufficient session-gap, equipmentEvidence[nutrunner1].coverage.sessionGaps 1"
     },
     {
       "id": "I-9",
       "pr": 4,
-      "description": "clock-plus-30: built from its committed scenario into build/recordings/ and verified against its lock, run under a hand-registered generation, equal to the oracle at every cut (recomputed digests, dispositions per identity), integrity and pins cross-check clean, expected.json at the last cut and transitions[] at the bracketing cuts; every sample inside a visit's [enter, leave) attributed to the same visit as in baseline; the sample at original 550000 attributed to visit 1"
+      "description": "clock-plus-30: built from its committed scenario into build/recordings/ and verified against its lock, run under a generation registered through generation new, equal to the oracle at every cut (recomputed digests, dispositions per identity), integrity and pins cross-check clean, expected.json at the last cut and transitions[] at the bracketing cuts; every sample inside a visit's [enter, leave) attributed to the same visit as in baseline; the sample at original 550000 attributed to visit 1"
     },
     {
       "id": "I-9b",
       "pr": 4,
-      "description": "clock-plus-90: built from its committed scenario into build/recordings/ and verified against its lock, run under a hand-registered generation, equal to the oracle at every cut (recomputed digests, dispositions per identity), integrity and pins cross-check clean, expected.json at the last cut and transitions[] at the bracketing cuts; per-sample attribution equals expected.json (three bands)"
+      "description": "clock-plus-90: built from its committed scenario into build/recordings/ and verified against its lock, run under a generation registered through generation new, equal to the oracle at every cut (recomputed digests, dispositions per identity), integrity and pins cross-check clean, expected.json at the last cut and transitions[] at the bracketing cuts; per-sample attribution equals expected.json (three bands)"
     },
     {
       "id": "I-10",
       "pr": 4,
-      "description": "corrections: built from its committed scenario into build/recordings/ and verified against its lock, run under a hand-registered generation, equal to the oracle at every cut (recomputed digests, dispositions per identity), integrity and pins cross-check clean, expected.json at the last cut and transitions[] at the bracketing cuts; visit 4 retracted error-declaration, errorReason did_not_occur"
+      "description": "corrections: built from its committed scenario into build/recordings/ and verified against its lock, run under a generation registered through generation new, equal to the oracle at every cut (recomputed digests, dispositions per identity), integrity and pins cross-check clean, expected.json at the last cut and transitions[] at the bracketing cuts; visit 4 retracted error-declaration, errorReason did_not_occur"
     },
     {
       "id": "I-10b",
       "pr": 4,
-      "description": "corrections-10b-before vs -after: built from its committed scenario into build/recordings/ and verified against its lock, run under a hand-registered generation, equal to the oracle at every cut (recomputed digests, dispositions per identity), integrity and pins cross-check clean, expected.json at the last cut and transitions[] at the bracketing cuts; the same settled body digest of visit 8 (retracted error-declaration did_not_occur) in both orders; in -before the declaration accepted (part errorDeclaration) before the original accepted (part event)"
+      "description": "corrections-10b-before vs -after: built from its committed scenario into build/recordings/ and verified against its lock, run under a generation registered through generation new, equal to the oracle at every cut (recomputed digests, dispositions per identity), integrity and pins cross-check clean, expected.json at the last cut and transitions[] at the bracketing cuts; the same settled body digest of visit 8 (retracted error-declaration did_not_occur) in both orders; in -before the declaration accepted (part errorDeclaration) before the original accepted (part event)"
     },
     {
       "id": "I-10c",
       "pr": 4,
-      "description": "corrections-10c and horizon-reopened: built from its committed scenario into build/recordings/ and verified against its lock, run under a hand-registered generation, equal to the oracle at every cut (recomputed digests, dispositions per identity), integrity and pins cross-check clean, expected.json at the last cut and transitions[] at the bracketing cuts; visit 8 complete at the cut of W1 2640999, the declaration accepted late-after-settlement, the visit provisional with reasons []; in horizon-reopened insufficient missing-departure at enter + H"
+      "description": "corrections-10c and horizon-reopened: built from its committed scenario into build/recordings/ and verified against its lock, run under a generation registered through generation new, equal to the oracle at every cut (recomputed digests, dispositions per identity), integrity and pins cross-check clean, expected.json at the last cut and transitions[] at the bracketing cuts; visit 8 complete at the cut of W1 2640999, the declaration accepted late-after-settlement, the visit provisional with reasons []; in horizon-reopened insufficient missing-departure at enter + H"
     },
     {
       "id": "I-10d",
       "pr": 4,
-      "description": "corrections: built from its committed scenario into build/recordings/ and verified against its lock, run under a hand-registered generation, equal to the oracle at every cut (recomputed digests, dispositions per identity), integrity and pins cross-check clean, expected.json at the last cut and transitions[] at the bracketing cuts; both deliveries of occ-1 conflict identity-conflict; visit 1 retracted input-conflict"
+      "description": "corrections: built from its committed scenario into build/recordings/ and verified against its lock, run under a generation registered through generation new, equal to the oracle at every cut (recomputed digests, dispositions per identity), integrity and pins cross-check clean, expected.json at the last cut and transitions[] at the bracketing cuts; both deliveries of occ-1 conflict identity-conflict; visit 1 retracted input-conflict"
     },
     {
       "id": "I-10e",
       "pr": 4,
-      "description": "horizon-correction-beyond: built from its committed scenario into build/recordings/ and verified against its lock, run under a hand-registered generation, equal to the oracle at every cut (recomputed digests, dispositions per identity), integrity and pins cross-check clean, expected.json at the last cut and transitions[] at the bracketing cuts; the cut before the declaration's batch reports W1 87960999 >= onlineExpiresAt; the declaration replay-required correction-beyond-horizon; visit 2 unchanged complete"
+      "description": "horizon-correction-beyond: built from its committed scenario into build/recordings/ and verified against its lock, run under a generation registered through generation new, equal to the oracle at every cut (recomputed digests, dispositions per identity), integrity and pins cross-check clean, expected.json at the last cut and transitions[] at the bracketing cuts; the cut before the declaration's batch reports W1 87960999 >= onlineExpiresAt; the declaration replay-required correction-beyond-horizon; visit 2 unchanged complete"
     },
     {
       "id": "I-10f",
       "pr": 4,
-      "description": "corrections: built from its committed scenario into build/recordings/ and verified against its lock, run under a hand-registered generation, equal to the oracle at every cut (recomputed digests, dispositions per identity), integrity and pins cross-check clean, expected.json at the last cut and transitions[] at the bracketing cuts; the declaration and the corrective departure accepted late-after-settlement; visit 6 complete, provisional, then complete with leave 1565000 once W1 >= 1565000 + L"
+      "description": "corrections: built from its committed scenario into build/recordings/ and verified against its lock, run under a generation registered through generation new, equal to the oracle at every cut (recomputed digests, dispositions per identity), integrity and pins cross-check clean, expected.json at the last cut and transitions[] at the bracketing cuts; the declaration and the corrective departure accepted late-after-settlement; visit 6 complete, provisional, then complete with leave 1565000 once W1 >= 1565000 + L"
     },
     {
       "id": "I-11",
       "pr": 4,
-      "description": "plc-stamped: built from its committed scenario into build/recordings/ and verified against its lock, run under a hand-registered generation, equal to the oracle at every cut (recomputed digests, dispositions per identity), integrity and pins cross-check clean, expected.json at the last cut and transitions[] at the bracketing cuts; visit 3's samples attributed with reason identity-mismatch, attributedTo unchanged"
+      "description": "plc-stamped: built from its committed scenario into build/recordings/ and verified against its lock, run under a generation registered through generation new, equal to the oracle at every cut (recomputed digests, dispositions per identity), integrity and pins cross-check clean, expected.json at the last cut and transitions[] at the bracketing cuts; visit 3's samples attributed with reason identity-mismatch, attributedTo unchanged"
     },
     {
       "id": "I-11b",
       "pr": 4,
-      "description": "plc-held-back vs plc-nocheck (stream line2-plc-nocheck): built from its committed scenario into build/recordings/ and verified against its lock, run under a hand-registered generation, equal to the oracle at every cut (recomputed digests, dispositions per identity), integrity and pins cross-check clean, expected.json at the last cut and transitions[] at the bracketing cuts; bodies equal at the settled cut; at least one complete visit"
+      "description": "plc-held-back vs plc-nocheck (stream line2-plc-nocheck): built from its committed scenario into build/recordings/ and verified against its lock, run under a generation registered through generation new, equal to the oracle at every cut (recomputed digests, dispositions per identity), integrity and pins cross-check clean, expected.json at the last cut and transitions[] at the bracketing cuts; bodies equal at the settled cut; at least one complete visit"
     },
     {
       "id": "I-11c",
       "pr": 4,
-      "description": "plc-stamped: built from its committed scenario into build/recordings/ and verified against its lock, run under a hand-registered generation, equal to the oracle at every cut (recomputed digests, dispositions per identity), integrity and pins cross-check clean, expected.json at the last cut and transitions[] at the bracketing cuts; the mixed snapshot's samples incoherent-snapshot"
+      "description": "plc-stamped: built from its committed scenario into build/recordings/ and verified against its lock, run under a generation registered through generation new, equal to the oracle at every cut (recomputed digests, dispositions per identity), integrity and pins cross-check clean, expected.json at the last cut and transitions[] at the bracketing cuts; the mixed snapshot's samples incoherent-snapshot"
     },
     {
       "id": "I-11d",
       "pr": 4,
-      "description": "plc-stamped: built from its committed scenario into build/recordings/ and verified against its lock, run under a hand-registered generation, equal to the oracle at every cut (recomputed digests, dispositions per identity), integrity and pins cross-check clean, expected.json at the last cut and transitions[] at the bracketing cuts; visit 7 insufficient missing-visit-close"
+      "description": "plc-stamped: built from its committed scenario into build/recordings/ and verified against its lock, run under a generation registered through generation new, equal to the oracle at every cut (recomputed digests, dispositions per identity), integrity and pins cross-check clean, expected.json at the last cut and transitions[] at the bracketing cuts; visit 7 insufficient missing-visit-close"
     },
     {
       "id": "I-11e",
       "pr": 4,
-      "description": "plc-horizon-no-end: built from its committed scenario into build/recordings/ and verified against its lock, run under a hand-registered generation, equal to the oracle at every cut (recomputed digests, dispositions per identity), integrity and pins cross-check clean, expected.json at the last cut and transitions[] at the bracketing cuts; V3 insufficient missing-departure once W1 >= enter + H"
+      "description": "plc-horizon-no-end: built from its committed scenario into build/recordings/ and verified against its lock, run under a generation registered through generation new, equal to the oracle at every cut (recomputed digests, dispositions per identity), integrity and pins cross-check clean, expected.json at the last cut and transitions[] at the bracketing cuts; V3 insufficient missing-departure once W1 >= enter + H"
     },
     {
       "id": "I-12",
       "pr": 4,
-      "description": "stage2: built from its committed scenario into build/recordings/ and verified against its lock, run under a hand-registered generation, equal to the oracle at every cut (recomputed digests, dispositions per identity), integrity and pins cross-check clean, expected.json at the last cut and transitions[] at the bracketing cuts; inc-1 units 1, 3, 5 affected-candidate equipment-activity; set settled true at the last cut"
+      "description": "stage2: built from its committed scenario into build/recordings/ and verified against its lock, run under a generation registered through generation new, equal to the oracle at every cut (recomputed digests, dispositions per identity), integrity and pins cross-check clean, expected.json at the last cut and transitions[] at the bracketing cuts; inc-1 units 1, 3, 5 affected-candidate equipment-activity; set settled true at the last cut"
     },
     {
       "id": "I-13",
       "pr": 4,
-      "description": "stage2-early: built from its committed scenario into build/recordings/ and verified against its lock, run under a hand-registered generation, equal to the oracle at every cut (recomputed digests, dispositions per identity), integrity and pins cross-check clean, expected.json at the last cut and transitions[] at the bracketing cuts; the first set row has units [], settled false, coverage unknown with unknownActivityPeriods 990; it falls cut by cut; units grow one per visit; settled once W2 >= 2310000; complete at the last cut"
+      "description": "stage2-early: built from its committed scenario into build/recordings/ and verified against its lock, run under a generation registered through generation new, equal to the oracle at every cut (recomputed digests, dispositions per identity), integrity and pins cross-check clean, expected.json at the last cut and transitions[] at the bracketing cuts; the first set row has units [], settled false, coverage unknown with unknownActivityPeriods 990; it falls cut by cut; units grow one per visit; settled once W2 >= 2310000; complete at the last cut"
     },
     {
       "id": "I-14",
       "pr": 4,
-      "description": "stage2: built from its committed scenario into build/recordings/ and verified against its lock, run under a hand-registered generation, equal to the oracle at every cut (recomputed digests, dispositions per identity), integrity and pins cross-check clean, expected.json at the last cut and transitions[] at the bracketing cuts; inc-2 while open: T1 visits affected-candidate, T2-only and no-tool no-equipment-activity; after revision 2 visits 6-8 interval-narrowed, 3 and 5 affected-candidate, open false"
+      "description": "stage2: built from its committed scenario into build/recordings/ and verified against its lock, run under a generation registered through generation new, equal to the oracle at every cut (recomputed digests, dispositions per identity), integrity and pins cross-check clean, expected.json at the last cut and transitions[] at the bracketing cuts; inc-2 while open: T1 visits affected-candidate, T2-only and no-tool no-equipment-activity; after revision 2 visits 6-8 interval-narrowed, 3 and 5 affected-candidate, open false"
     },
     {
       "id": "I-15",
       "pr": 4,
-      "description": "stage2: built from its committed scenario into build/recordings/ and verified against its lock, run under a hand-registered generation, equal to the oracle at every cut (recomputed digests, dispositions per identity), integrity and pins cross-check clean, expected.json at the last cut and transitions[] at the bracketing cuts; inc-3 every unit not-affected-within-scope incident-withdrawn; resolution withdrawn, open false, settled true, never complete"
+      "description": "stage2: built from its committed scenario into build/recordings/ and verified against its lock, run under a generation registered through generation new, equal to the oracle at every cut (recomputed digests, dispositions per identity), integrity and pins cross-check clean, expected.json at the last cut and transitions[] at the bracketing cuts; inc-3 every unit not-affected-within-scope incident-withdrawn; resolution withdrawn, open false, settled true, never complete"
     },
     {
       "id": "I-16",
       "pr": 4,
-      "description": "stage2: built from its committed scenario into build/recordings/ and verified against its lock, run under a hand-registered generation, equal to the oracle at every cut (recomputed digests, dispositions per identity), integrity and pins cross-check clean, expected.json at the last cut and transitions[] at the bracketing cuts; inc-1 T2-only visit 2 no-equipment-activity, both-tool visit 3 affected-candidate, no-tool visit 4 no-equipment-activity"
+      "description": "stage2: built from its committed scenario into build/recordings/ and verified against its lock, run under a generation registered through generation new, equal to the oracle at every cut (recomputed digests, dispositions per identity), integrity and pins cross-check clean, expected.json at the last cut and transitions[] at the bracketing cuts; inc-1 T2-only visit 2 no-equipment-activity, both-tool visit 3 affected-candidate, no-tool visit 4 no-equipment-activity"
     },
     {
       "id": "I-17",
       "pr": 4,
-      "description": "stage2: built from its committed scenario into build/recordings/ and verified against its lock, run under a hand-registered generation, equal to the oracle at every cut (recomputed digests, dispositions per identity), integrity and pins cross-check clean, expected.json at the last cut and transitions[] at the bracketing cuts; inc-1 coverage.unattributedActivityPeriods 28, status incomplete; 56 nutrunner1 rows unattributed no-occupancy active true"
+      "description": "stage2: built from its committed scenario into build/recordings/ and verified against its lock, run under a generation registered through generation new, equal to the oracle at every cut (recomputed digests, dispositions per identity), integrity and pins cross-check clean, expected.json at the last cut and transitions[] at the bracketing cuts; inc-1 coverage.unattributedActivityPeriods 28, status incomplete; 56 nutrunner1 rows unattributed no-occupancy active true"
     },
     {
       "id": "I-18",
       "pr": 4,
-      "description": "cascade: built from its committed scenario into build/recordings/ and verified against its lock, run under a hand-registered generation, equal to the oracle at every cut (recomputed digests, dispositions per identity), integrity and pins cross-check clean, expected.json at the last cut and transitions[] at the bracketing cuts; inc-1 unit 1 affected-candidate then not-affected-within-scope basis-retracted-error-declaration in the cut of the retraction"
+      "description": "cascade: built from its committed scenario into build/recordings/ and verified against its lock, run under a generation registered through generation new, equal to the oracle at every cut (recomputed digests, dispositions per identity), integrity and pins cross-check clean, expected.json at the last cut and transitions[] at the bracketing cuts; inc-1 unit 1 affected-candidate then not-affected-within-scope basis-retracted-error-declaration in the cut of the retraction"
     },
     {
       "id": "I-19",
       "pr": 4,
-      "description": "cascade: built from its committed scenario into build/recordings/ and verified against its lock, run under a hand-registered generation, equal to the oracle at every cut (recomputed digests, dispositions per identity), integrity and pins cross-check clean, expected.json at the last cut and transitions[] at the bracketing cuts; inc-2 without unit 5 first; unit 5 insufficient-evidence basis-provisional while visit 5 is provisional, then affected-candidate equipment-activity at the bracketing cut of 2100000; each step a set revision"
+      "description": "cascade: built from its committed scenario into build/recordings/ and verified against its lock, run under a generation registered through generation new, equal to the oracle at every cut (recomputed digests, dispositions per identity), integrity and pins cross-check clean, expected.json at the last cut and transitions[] at the bracketing cuts; inc-2 without unit 5 first; unit 5 insufficient-evidence basis-provisional while visit 5 is provisional, then affected-candidate equipment-activity at the bracketing cut of 2100000; each step a set revision"
     },
     {
       "id": "I-25",
       "pr": 4,
-      "description": "session: built from its committed scenario into build/recordings/ and verified against its lock, run under a hand-registered generation, equal to the oracle at every cut (recomputed digests, dispositions per identity), integrity and pins cross-check clean, expected.json at the last cut and transitions[] at the bracketing cuts; stale-death leaves station2's visit 2 equal to baseline's; session-ambiguous: visit 6 insufficient session-ambiguous, nutrunner2 coverage unknown"
+      "description": "session: built from its committed scenario into build/recordings/ and verified against its lock, run under a generation registered through generation new, equal to the oracle at every cut (recomputed digests, dispositions per identity), integrity and pins cross-check clean, expected.json at the last cut and transitions[] at the bracketing cuts; stale-death leaves station2's visit 2 equal to baseline's; session-ambiguous: visit 6 insufficient session-ambiguous, nutrunner2 coverage unknown"
     },
     {
       "id": "I-26",
       "pr": 4,
-      "description": "quiet-occupancy vs quiet-occupancy-control: built from its committed scenario into build/recordings/ and verified against its lock, run under a hand-registered generation, equal to the oracle at every cut (recomputed digests, dispositions per identity), integrity and pins cross-check clean, expected.json at the last cut and transitions[] at the bracketing cuts; Station1 work records and sample rows equal at every comparable cut, the settled cut among them"
+      "description": "quiet-occupancy vs quiet-occupancy-control: built from its committed scenario into build/recordings/ and verified against its lock, run under a generation registered through generation new, equal to the oracle at every cut (recomputed digests, dispositions per identity), integrity and pins cross-check clean, expected.json at the last cut and transitions[] at the bracketing cuts; Station1 work records and sample rows equal at every comparable cut, the settled cut among them"
     },
     {
       "id": "J-DISPOSITION-COVERAGE",
@@ -359,7 +359,22 @@
     {
       "id": "C-2-REFERENCE",
       "pr": 4,
-      "description": "report.json measurements record longestLatenessCorrectedOnlineMs (600000 from held-back-10min, H from horizon-planned-late's generation-1 run), journal records per topic per scenario and inputsWithoutDisposition 0"
+      "description": "report.json measurements record longestLatenessCorrectedOnlineMs (568999 from held-back-10min, H from horizon-planned-late's online run), journal records per topic per scenario and inputsWithoutDisposition 0"
+    },
+    {
+      "id": "F-GEN-NEW",
+      "pr": 5,
+      "description": "generation new in its own temporary store with the fixture clock: one registered row with its pins, run null, head-floors/line2.json, no recovery declaration, the printed registeredRowSha256 = digest of the stored line; then forseti run on smoke writes exactly one declaration with the recording's routingDigest and no generation row, a second run adds neither (store assertion:F-GEN-NEW, isolated, self-test)"
+    },
+    {
+      "id": "F-GEN-REFUSES-UNREGISTERED",
+      "pr": 5,
+      "description": "the harness refuses generation 7 (generation-unregistered) and writes no declaration"
+    },
+    {
+      "id": "F-GEN-FLOOR",
+      "pr": 5,
+      "description": "in its own temporary store (never the gate's --state): generation new on registry (floor 1), on registry-next (floor 2), on registry again: head-rollback; the two registered generations listed store assertion:F-GEN-FLOOR, isolated, self-test"
     }
   ]
 }

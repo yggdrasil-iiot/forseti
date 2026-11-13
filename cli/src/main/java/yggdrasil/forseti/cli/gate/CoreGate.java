@@ -41,23 +41,37 @@ public final class CoreGate {
         all.addAll(Stage1Assertions.checks());
         all.addAll(Stage2Assertions.checks());
         all.addAll(Injections.checks());
+        all.addAll(GenerationAssertions.checks());
         return List.copyOf(all);
     }
 
     /** {@code shard}: run only that shard of {@code gate/core-shards.json}; {@code aggregate}: evaluate the shard outputs under that
-     *  directory ({@link Shards}); both null for a full run. */
+     *  directory ({@link Shards}); both null for a full run. {@code state}: the pipeline store ({@code --state}, always {@code <out>/state}),
+     *  null for a temporary one. */
     public record Options(Path root, Path manifest, Path out, String python, String negativeControl, List<String> intendedFailures,
-                          long seed, String command, String shard, Path aggregate) {
+                          long seed, String command, String shard, Path aggregate, Path state) {
         public Options(Path root, Path manifest, Path out, String python, String negativeControl, List<String> intendedFailures, long seed, String command) {
-            this(root, manifest, out, python, negativeControl, intendedFailures, seed, command, null, null);
+            this(root, manifest, out, python, negativeControl, intendedFailures, seed, command, null, null, null);
+        }
+        public Options(Path root, Path manifest, Path out, String python, String negativeControl, List<String> intendedFailures, long seed, String command,
+                       String shard, Path aggregate) {
+            this(root, manifest, out, python, negativeControl, intendedFailures, seed, command, shard, aggregate, null);
         }
     }
 
-    /** What an assertion may use: the repository root, the oracle's interpreter, a private temporary directory, the log directory. */
+    /** What an assertion may use: the repository root, the oracle's interpreter, a private temporary directory, the log directory, the
+     *  gate run's output directory, its pipeline store and the evidence it lists ({@link GateEvidence}). */
     public static final class Context {
         final Path root, tmp, logs;
         final String python;
         private int dirs;
+        /** The gate run's output directory ({@code runs/} is kept under it). */
+        Path out;
+        /** The pipeline store: {@code --state} ({@code shared}) or a temporary store ({@code isolated}). */
+        GateEvidence.Store pipeline;
+        /** The assertion running now: the owner of the {@code assertion:} stores made while it runs. */
+        volatile String current;
+        final GateEvidence.Log evidence = new GateEvidence.Log();
         private final Map<String, Object> memo = new HashMap<>();
         /** The shard this gate run is ({@code --shard}), null otherwise. */
         Shards.Shard shard;
@@ -65,11 +79,22 @@ public final class CoreGate {
         Summaries aggregate;
         /** What the assertions measure for {@code report.json} ({@code measurements}): item 2's reference values, revision counts. */
         final ObjectNode measurements = Json.object();
-        Context(Path root, Path tmp, Path logs, String python) { this.root = root; this.tmp = tmp; this.logs = logs; this.python = python; }
+        Context(Path root, Path tmp, Path logs, String python) {
+            this.root = root; this.tmp = tmp; this.logs = logs; this.python = python;
+            this.out = logs.getParent();
+            this.pipeline = new GateEvidence.Store(GateEvidence.PIPELINE, tmp.resolve("pipeline-state"), false);
+        }
         public Path path(String relative) { return root.resolve(relative); }
         public Path fixtures() { return root.resolve("fixtures"); }
         /** A new empty directory under the gate's temporary directory. */
-        public Path newDir(String name) throws IOException { return Files.createDirectories(tmp.resolve(name + "-" + dirs++)); }
+        public synchronized Path newDir(String name) throws IOException { return Files.createDirectories(tmp.resolve(name + "-" + dirs++)); }
+        /** A new temporary control store of the running assertion, {@code assertion:<ID>} ({@code #2}, {@code #3}, ... for its further
+         *  stores, in creation order); its registrations are {@code isolated}. */
+        GateEvidence.Store assertionStore() throws IOException {
+            String id = current;
+            if (id == null) throw new IllegalStateException("an assertion store outside an assertion");
+            return new GateEvidence.Store(evidence.storeName(id), newDir("store"), false);
+        }
         /** The value {@code make} computes, made once per gate run and shared by the assertions that ask for {@code key} (a harness run,
          *  say); a computation that throws is not kept, so the next assertion that asks makes it again and reports its own failure. */
         @SuppressWarnings("unchecked")
@@ -111,20 +136,25 @@ public final class CoreGate {
     /** The command line: validates the flags (exit 2 on a usage error) and runs the gate from the current directory. */
     public static int main(Args flags, String command, PrintStream out, PrintStream err) {
         String engine, python, control, shard;
-        Path outDir, aggregate;
+        Path outDir, aggregate, state;
         long seed;
         List<String> intended = List.of();
         try {
-            flags.only(Set.of("engine", "out", "python", "negative-control", "seed", "shard", "aggregate"));
+            flags.only(Set.of("engine", "out", "python", "negative-control", "seed", "shard", "aggregate", "state"));
             engine = flags.required("engine");
             if (!engine.equals("core")) throw new IllegalArgumentException("--engine " + engine + ": this gate runs --engine core only");
             outDir = Path.of(flags.get("out", "build/gate"));
             python = flags.get("python", "python");
             seed = Long.parseLong(flags.get("seed", Long.toString(DEFAULT_SEED)));
             control = flags.get("negative-control").orElse(null);
-            if (control != null) intended = control(Path.of(""), control);
             shard = flags.get("shard").orElse(null);
             aggregate = flags.get("aggregate").map(Path::of).orElse(null);
+            state = flags.get("state").map(Path::of).orElse(null);
+            if (state != null && aggregate != null) throw new IllegalArgumentException("--state is for a full or a --shard run, not --aggregate (an aggregate run registers nothing)");
+            if (state != null && control != null) throw new IllegalArgumentException("--state is for a full or a --shard run, not --negative-control");
+            if (state != null && !real(state).equals(real(outDir.resolve("state"))))
+                throw new IllegalArgumentException("--state " + state + ": the store of a gate run is <out>/state, " + outDir.resolve("state"));
+            if (control != null) intended = control(Path.of(""), control);
             if (shard != null && aggregate != null) throw new IllegalArgumentException("--shard and --aggregate exclude each other");
             if (control != null && (shard != null || aggregate != null)) throw new IllegalArgumentException("--negative-control runs the full gate, without --shard or --aggregate");
             if (shard != null) Shards.load(Path.of("")).shard(shard);
@@ -132,11 +162,33 @@ public final class CoreGate {
         } catch (IllegalArgumentException e) {
             err.println(e.getMessage());
             err.println("usage: forseti gate --engine core [--out <dir>] [--python <interpreter>] [--negative-control <name>] [--seed <n>] [--shard <name> | --aggregate <dir>]");
+            err.println("                               [--state <out>/state]");
             return 2;
         }
         Path root = Path.of("").toAbsolutePath();
         return run(new Options(root, root.resolve(MANIFEST), outDir.toAbsolutePath(), python, control, intended, seed, "forseti " + command, shard,
-            aggregate == null ? null : aggregate.toAbsolutePath()), registered(), out, err);
+            aggregate == null ? null : aggregate.toAbsolutePath(), state == null ? null : state.toAbsolutePath()), registered(), out, err);
+    }
+
+    /** The real path of {@code p}: of its nearest existing ancestor, with the rest appended (nothing is created). */
+    static Path real(Path p) {
+        Path a = p.toAbsolutePath().normalize();
+        try {
+            if (Files.exists(a)) return a.toRealPath();
+            Path parent = a.getParent();
+            return parent == null ? a : real(parent).resolve(a.getFileName());
+        } catch (IOException e) { return a; }
+    }
+
+    /** {@code java [-Xmx<xmx>] -cp <the gate's classpath> yggdrasil.forseti.cli.Main}: a child JVM on the gate's own classpath. */
+    static List<String> java(String xmx) {
+        String javaBin = Path.of(System.getProperty("java.home"), "bin", "java").toString();
+        String cp = Arrays.stream(System.getProperty("java.class.path").split(java.io.File.pathSeparator)).map(p -> Path.of(p).toAbsolutePath().toString())
+            .reduce((a, b) -> a + java.io.File.pathSeparator + b).orElseThrow();
+        List<String> cmd = new ArrayList<>(List.of(javaBin));
+        if (xmx != null) cmd.add("-Xmx" + xmx);
+        cmd.addAll(List.of("-cp", cp, "yggdrasil.forseti.cli.Main"));
+        return cmd;
     }
 
     /** The intended failures of a control listed in {@code gate/core-negative-controls.json} and implemented here; a usage error otherwise. */
@@ -155,9 +207,13 @@ public final class CoreGate {
     public static int run(Options o, List<Check> checks, PrintStream out, PrintStream err) {
         String startedAt = Instant.now().toString();
         Assertions acc = null;
-        String manifestSha = null, error = null;
+        String manifestSha = null, error = null, summariesSha = null;
         ObjectNode pins = Json.object(), digests = Json.object(), measurements = Json.object();
+        ArrayNode shardsOut = Json.JSON.createArrayNode(), generations = Json.JSON.createArrayNode(), runs = Json.JSON.createArrayNode();
+        Map<String, String> owner = new HashMap<>();
+        String layout = o.shard() != null ? "shard" : o.aggregate() != null ? "aggregate" : "full";
         Shards.Plan plan = null;
+        Context ctx = null;
         Path tmp = null;
         long started = System.nanoTime();
         try {
@@ -171,14 +227,18 @@ public final class CoreGate {
                 List<String> wrong = Shards.validate(plan, ids, aggregatable);
                 if (!wrong.isEmpty()) throw new IllegalStateException(Shards.PLAN + ": " + String.join("; ", wrong));
                 if (o.shard() != null) shard = plan.shard(o.shard());
+                for (Shards.Shard s : plan.shards()) for (String id : s.assertions()) owner.put(id, s.name());
+                for (String id : plan.aggregate()) owner.put(id, "aggregate");
             }
             final Shards.Shard only = shard;
             final Set<String> aggregateIds = plan == null ? Set.of() : new HashSet<>(plan.aggregate());
             acc = new Assertions(shard != null ? shard.assertions() : ids, out);
             Files.createDirectories(o.out());
             tmp = Files.createTempDirectory("forseti-gate-");
-            Context ctx = new Context(o.root(), tmp, o.out().resolve("logs"), o.python());
+            ctx = new Context(o.root(), tmp, o.out().resolve("logs"), o.python());
             ctx.shard = shard;
+            if (o.aggregate() == null) CoreGate.delete(o.out().resolve(GateEvidence.RUNS));   // the runs this gate run keeps, none of an earlier one
+            if (o.state() != null) ctx.pipeline = new GateEvidence.Store(GateEvidence.PIPELINE, Files.createDirectories(o.state()), true);
             measurements = ctx.measurements;
             pins = pins(ctx);
             digests = fixtureDigests(o.root());
@@ -191,30 +251,47 @@ public final class CoreGate {
                 expect.set("pins", pins);
                 expect.set("fixtureDigests", digests);
                 List<Shards.Recorded> recorded = new ArrayList<>();
-                ctx.aggregate = Shards.read(o.root(), o.aggregate(), plan, expect, recorded, coverage);
+                ObjectNode merged = Json.object();
+                ctx.aggregate = Shards.read(o.root(), o.aggregate(), plan, expect, recorded, coverage, merged);
+                shardsOut = (ArrayNode) merged.get("shards");
+                generations = (ArrayNode) merged.get("generations");
+                runs = (ArrayNode) merged.get("runs");
                 for (Shards.Recorded r : recorded)
                     try { acc.check(r.id(), r.ok(), "[shard " + r.shard() + "] " + r.evidence()); } catch (Assertions.Refused ignored) { /* recorded by the accountant */ }
             }
             for (Check c : selected) {
                 Result r;
+                ctx.current = c.id();
                 try { r = c.body().run(ctx); }
                 catch (Exception | Error e) { r = new Result(false, "crashed: " + e); }
+                finally { ctx.current = null; }
                 try { acc.check(c.id(), r.ok(), r.evidence()); } catch (Assertions.Refused ignored) { /* recorded by the accountant */ }
             }
-            if (shard != null) {
-                Summaries mine = Summaries.fromPipeline(ctx);
-                Json.write(o.out().resolve(Shards.SUMMARIES), mine.toJson());
-                List<String> own = Shards.coverage(o.root(), mine);   // this shard's scenarios; the aggregate run checks every shard's again
-                own.removeAll(mine.missing);
-                coverage.addAll(own);
-            } else if (o.aggregate() == null && Scenarios.started(ctx) && !Scenarios.skipHorizon() && Scenarios.only() == null) {
-                coverage.addAll(Shards.coverage(o.root(), Summaries.of(ctx)));
+            if (o.aggregate() == null) {
+                // full and shard: the summaries beside the report, bound by digest, and the bundle checked by the one validator
+                Summaries mine;
+                if (shard != null) mine = Summaries.fromPipeline(ctx);
+                else if (Scenarios.started(ctx) || ctx.has(Summaries.MEMO)) mine = Summaries.of(ctx);
+                else mine = new Summaries();
+                ObjectNode summaries = mine.toJson();
+                byte[] bytes = Json.pretty(summaries);
+                Files.write(o.out().resolve(Shards.SUMMARIES), bytes);
+                summariesSha = Canonical.digestOf(bytes);
+                generations = ctx.evidence.generations();
+                runs = ctx.evidence.runs();
+                if (shard == null && Scenarios.started(ctx) && !Scenarios.skipHorizon() && Scenarios.only() == null) coverage.addAll(mine.missing);
+                ObjectNode bundle = Json.object();
+                bundle.set("pins", pins);
+                bundle.set("generations", generations);
+                bundle.set("runs", runs);
+                coverage.addAll(GateEvidence.validate(o.root(), o.out(), bundle, Json.read(bytes)));
             }
             for (String line : coverage) out.println("COVERAGE " + line);
             if (!coverage.isEmpty()) throw new IllegalStateException("coverage: " + coverage.size() + " problems, first: " + coverage.get(0));
         } catch (Exception | Error e) {
             error = e.toString();
             err.println("gate crashed: " + error);
+            if (ctx != null && o.aggregate() == null && generations.isEmpty() && runs.isEmpty()) { generations = ctx.evidence.generations(); runs = ctx.evidence.runs(); }
         } finally {
             if (tmp != null) delete(tmp);
         }
@@ -223,6 +300,7 @@ public final class CoreGate {
         int exit = acc == null || error != null ? 1 : emptyShard ? 0 : acc.exitCode();
         ObjectNode report = Json.object();
         Json.putSafe(report, "exit", exit);
+        report.put("kind", o.negativeControl() != null ? "negative-control" : "gate").put("layout", layout).put("negativeControl", o.negativeControl());
         report.put("scope", "core").put("engine", "core").put("manifestSha256", manifestSha);
         Json.putSafe(report, "assertionsExpected", acc == null ? 0 : acc.expected().size());
         Json.putSafe(report, "assertionsRun", acc == null ? 0 : acc.ran().size());
@@ -238,8 +316,14 @@ public final class CoreGate {
         report.put("error", error);
         report.put("shard", o.shard());
         report.put("shardPlanSha256", plan == null ? null : plan.sha256());
+        report.put("summariesSha256", summariesSha);
         ArrayNode results = report.putArray("results");
-        if (acc != null) for (var e : acc.results()) results.addObject().put("id", e.getKey()).put("ok", e.getValue().getKey()).put("evidence", e.getValue().getValue());
+        if (acc != null) for (var e : acc.results())
+            results.addObject().put("id", e.getKey()).put("ok", e.getValue().getKey()).put("evidence", e.getValue().getValue())
+                .put("shard", layout.equals("full") ? null : layout.equals("shard") ? o.shard() : owner.get(e.getKey()));
+        report.set("shards", shardsOut);
+        report.set("generations", generations);
+        report.set("runs", runs);
         try { Json.write(o.out().resolve("report.json"), report); }
         catch (RuntimeException e) { err.println("cannot write the report: " + e.getMessage()); exit = 1; }
         out.println(acc == null ? "assertions run 0 / expected 0" : acc.line());

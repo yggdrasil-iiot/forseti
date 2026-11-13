@@ -62,6 +62,7 @@ public final class Main {
         err.println("       forseti recordings synth --scenario <synthetic scenario file> --out <dir> --registry <dir> [--lock]");
         err.println("       forseti recordings verify --scenario <file> --out <dir> [--registry <dir>]");
         err.println("       forseti gate --engine core [--out <dir>] [--python <interpreter>] [--negative-control <name>] [--seed <n>]");
+        err.println("                    [--shard <name> | --aggregate <dir>] [--state <out>/state]");
         err.println("       forseti run --engine core --recording <dir> --registry <dir> --state <dir> --generation <n> --out <run dir>");
         err.println("                   [--seed <n>] [--shuffle] [--subscribe <topic>=<p,p>[;<topic>=<p,p>]] [--artifact-sha256 <hex>]");
         err.println("       forseti generation new --state <dir> --mappings <dir> --trusted-keys <file> --stream <s> [--stream <s2>] --rule <id>@<version>");

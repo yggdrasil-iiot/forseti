@@ -333,11 +333,13 @@ public final class ReferenceEngine {
 
     /** One read of {@code <stateDir>/recovery-control.jsonl} at a writer's initialization: the offset of the latest declaration of this
      *  generation and the record count H at that read. Each line is one declaration ({@code {generation, injectionId, stage, epochBefore,
-     *  targetEpoch, lastWrittenCutId, routingDigest}}). */
+     *  targetEpoch, lastWrittenCutId, routingDigest}}). The read is made inside the hold of {@code generations.lock}, under which every
+     *  declaration is appended (the run preparation), so it never sees a line half written by a run preparing in another process. */
     static Progress.InitEvidence initEvidence(Path state, long generation) {
         Path f = state.resolve(RECOVERY_CONTROL);
         byte[] bytes;
-        try { bytes = Files.readAllBytes(f); } catch (IOException e) { throw new IllegalStateException("no recovery control at " + f + " (the run preparation of forseti run writes the initial declaration)"); }
+        try { bytes = new FileGenerationStore(state).locked(() -> Files.readAllBytes(f)); }
+        catch (java.io.UncheckedIOException e) { throw new IllegalStateException("no recovery control at " + f + " (the run preparation of forseti run writes the initial declaration)"); }
         if (bytes.length > 0 && bytes[bytes.length - 1] != '\n') throw new IllegalStateException("control-log-corrupt: " + RECOVERY_CONTROL + ": the last line has no LF");
         long count = 0, found = -1;
         int start = 0;
