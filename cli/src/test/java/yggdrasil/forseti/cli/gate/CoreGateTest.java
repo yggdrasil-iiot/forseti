@@ -220,7 +220,7 @@ class CoreGateTest {
         assertFalse(Files.exists(out.resolve("state")), "a usage error creates no store");
     }
 
-    @Test void stateOutsideTheOutputDirectoryIsAUsageError() {
+    @Test void stateOutsideTheOutputDirectoryIsAUsageError() throws Exception {
         Path out = tmp.resolve("full");
         for (List<String> layout : List.of(List.<String>of(), List.of("--shard", "hand-made"))) {
             List<String> args = new ArrayList<>(List.of("gate", "--engine", "core", "--out", out.toString(), "--state", tmp.resolve("elsewhere").resolve("state").toString()));
@@ -230,7 +230,7 @@ class CoreGateTest {
             assertTrue(e.toString(StandardCharsets.UTF_8).contains("the store of a gate run is <out>/state"), e.toString(StandardCharsets.UTF_8));
             assertFalse(Files.exists(out.resolve("report.json")), "a usage error runs nothing");
         }
-        assertEquals(out.resolve("state").toAbsolutePath().normalize(), CoreGate.real(out.resolve("x").resolve("..").resolve("state")), "compared by real path");
+        assertEquals(tmp.toRealPath().resolve("full").resolve("state"), CoreGate.real(out.resolve("x").resolve("..").resolve("state")), "compared by real path");
     }
 
     @Test void theReportNamesItsKindAndLayout() throws Exception {
