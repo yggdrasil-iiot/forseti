@@ -1,11 +1,11 @@
 package yggdrasil.forseti.cli.gate;
 
 import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import java.io.IOException;
 import java.nio.file.*;
 import java.util.*;
-import yggdrasil.forseti.cli.recording.ScenarioBuilder;
 import yggdrasil.forseti.core.Json;
 import yggdrasil.forseti.core.canon.Canonical;
 
@@ -18,7 +18,10 @@ import yggdrasil.forseti.core.canon.Canonical;
  *  oracle at every cut, as in a full run), and writes {@code report.json} and {@code summaries.json}. {@code --aggregate <dir>} reads
  *  {@code <dir>/<shard>/} of every shard and passes only when every shard ran against the same manifest, plan, fixtures, seed and pins,
  *  every shard's assertions are recorded, every scenario was compared with the oracle at every cut its lock plans and held integrity
- *  and ground truth, the summaries of a scenario made by two shards agree, and the aggregate assertions hold. */
+ *  and ground truth, the summaries of a scenario made by two shards agree, and the aggregate assertions hold. Each shard directory is
+ *  one bundle checked by {@link GateEvidence#validate} (its run records, cut logs and, for a shared store, {@code state/}); the
+ *  aggregate run binds every shard's {@code report.json} and {@code summaries.json} by the raw digest of the bytes it parsed
+ *  ({@code shards[]}) and merges the shards' {@code generations[]} and {@code runs[]} under their shard. */
 final class Shards {
     private Shards() {}
 
@@ -84,15 +87,44 @@ final class Shards {
 
     /** The shard outputs under {@code dir}: every shard's recorded results (plan order) and the merged summaries, with every problem
      *  found in {@code problems}. {@code expect} holds what every shard report must state: {@code manifestSha256, seed, pins,
-     *  fixtureDigests}. */
-    static Summaries read(Path root, Path dir, Plan plan, ObjectNode expect, List<Recorded> recorded, List<String> problems) {
+     *  fixtureDigests}. {@code out} receives {@code shards[]} ({@code {name, exit, reportSha256, summariesSha256}} per shard of the plan,
+     *  in plan order) and the shards' {@code generations[]} and {@code runs[]} concatenated in plan order, unchanged. */
+    static Summaries read(Path root, Path dir, Plan plan, ObjectNode expect, List<Recorded> recorded, List<String> problems, ObjectNode out) {
         Summaries merged = new Summaries();
+        ArrayNode shardsOut = out.putArray("shards"), gensOut = out.putArray("generations"), runsOut = out.putArray("runs");
         Map<String, List<JsonNode>> byScenario = new LinkedHashMap<>();
         for (Shard s : plan.shards()) {
             Path d = dir.resolve(s.name());
             JsonNode report, summaries;
-            try { report = Json.read(d.resolve("report.json")); summaries = Json.read(d.resolve(SUMMARIES)); }
-            catch (RuntimeException e) { problems.add("shard " + s.name() + ": " + e.getMessage()); continue; }
+            byte[] reportBytes, summariesBytes;
+            try {
+                reportBytes = Files.readAllBytes(d.resolve("report.json"));
+                summariesBytes = Files.readAllBytes(d.resolve(SUMMARIES));
+                report = Json.read(reportBytes);
+                summaries = Json.read(summariesBytes);
+            } catch (IOException | RuntimeException e) { problems.add("shard " + s.name() + ": " + e); continue; }
+            String reportSha = Canonical.digestOf(reportBytes), summariesSha = Canonical.digestOf(summariesBytes);
+            ObjectNode entry = shardsOut.addObject().put("name", s.name());
+            entry.set("exit", report.path("exit").isMissingNode() ? null : report.path("exit"));
+            entry.put("reportSha256", reportSha).put("summariesSha256", summariesSha);
+            if (!"gate".equals(report.path("kind").asText(null))) problems.add("shard " + s.name() + ": its report is of kind " + report.path("kind") + ", not gate");
+            if (!"shard".equals(report.path("layout").asText(null))) problems.add("shard " + s.name() + ": its report has layout " + report.path("layout") + ", not shard");
+            if (!summariesSha.equals(report.path("summariesSha256").asText(null)))
+                problems.add("shard " + s.name() + ": its report binds summaries " + report.path("summariesSha256") + ", " + SUMMARIES + " is " + summariesSha);
+            for (String line : GateEvidence.validate(root, d, report, summaries)) problems.add("shard " + s.name() + ": " + line);
+            Map<String, Integer> online = new HashMap<>();
+            for (JsonNode g : report.path("generations")) {
+                if (!s.name().equals(g.path("shard").asText(null))) problems.add("shard " + s.name() + ": a generation entry names shard " + g.path("shard"));
+                gensOut.add(g);
+            }
+            for (JsonNode r : report.path("runs")) {
+                if (!s.name().equals(r.path("shard").asText(null))) problems.add("shard " + s.name() + ": a run entry names shard " + r.path("shard"));
+                if (GateEvidence.PIPELINE.equals(r.path("store").asText()) && !r.path("shuffle").asBoolean() && GateEvidence.ONLINE.equals(r.path("variant").asText()))
+                    online.merge(r.path("scenario").asText(), 1, Integer::sum);
+                runsOut.add(r);
+            }
+            for (String sc : s.scenarios())
+                if (online.getOrDefault(sc, 0) != 1) problems.add("shard " + s.name() + ": " + online.getOrDefault(sc, 0) + " online pipeline runs of " + sc + ", one required");
             if (!s.name().equals(report.path("shard").asText(null))) problems.add("shard " + s.name() + ": its report names shard " + report.path("shard"));
             if (!plan.sha256().equals(report.path("shardPlanSha256").asText(null))) problems.add("shard " + s.name() + ": ran against another " + PLAN);
             for (String f : List.of("manifestSha256", "seed", "pins", "fixtureDigests"))
@@ -151,7 +183,7 @@ final class Shards {
         }
         for (String sc : Scenarios.SHUFFLED) for (long seed : Scenarios.SHUFFLE_SEEDS)
             if (!merged.shuffled.containsKey(sc + "@" + seed)) merged.missing.add(sc + " seed " + seed + " not run: no shard summarised it");
-        problems.addAll(coverage(root, merged));
+        problems.addAll(merged.missing);
         return merged;
     }
 
@@ -176,33 +208,5 @@ final class Shards {
         x.set("v", a);
         y.set("v", b);
         return Canonical.digest(x).equals(Canonical.digest(y));
-    }
-
-    /** Every summarised scenario was compared with the oracle at every cut its committed lock plans, and held. The cuts are checked by
-     *  identity, not only by number: the recording the run read is the one its lock pins ({@code manifest.json} digest), its planned cut
-     *  ids are as many as the lock plans and strictly increasing, and the harness completed and the gate compared exactly those cuts, in
-     *  that order (a skipped cut cannot be made up by a repeated or an unplanned one). */
-    static List<String> coverage(Path root, Summaries s) {
-        List<String> p = new ArrayList<>(s.missing);
-        for (JsonNode r : s.runs.values()) {
-            String name = r.path("name").asText();
-            JsonNode lock;
-            try { lock = Json.read(ScenarioBuilder.lockOf(root.resolve("fixtures").resolve("scenarios").resolve(name + ".json"))); }
-            catch (RuntimeException e) { p.add(name + ": cannot read its lock: " + e.getMessage()); continue; }
-            long lockCuts = lock.path("counts").path("cuts").asLong(-1);
-            if (!r.path("ok").asBoolean(false)) p.add(name + " did not hold: " + r.path("summary").asText());
-            long compared = r.path("cutsCompared").asLong(-1), completed = r.path("cutLogCuts").asLong(-1);
-            if (compared != lockCuts || completed != lockCuts) p.add(name + ": " + compared + " cuts compared with the oracle and " + completed + " completed, its lock plans " + lockCuts);
-            String pinned = lock.path("files").path("manifest.json").asText(null), read = r.path("recordingManifestSha256").asText(null);
-            if (pinned == null || !pinned.equals(read)) p.add(name + ": its run read recording manifest " + read + ", its lock pins " + pinned);
-            List<Long> planned = longs(r.path("plannedCutIds")), logged = longs(r.path("cutLogIds")), checked = longs(r.path("comparedCutIds"));
-            if (planned.size() != lockCuts) p.add(name + ": its recording plans " + planned.size() + " cuts, its lock plans " + lockCuts);
-            for (int i = 1; i < planned.size(); i++)
-                if (planned.get(i) <= planned.get(i - 1)) { p.add(name + ": planned cut ids are not strictly increasing at " + planned.get(i)); break; }
-            if (!logged.equals(planned)) p.add(name + ": the harness completed cuts " + firstDifference(logged, planned) + " other than the recording plans");
-            if (!checked.equals(planned)) p.add(name + ": the gate compared cuts " + firstDifference(checked, planned) + " other than the recording plans");
-        }
-        for (JsonNode x : s.shuffled.values()) if (Summaries.failed(x)) p.add(x.path("name").asText() + " seed " + x.path("seed").asLong() + ": " + x.path("failure").asText());
-        return p;
     }
 }

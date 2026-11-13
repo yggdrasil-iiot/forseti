@@ -17,7 +17,8 @@ import yggdrasil.forseti.core.journal.*;
 
 /** The stage-2 harness assertions of pull request 3 ({@code T-*}): {@code forseti run --engine core} on the committed
  *  {@code smoke-incident} recording and on its variants ({@link Stage2Variants}), each written into the gate's temporary directory and
- *  run under a generation registered by hand ({@link Stage1Assertions#register}); nothing is written under {@code fixtures/}. */
+ *  run under a generation registered through {@code generation new} in a temporary store of the assertion ({@link Stage1Assertions#harness});
+ *  nothing is written under {@code fixtures/}. */
 final class Stage2Assertions {
     private Stage2Assertions() {}
 

@@ -9,15 +9,17 @@ import java.util.Map;
 import yggdrasil.forseti.core.Json;
 import yggdrasil.forseti.core.journal.Pins;
 
-/** {@code <out>/run.json}: {@code {runId, engine, engineVersion, artifactSha256, generation, seed, shuffle, pins, fixtureDigests, jcs,
- *  subscribed, offsetRanges, cuts, command}}. {@code pins} is the envelope pin set every row of the run carries (with {@code job});
+/** {@code <out>/run.json}: {@code {runId, engine, engineVersion, artifactSha256, generation, registeredRowSha256, scope, seed, shuffle,
+ *  replay, originalRecordingManifestSha256, pins, fixtureDigests, jcs, subscribed, offsetRanges, cuts, command}}. {@code registeredRowSha256}
+ *  and {@code scope} name the generation's {@code registered} row and its record key; {@code replay} and
+ *  {@code originalRecordingManifestSha256} are null for an online run (an event-time replay sets them, PR 5b). {@code pins} is the envelope pin set every row of the run carries (with {@code job});
  *  {@code fixtureDigests} names the recording (raw SHA-256 of its manifest and the file digests it lists, all verified before the run) and
  *  the release (its {@code release.json} digest and the {@code rulesDigest}); {@code offsetRanges} are the half-open ranges the run consumed
  *  per subscribed partition ({@code {}} when the run had no topic input). No wall-clock time is recorded. */
 final class RunRecord {
     private RunRecord() {}
 
-    record Facts(String runId, long generation, long seed, boolean shuffle, Pins pins, String recordingManifestSha256, JsonNode recordingDigests,
+    record Facts(String runId, long generation, String registeredRowSha256, String scope, long seed, boolean shuffle, Pins pins, String recordingManifestSha256, JsonNode recordingDigests,
                  String releaseSha256, String rulesDigest, String jcsJava, Map<String, List<Integer>> subscribed,
                  Map<String, Map<Integer, CutLog.Range>> offsetRanges, int cuts, String command) {}
 
@@ -26,8 +28,10 @@ final class RunRecord {
         Pins.Job job = f.pins().job();
         n.put("engine", job.engine()).put("engineVersion", job.engineVersion()).put("artifactSha256", job.artifactSha256());
         Json.putSafe(n, "generation", f.generation());
+        n.put("registeredRowSha256", f.registeredRowSha256()).put("scope", f.scope());
         Json.putSafe(n, "seed", f.seed());
         n.put("shuffle", f.shuffle());
+        n.putNull("replay").putNull("originalRecordingManifestSha256");
         n.set("pins", f.pins().toJson());
         ObjectNode d = n.putObject("fixtureDigests");
         d.put("recordingManifestSha256", f.recordingManifestSha256());

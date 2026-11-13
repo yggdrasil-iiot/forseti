@@ -25,6 +25,8 @@ import yggdrasil.forseti.core.canon.Canonical;
  *  outOfOrdernessMs}, {@code heldBackWantMs} ({@link Injections#heldBackLateness}) and, for a horizon recording, {@code afterHorizon}
  *  (what {@code J-AFTER-HORIZON-CUTS} checks). */
 final class Summaries {
+    /** The memo key of this gate run's own summaries. */
+    static final String MEMO = "scenario-summaries";
     /** Scenario name -> run summary, in {@link Scenarios#all()} order. */
     final Map<String, JsonNode> runs = new LinkedHashMap<>();
     /** {@code name@seed} -> shuffled-run summary. */
@@ -35,7 +37,7 @@ final class Summaries {
     /** The summaries this gate run evaluates its aggregate assertions on: the shards' in an aggregate run, else its own pipeline's. */
     static Summaries of(Context c) throws Exception {
         if (c.aggregate != null) return c.aggregate;
-        return c.memo("scenario-summaries", () -> fromPipeline(c));
+        return c.memo(MEMO, () -> fromPipeline(c));
     }
 
     /** Every scenario and shuffled run of this gate run's pipeline (waiting for them), the others listed in {@link #missing}. */
@@ -56,6 +58,39 @@ final class Summaries {
     static ObjectNode of(Run r) {
         ObjectNode o = Json.object();
         o.put("name", r.name).put("synthetic", r.synthetic).put("failure", r.failure);
+        cuts(o, r);
+        if (r.fold != null) {
+            o.set("findings", findings(r.fold.findings));
+            ObjectNode rows = o.putObject("rows");
+            r.fold.rows().forEach((k, v) -> Json.putSafe(rows, k, v));
+        }
+        if (r.measures != null) {
+            ObjectNode m = o.putObject("measures");
+            Json.putSafe(m, "longestLatenessMs", r.measures.longestLatenessMs());
+            m.put("longestAt", r.measures.longestAt());
+            Json.putSafe(m, "acceptedLateSamples", r.measures.acceptedLateSamples());
+            Json.putSafe(m, "inputsWithoutDisposition", r.measures.inputsWithoutDisposition());
+            Json.putSafe(m, "deliveries", r.measures.deliveries());
+        }
+        ObjectNode ms = o.putObject("ms");
+        r.ms.forEach((k, v) -> Json.putSafe(ms, k, v));
+        if (r.rules != null) {
+            var a = r.rules.attribution();
+            Json.putSafe(o, "horizonMs", a.horizonMs());
+            Json.putSafe(o, "allowedLatenessMs", a.allowedLatenessMs());
+            Json.putSafe(o, "outOfOrdernessMs", a.outOfOrdernessMs());
+            Long want = r.manifest == null ? null : Injections.heldBackLateness(r.manifest, a.outOfOrdernessMs());
+            if (want == null) o.putNull("heldBackWantMs"); else Json.putSafe(o, "heldBackWantMs", want);
+        }
+        boolean complete = r.failure == null && r.tally != null && r.fold != null && r.outcome != null;
+        if (r.synthetic && complete) o.set("afterHorizon", afterHorizon(r));
+        return o;
+    }
+
+    /** {@code ok}, {@code summary} and the cut evidence of a run: {@code plannedCutIds} (its recording's batches),
+     *  {@code recordingManifestSha256} (raw digest of the manifest file it read), {@code cutLogCuts}/{@code cutLogIds} (its own cut log),
+     *  {@code cutsCompared}/{@code comparedCutIds} (its own comparison with the oracle) and {@code equal}. */
+    private static void cuts(ObjectNode o, Run r) {
         boolean complete = r.failure == null && r.tally != null && r.fold != null && r.outcome != null;
         o.put("ok", complete && r.ok());
         String text;
@@ -80,31 +115,6 @@ final class Summaries {
             r.tally.comparedIds.forEach(ids::add);
             o.put("equal", r.tally.equal());
         }
-        if (r.fold != null) {
-            o.set("findings", findings(r.fold.findings));
-            ObjectNode rows = o.putObject("rows");
-            r.fold.rows().forEach((k, v) -> Json.putSafe(rows, k, v));
-        }
-        if (r.measures != null) {
-            ObjectNode m = o.putObject("measures");
-            Json.putSafe(m, "longestLatenessMs", r.measures.longestLatenessMs());
-            m.put("longestAt", r.measures.longestAt());
-            Json.putSafe(m, "acceptedLateSamples", r.measures.acceptedLateSamples());
-            Json.putSafe(m, "inputsWithoutDisposition", r.measures.inputsWithoutDisposition());
-            Json.putSafe(m, "deliveries", r.measures.deliveries());
-        }
-        ObjectNode ms = o.putObject("ms");
-        r.ms.forEach((k, v) -> Json.putSafe(ms, k, v));
-        if (r.rules != null) {
-            var a = r.rules.attribution();
-            Json.putSafe(o, "horizonMs", a.horizonMs());
-            Json.putSafe(o, "allowedLatenessMs", a.allowedLatenessMs());
-            Json.putSafe(o, "outOfOrdernessMs", a.outOfOrdernessMs());
-            Long want = r.manifest == null ? null : Injections.heldBackLateness(r.manifest, a.outOfOrdernessMs());
-            if (want == null) o.putNull("heldBackWantMs"); else Json.putSafe(o, "heldBackWantMs", want);
-        }
-        if (r.synthetic && complete) o.set("afterHorizon", afterHorizon(r));
-        return o;
     }
 
     /** {@code J-AFTER-HORIZON-CUTS}' values of a horizon recording, from its fold at the last cut. */
@@ -124,14 +134,31 @@ final class Summaries {
         return a;
     }
 
+    /** A shuffled-run summary (plan Task 20 decision 12): {@code name, seed, failure, ok, summary, recordingManifestSha256,
+     *  plannedCutIds, cutLogCuts, cutLogIds, cutsCompared, comparedCutIds, equal, findings, rows, ms}, every list the shuffled run's own
+     *  (its manifest file read again, its own cut log, its own comparison with the oracle). {@code ok}: no failure, {@code equal}, and the
+     *  three lists equal. */
     static ObjectNode of(Shuffled x) {
         ObjectNode o = Json.object();
         o.put("name", x.name());
         Json.putSafe(o, "seed", x.seed());
-        o.put("failure", x.failure());
-        if (x.findings() != null) o.set("findings", findings(x.findings()));
-        if (x.rows() != null) { ObjectNode rows = o.putObject("rows"); x.rows().forEach((k, v) -> Json.putSafe(rows, k, v)); }
-        return o;
+        Run r = x.run();
+        String failure = x.failure() != null ? x.failure() : r == null ? "no run" : r.failure;
+        o.put("failure", failure);
+        if (r != null) cuts(o, r);
+        boolean lists = Shards.longs(o.path("plannedCutIds")).equals(Shards.longs(o.path("cutLogIds"))) && Shards.longs(o.path("plannedCutIds")).equals(Shards.longs(o.path("comparedCutIds")))
+            && o.path("plannedCutIds").isArray() && o.path("comparedCutIds").isArray();
+        o.put("ok", failure == null && o.path("equal").asBoolean(false) && lists);
+        if (!o.has("summary")) o.put("summary", x.name() + " seed " + x.seed() + ": " + failure);
+        // the field order of the schema
+        ObjectNode ordered = Json.object();
+        for (String f : List.of("name", "seed", "failure", "ok", "summary", "recordingManifestSha256", "plannedCutIds", "cutLogCuts", "cutLogIds", "cutsCompared", "comparedCutIds", "equal"))
+            if (o.has(f)) ordered.set(f, o.get(f));
+        if (x.findings() != null) ordered.set("findings", findings(x.findings()));
+        if (x.rows() != null) { ObjectNode rows = ordered.putObject("rows"); x.rows().forEach((k, v) -> Json.putSafe(rows, k, v)); }
+        ObjectNode ms = ordered.putObject("ms");
+        if (r != null) r.ms.forEach((k, v) -> Json.putSafe(ms, k, v));
+        return ordered;
     }
 
     static ObjectNode findings(RunFold.Findings f) {

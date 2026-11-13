@@ -1,7 +1,6 @@
 package yggdrasil.forseti.cli.gate;
 
 import com.fasterxml.jackson.databind.JsonNode;
-import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
@@ -19,19 +18,17 @@ import yggdrasil.forseti.cli.harness.ReferenceEngine;
 import yggdrasil.forseti.cli.recording.Recording;
 import yggdrasil.forseti.core.Json;
 import yggdrasil.forseti.core.canon.Canonical;
-import yggdrasil.forseti.core.generation.Generation;
 import yggdrasil.forseti.core.journal.*;
 import yggdrasil.forseti.core.release.FloorStore;
 import yggdrasil.forseti.core.release.HeadVerifier;
 import yggdrasil.forseti.core.release.ReleaseReader;
-import yggdrasil.forseti.core.release.TrustedKeys;
 import yggdrasil.forseti.core.rules.RuleSet;
 
 /** The stage-1 harness assertions of pull request 2 ({@code S-*}): {@code forseti run --engine core} on the committed {@code smoke} and
- *  {@code smoke-plc} recordings under a generation registered by hand in a temporary state directory (one {@code registered} row and its
- *  initial recovery declaration, the way {@code generation new} will write them in PR 5). The head is verified by the gate at its own
- *  signedAt + 60 s, never by the harness and never at the wall clock; nothing is written under {@code fixtures/}. The runs are made once
- *  per gate and shared by the assertions that read them. */
+ *  {@code smoke-plc} recordings under a generation registered through {@code generation new} in a temporary store of the assertion
+ *  ({@code store: assertion:<ID>}, {@code isolated}; the run preparation of {@code forseti run} writes the initial recovery declaration).
+ *  The head is verified by {@code generation new} at its own signedAt + 60 s, never by the harness and never at the wall clock; nothing is
+ *  written under {@code fixtures/}. The runs are made once per gate and shared by the assertions that read them. */
 final class Stage1Assertions {
     private Stage1Assertions() {}
 
@@ -64,61 +61,27 @@ final class Stage1Assertions {
         return c.memo("run:" + recording, () -> harness(c, recording, null, false));
     }
 
-    /** Registers generation 1 for {@code recording}'s rule in a fresh state directory and runs {@code forseti run --engine core} on it. */
+    /** Registers a generation for {@code recording}'s rule through {@code generation new} (in-process, the fixture clock) in a new
+     *  temporary store of the running assertion ({@code assertion:<ID>}), runs {@code forseti run --engine core} on it, and keeps the run
+     *  record and cut log ({@link GateEvidence}). */
     static Run harness(Context c, String recording, Long seed, boolean shuffle) throws Exception {
         Path rec = c.path(recording), registry = c.fixtures().resolve("registry");
-        Path state = c.newDir("state");
-        register(c, state, registry, rec);
+        String scenario = rec.getFileName().toString();
+        GateEvidence.Store store = c.assertionStore();
+        GateEvidence.Registered g = GateEvidence.register(c, store, registry, rec, scenario, GateEvidence.ONLINE, c.current);
         Path out = c.newDir("run").resolve("out");
         List<String> args = new ArrayList<>(List.of("run", "--engine", "core", "--recording", rec.toString(), "--registry", registry.toString(),
-            "--state", state.toString(), "--generation", "1", "--out", out.toString()));
+            "--state", store.dir().toString(), "--generation", Long.toString(g.generation()), "--out", out.toString()));
         if (seed != null) args.addAll(List.of("--seed", Long.toString(seed)));
         if (shuffle) args.add("--shuffle");
         ByteArrayOutputStream so = new ByteArrayOutputStream(), se = new ByteArrayOutputStream();
         int exit = Main.run(args.toArray(String[]::new), new PrintStream(so, true, StandardCharsets.UTF_8), new PrintStream(se, true, StandardCharsets.UTF_8));
         String stdout = so.toString(StandardCharsets.UTF_8).strip();
         if (exit != 0) throw new IllegalStateException("forseti run exit " + exit + ": " + stdout + " " + se.toString(StandardCharsets.UTF_8).strip());
+        long s = seed == null ? ReferenceEngine.DEFAULT_SEED : seed;
+        GateEvidence.keep(c, g, out, rec, scenario, GateEvidence.ONLINE, s, shuffle,
+            GateEvidence.safe(store.name()) + "." + scenario + (shuffle ? ".shuffle-" + s : seed != null ? ".seed-" + s : ""));
         return new Run(rec, out, Json.read(stdout.getBytes(StandardCharsets.UTF_8)).get("runId").asText());
-    }
-
-    /** The {@code registered} row of generation 1 and its initial recovery declaration: the head verified at its signedAt + 60 s with
-     *  the fixture keys and a fresh floor store, the release read, the rule set loaded with the recording's definitions. */
-    static void register(Context c, Path state, Path registry, Path recording) throws IOException {
-        Path m = registry.resolve("mappings");
-        JsonNode manifest = Json.read(recording.resolve(Recording.MANIFEST)), rule = manifest.get("rule");
-        String stream = Json.text(rule, "stream");
-        long now = GateSigner.now(m, stream);
-        HeadVerifier.Head h = HeadVerifier.verify(m, stream, Foundation.fixtureKeys(c), new FloorStore(state), now);
-        RuleSet rules = RuleSet.load(ReleaseReader.read(m, h), Json.text(rule, "attributionRuleId"), Json.text(rule, "attributionRuleVersion"),
-            manifest.get("definitions"));
-        ObjectNode head = Json.object().put("stream", h.stream()).put("releaseId", h.releaseId()).put("version", h.version()).put("releaseSha256", h.releaseSha256())
-            .put("headFile", h.headFile()).put("headSha256", h.headSha256()).put("attestationFile", h.attestationFile()).put("attestationSha256", h.attestationSha256())
-            .put("statementSha256", h.statementSha256());
-        Json.putSafe(head, "headVersion", h.headVersion());
-        head.put("signedAt", h.signedAt()).put("expires", h.expires()).put("publishedBy", h.publishedBy()).put("approvedBy", h.approvedBy());
-        ObjectNode evidence = Json.object();
-        evidence.set("head", head);
-        evidence.put("releaseSha256", h.releaseSha256());
-        evidence.set("pins", rules.pins());
-        ArrayNode inputs = Json.JSON.createArrayNode();
-        ObjectNode in = inputs.addObject().put("stream", h.stream()).put("releaseId", h.releaseId()).put("version", h.version()).put("releaseSha256", h.releaseSha256());
-        Json.putSafe(in, "headVersion", h.headVersion()).put("statementSha256", h.statementSha256());
-        Generation g = new Generation(1, Generation.REGISTERED, rules.rulesDigest(), inputs, Json.object(), h.headVersion(), evidence, null, now);
-        ObjectNode line = Json.object().put("topic", "forseti.generations").put("key", stream);
-        line.putObject("headers").put("forseti-generation", "1");
-        line.set("value", g.toJson());
-        append(state.resolve("generations.jsonl"), line);
-        ObjectNode decl = Json.putSafe(Json.object(), "generation", 1);
-        decl.putNull("injectionId").put("stage", 1).putNull("epochBefore").put("targetEpoch", 0).put("lastWrittenCutId", 0)
-            .put("routingDigest", Recording.open(recording).routing().routingDigest());
-        append(state.resolve("recovery-control.jsonl"), decl);
-    }
-
-    static void append(Path f, JsonNode line) throws IOException {
-        byte[] b = Canonical.bytes(line);
-        byte[] withLf = Arrays.copyOf(b, b.length + 1);
-        withLf[b.length] = '\n';
-        Files.write(f, withLf, StandardOpenOption.CREATE, StandardOpenOption.APPEND);
     }
 
     // --- journal reading -----------------------------------------------------------------------------------------------------

@@ -11,7 +11,8 @@
         "F-PAYLOAD-DIGEST", "F-RULES-LOAD-OJ", "F-RULES-LOAD-PLC", "F-BINDING-SCHEMA-MISMATCH", "S-SMOKE-VISIT", "S-SMOKE-PLC", "S-REVISIONS",
         "S-PROGRESS", "S-W1", "S-DETERMINISM", "T-PROGRESS-TRACKER", "T-SMOKE-INCIDENT", "T-CASCADE", "T-DELETE", "T-LEDGER-2", "I-1", "I-2",
         "I-2b", "I-3", "I-4", "I-5", "I-7", "I-8", "I-9", "I-9b", "I-10", "I-10b", "I-10d", "I-10f", "I-11", "I-11b", "I-11c", "I-11d", "I-12",
-        "I-13", "I-14", "I-15", "I-16", "I-17", "I-18", "I-19", "I-25", "I-26", "C-6-STAGE1", "C-6-STAGE2"]
+        "I-13", "I-14", "I-15", "I-16", "I-17", "I-18", "I-19", "I-25", "I-26", "C-6-STAGE1", "C-6-STAGE2", "F-GEN-NEW",
+        "F-GEN-REFUSES-UNREGISTERED", "F-GEN-FLOOR"]
     },
     {"name": "horizon-no-departure", "scenarios": ["horizon-no-departure", "baseline"], "shuffled": [], "assertions": ["I-6"]},
     {"name": "horizon-reopened", "scenarios": ["horizon-reopened", "corrections-10c"], "shuffled": [], "assertions": ["I-10c"]},

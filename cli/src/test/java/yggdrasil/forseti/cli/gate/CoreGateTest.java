@@ -32,9 +32,9 @@ class CoreGateTest {
         for (Check c : Injections.checks()) s.add(c.id());
         return s;
     }
-    static final List<String> REPORT_FIELDS = List.of("exit", "scope", "engine", "manifestSha256", "assertionsExpected", "assertionsRun", "failed",
-        "notRun", "intendedFailures", "pins", "seed", "fixtureDigests", "measurements", "startedAt", "finishedAt", "command", "error", "shard", "shardPlanSha256",
-        "results");
+    static final List<String> REPORT_FIELDS = List.of("exit", "kind", "layout", "negativeControl", "scope", "engine", "manifestSha256", "assertionsExpected",
+        "assertionsRun", "failed", "notRun", "intendedFailures", "pins", "seed", "fixtureDigests", "measurements", "startedAt", "finishedAt", "command", "error",
+        "shard", "shardPlanSha256", "summariesSha256", "results", "shards", "generations", "runs");
 
     @TempDir Path tmp;
 
@@ -43,13 +43,14 @@ class CoreGateTest {
         List<String> list(String field) { List<String> l = new ArrayList<>(); report.path(field).forEach(n -> l.add(n.asText())); return l; }
     }
 
-    Run run(Path root, Path manifest, List<Check> checks) {
+    Run run(Path root, Path manifest, List<Check> checks) { return run(new CoreGate.Options(root, manifest, tmp.resolve("out-" + UUID.randomUUID()), PYTHON, null,
+        List.of(), CoreGate.DEFAULT_SEED, "forseti gate --engine core (test)"), checks); }
+    Run run(CoreGate.Options o, List<Check> checks) {
         ByteArrayOutputStream out = new ByteArrayOutputStream(), err = new ByteArrayOutputStream();
-        Path dir = tmp.resolve("out-" + UUID.randomUUID());
-        int exit = CoreGate.run(new CoreGate.Options(root, manifest, dir, PYTHON, null, List.of(), CoreGate.DEFAULT_SEED, "forseti gate --engine core (test)"),
-            checks, new PrintStream(out, true, StandardCharsets.UTF_8), new PrintStream(err, true, StandardCharsets.UTF_8));
-        List<String> lines = out.toString(StandardCharsets.UTF_8).lines().toList();
-        return new Run(exit, lines, Json.read(dir.resolve("report.json")));
+        int exit = CoreGate.run(o, checks, new PrintStream(out, true, StandardCharsets.UTF_8), new PrintStream(err, true, StandardCharsets.UTF_8));
+        List<String> lines = new ArrayList<>(out.toString(StandardCharsets.UTF_8).lines().toList());
+        lines.addAll(0, err.toString(StandardCharsets.UTF_8).lines().map(l -> "ERR " + l).toList());
+        return new Run(exit, lines, Json.read(o.out().resolve("report.json")));
     }
     Run run(Path manifest, List<Check> checks) { return run(ROOT, manifest, checks); }
 
@@ -68,13 +69,13 @@ class CoreGateTest {
 
     @Test void everyManifestIdHasARegisteredAssertion() {
         List<String> manifest = manifestIds(MANIFEST), registered = registeredIds();
-        assertEquals(72, manifest.size());
+        assertEquals(75, manifest.size());
         assertEquals(manifest.size(), new HashSet<>(manifest).size(), "no id twice in the manifest");
         assertEquals(registered.size(), new HashSet<>(registered).size(), "no id registered twice");
         assertEquals(new TreeSet<>(manifest), new TreeSet<>(registered), "every manifest id is registered and every registered id is in the manifest");
         for (JsonNode a : Json.read(MANIFEST).path("assertions")) {
             String id = a.path("id").asText();
-            assertEquals(id.startsWith("F-") ? 1 : id.startsWith("S-") ? 2 : id.startsWith("T-") ? 3 : 4, a.path("pr").asInt(), a.toString());
+            assertEquals(id.startsWith("F-GEN-") ? 5 : id.startsWith("F-") ? 1 : id.startsWith("S-") ? 2 : id.startsWith("T-") ? 3 : 4, a.path("pr").asInt(), a.toString());
             assertTrue(a.path("id").asText().matches("[FSTIJC]-[A-Z0-9-]+[b-f]?"), a.toString());
             assertFalse(a.path("description").asText().isBlank(), a.toString());
         }
@@ -86,9 +87,9 @@ class CoreGateTest {
         Run r = run(manifest, checks);
         assertEquals(List.of(), r.list("failed"), String.join("\n", r.lines()));
         assertEquals(0, r.exit());
-        assertEquals("assertions run 25 / expected 25", r.last());
+        assertEquals("assertions run 28 / expected 28", r.last());
         for (String id : List.of("S-SMOKE-VISIT", "S-SMOKE-PLC", "S-REVISIONS", "S-PROGRESS", "S-W1", "S-DETERMINISM",
-                "T-PROGRESS-TRACKER", "T-SMOKE-INCIDENT", "T-CASCADE", "T-DELETE", "T-LEDGER-2"))
+                "T-PROGRESS-TRACKER", "T-SMOKE-INCIDENT", "T-CASCADE", "T-DELETE", "T-LEDGER-2", "F-GEN-NEW", "F-GEN-REFUSES-UNREGISTERED", "F-GEN-FLOOR"))
             assertTrue(r.lines().stream().anyMatch(l -> l.startsWith("PASS " + id + " ")), id + " in " + r.lines());
     }
 
@@ -98,10 +99,10 @@ class CoreGateTest {
         assertEquals(1, r.exit());
         assertEquals(List.of("F-NOT-REGISTERED"), r.list("notRun"));
         assertEquals(List.of(), r.list("failed"));
-        assertEquals("assertions run 72 / expected 73", r.last());
+        assertEquals("assertions run 75 / expected 76", r.last());
         assertEquals(1, r.report().path("exit").asInt());
-        assertEquals(73, r.report().path("assertionsExpected").asInt());
-        assertEquals(72, r.report().path("assertionsRun").asInt());
+        assertEquals(76, r.report().path("assertionsExpected").asInt());
+        assertEquals(75, r.report().path("assertionsRun").asInt());
     }
 
     @Test void anUnknownAssertionFailsTheGate() {
@@ -111,7 +112,7 @@ class CoreGateTest {
         assertEquals(1, r.exit());
         assertEquals(List.of("F-UNKNOWN"), r.list("failed"));
         assertEquals(List.of(), r.list("notRun"));
-        assertEquals("assertions run 72 / expected 72", r.last());
+        assertEquals("assertions run 75 / expected 75", r.last());
 
         List<Check> twice = new ArrayList<>(holding());
         twice.add(new Check("F-JCS-JAVA", c -> new Result(true, "a second run of one id")));
@@ -126,7 +127,7 @@ class CoreGateTest {
         Run r = run(MANIFEST, checks);
         assertEquals(1, r.exit());
         assertEquals(List.of(checks.get(3).id()), r.list("failed"));
-        assertEquals("assertions run 72 / expected 72", r.last());
+        assertEquals("assertions run 75 / expected 75", r.last());
     }
 
     @Test void aCrashStillWritesAFailureReport() throws Exception {
@@ -151,14 +152,14 @@ class CoreGateTest {
         wantFailed.remove("F-JOURNAL-REDUCERS");   // inline journals: the one assertion that reads no file
         assertEquals(wantFailed, new TreeSet<>(missing.list("failed")), missing.lines().toString());
         assertEquals(NEEDS_ORACLE, new TreeSet<>(missing.list("notRun")));
-        assertEquals("assertions run 25 / expected 72", missing.last());
+        assertEquals("assertions run 28 / expected 75", missing.last());
         assertTrue(missing.report().path("fixtureDigests").path("registry").isNull());
     }
 
     @Test void theReportRecordsPinsAndDigests() throws Exception {
         Run r = run(MANIFEST, holding());
         assertEquals(0, r.exit());
-        assertEquals("assertions run 72 / expected 72", r.last());
+        assertEquals("assertions run 75 / expected 75", r.last());
         JsonNode rep = r.report();
         List<String> fields = new ArrayList<>();
         rep.fieldNames().forEachRemaining(fields::add);
@@ -166,8 +167,8 @@ class CoreGateTest {
         assertEquals("core", rep.path("scope").asText());
         assertEquals("core", rep.path("engine").asText());
         assertEquals(Canonical.digestOf(Files.readAllBytes(MANIFEST)), rep.path("manifestSha256").asText());
-        assertEquals(72, rep.path("assertionsExpected").asInt());
-        assertEquals(72, rep.path("assertionsRun").asInt());
+        assertEquals(75, rep.path("assertionsExpected").asInt());
+        assertEquals(75, rep.path("assertionsRun").asInt());
         assertEquals(20261109L, rep.path("seed").asLong());
         assertEquals("io.github.erdtman:java-json-canonicalization:1.1", rep.path("pins").path("jcs").path("java").asText());
         assertTrue(rep.path("pins").has("python") && rep.path("pins").path("jcs").has("python"));
@@ -190,5 +191,224 @@ class CoreGateTest {
         assertEquals(2, Main.run(new String[] {"gate", "--engine", "core", "--negative-control", "nope", "--out", tmp.resolve("nc").toString()}, sink, sink));
         assertFalse(Files.exists(tmp.resolve("nc").resolve("report.json")), "a usage error runs nothing");
         assertEquals(2, Main.run(new String[] {"gate", "--engine", "core", "--unknown", "x"}, sink, sink));
+    }
+
+    // --- the gate on one store (plan Task 20, decisions 6-12) ----------------------------------------------------------------------
+
+    static final Path SMOKE = ROOT.resolve("fixtures/recordings/smoke"), REGISTRY = ROOT.resolve("fixtures/registry");
+
+    static PrintStream sink(ByteArrayOutputStream b) { return new PrintStream(b, true, StandardCharsets.UTF_8); }
+
+    /** A context of {@code root} whose selection is {@code scenarios} (a one-shard plan), on its own temporary directories. */
+    CoreGate.Context context(List<String> scenarios) throws Exception {
+        Path base = Files.createDirectories(tmp.resolve("ctx-" + UUID.randomUUID()));
+        CoreGate.Context c = new CoreGate.Context(ROOT, Files.createDirectories(base.resolve("tmp")), base.resolve("out").resolve("logs"), PYTHON);
+        Files.createDirectories(c.logs);
+        c.shard = new Shards.Shard("test", scenarios, List.of(), List.of());
+        return c;
+    }
+
+    @Test void stateIsRefusedWithAggregateAndWithANegativeControl() throws Exception {
+        Path out = tmp.resolve("agg"), shards = Files.createDirectories(tmp.resolve("shards"));
+        ByteArrayOutputStream e1 = new ByteArrayOutputStream(), e2 = new ByteArrayOutputStream();
+        PrintStream none = sink(new ByteArrayOutputStream());
+        assertEquals(2, Main.run(new String[] {"gate", "--engine", "core", "--aggregate", shards.toString(), "--out", out.toString(), "--state", out.resolve("state").toString()}, none, sink(e1)));
+        assertTrue(e1.toString(StandardCharsets.UTF_8).contains("--state is for a full or a --shard run, not --aggregate"), e1.toString(StandardCharsets.UTF_8));
+        assertEquals(2, Main.run(new String[] {"gate", "--engine", "core", "--negative-control", "any", "--out", out.toString(), "--state", out.resolve("state").toString()}, none, sink(e2)));
+        assertTrue(e2.toString(StandardCharsets.UTF_8).contains("--state is for a full or a --shard run, not --negative-control"), e2.toString(StandardCharsets.UTF_8));
+        assertFalse(Files.exists(out.resolve("report.json")), "a usage error runs nothing");
+        assertFalse(Files.exists(out.resolve("state")), "a usage error creates no store");
+    }
+
+    @Test void stateOutsideTheOutputDirectoryIsAUsageError() throws Exception {
+        Path out = tmp.resolve("full");
+        for (List<String> layout : List.of(List.<String>of(), List.of("--shard", "hand-made"))) {
+            List<String> args = new ArrayList<>(List.of("gate", "--engine", "core", "--out", out.toString(), "--state", tmp.resolve("elsewhere").resolve("state").toString()));
+            args.addAll(layout);
+            ByteArrayOutputStream e = new ByteArrayOutputStream();
+            assertEquals(2, Main.run(args.toArray(String[]::new), sink(new ByteArrayOutputStream()), sink(e)), layout.toString());
+            assertTrue(e.toString(StandardCharsets.UTF_8).contains("the store of a gate run is <out>/state"), e.toString(StandardCharsets.UTF_8));
+            assertFalse(Files.exists(out.resolve("report.json")), "a usage error runs nothing");
+        }
+        assertEquals(tmp.toRealPath().resolve("full").resolve("state"), CoreGate.real(out.resolve("x").resolve("..").resolve("state")), "compared by real path");
+    }
+
+    @Test void theReportNamesItsKindAndLayout() throws Exception {
+        Run full = run(MANIFEST, holding());
+        assertEquals(0, full.exit(), full.lines().toString());
+        JsonNode f = full.report();
+        assertEquals("gate", f.path("kind").asText());
+        assertEquals("full", f.path("layout").asText());
+        assertTrue(f.path("negativeControl").isNull());
+        assertTrue(f.path("shard").isNull());
+        assertTrue(f.path("summariesSha256").asText("").matches("[0-9a-f]{64}"));
+        assertEquals(0, f.path("shards").size());
+        for (JsonNode r : f.path("results")) assertTrue(r.has("shard") && r.path("shard").isNull(), r.toString());
+
+        Path control = tmp.resolve("control");
+        Run nc = run(new CoreGate.Options(ROOT, MANIFEST, control, PYTHON, "some-control", List.of("F-JCS-JAVA"), CoreGate.DEFAULT_SEED, "test"), holding());
+        assertEquals("negative-control", nc.report().path("kind").asText());
+        assertEquals("some-control", nc.report().path("negativeControl").asText());
+        assertEquals("full", nc.report().path("layout").asText());
+
+        // a shard run of a one-shard plan that makes nothing: layout shard, every result under its shard
+        Path root = Files.createDirectories(tmp.resolve("root"));
+        ObjectNode planJson = Json.object();
+        ArrayNode shards = planJson.putArray("shards");
+        ObjectNode all = shards.addObject().put("name", "everything");
+        Scenarios.all().forEach(all.putArray("scenarios")::add);
+        Scenarios.SHUFFLED.forEach(all.putArray("shuffled")::add);
+        all.putArray("assertions");
+        ObjectNode some = shards.addObject().put("name", "some");
+        some.putArray("scenarios");
+        some.putArray("shuffled");
+        ArrayNode ids = some.putArray("assertions");
+        for (String id : manifestIds(MANIFEST)) if (!Injections.AGGREGATE.contains(id)) ids.add(id);
+        Injections.AGGREGATE.forEach(planJson.putArray("aggregate")::add);
+        Json.write(root.resolve(Shards.PLAN), planJson);
+        Run shard = run(new CoreGate.Options(root, MANIFEST, tmp.resolve("shard-out"), PYTHON, null, List.of(), CoreGate.DEFAULT_SEED, "test", "some", null), holding());
+        JsonNode s = shard.report();
+        assertEquals(0, shard.exit(), shard.lines().toString());
+        assertEquals("gate", s.path("kind").asText());
+        assertEquals("shard", s.path("layout").asText());
+        assertEquals("some", s.path("shard").asText());
+        assertEquals(Canonical.digestOf(Files.readAllBytes(tmp.resolve("shard-out").resolve(Shards.SUMMARIES))), s.path("summariesSha256").asText());
+        assertFalse(s.path("results").isEmpty());
+        for (JsonNode r : s.path("results")) assertEquals("some", r.path("shard").asText(), r.toString());
+    }
+
+    @Test void theGateRegistersThroughTheVerbInAFixedOrder() throws Exception {
+        List<String> selection = List.of("smoke-incident", "smoke", "smoke-plc");   // registered in Scenarios.all() order, not in this order
+        Map<String, Long> first = new LinkedHashMap<>(), second = new LinkedHashMap<>();
+        for (Map<String, Long> table : List.of(first, second)) {
+            CoreGate.Context c = context(selection);
+            for (Map.Entry<String, Scenarios.Run> e : Scenarios.table(c).entrySet()) {
+                assertNull(e.getValue().failure, e.getValue().failure);
+                table.put(e.getKey(), e.getValue().generation.generation());
+            }
+            assertEquals(List.of(), GateEvidence.validate(ROOT, c.out, bundle(c), new Summaries().toJson()));
+            List<yggdrasil.forseti.core.generation.GenerationStore.Entry> rows = new yggdrasil.forseti.cli.generation.FileGenerationStore(c.pipeline.dir()).all();
+            assertEquals(3, rows.size());
+            for (var x : rows) assertEquals("registered", x.row().status(), "the pipeline store holds only registered rows");
+            JsonNode gens = c.evidence.generations();
+            assertEquals(3, gens.size());
+            for (JsonNode g : gens) {
+                assertEquals("pipeline", g.path("store").asText());
+                assertEquals("online", g.path("variant").asText());
+                assertTrue(g.path("assertion").isNull());
+            }
+        }
+        assertEquals(Map.of("smoke", 1L, "smoke-plc", 2L, "smoke-incident", 3L), first);
+        assertEquals(List.of("smoke", "smoke-plc", "smoke-incident"), new ArrayList<>(first.keySet()));
+        assertEquals(first, second, "the numbers of a gate run are a function of its selection");
+    }
+
+    static ObjectNode bundle(CoreGate.Context c) {
+        ObjectNode b = Json.object();
+        b.set("pins", Json.object());
+        b.set("generations", c.evidence.generations());
+        b.set("runs", c.evidence.runs());
+        return b;
+    }
+
+    @Test void aRunWithoutStateMarksEveryGenerationIsolated() throws Exception {
+        List<Check> checks = new ArrayList<>(holding());
+        int i = registeredIds().indexOf("F-GEN-NEW");
+        checks.set(i, new Check("F-GEN-NEW", c -> {
+            GateEvidence.register(c, c.pipeline, REGISTRY, SMOKE, "smoke", GateEvidence.ONLINE, null);
+            GateEvidence.register(c, c.assertionStore(), REGISTRY, SMOKE, "smoke", GateEvidence.SELF_TEST, c.current);
+            GateEvidence.register(c, c.assertionStore(), REGISTRY, SMOKE, "smoke", GateEvidence.SELF_TEST, c.current);
+            return new Result(true, "registered");
+        }));
+        Run r = run(MANIFEST, checks);
+        assertEquals(0, r.exit(), r.lines().toString());
+        JsonNode gens = r.report().path("generations");
+        assertEquals(3, gens.size());
+        assertEquals(List.of("pipeline", "assertion:F-GEN-NEW", "assertion:F-GEN-NEW#2"), List.of(gens.get(0).path("store").asText(), gens.get(1).path("store").asText(), gens.get(2).path("store").asText()));
+        for (JsonNode g : gens) {
+            assertEquals("isolated", g.path("state").asText(), g.toString());
+            assertEquals(1, g.path("generation").asLong(), "each store starts at generation 1");
+            assertTrue(g.path("shard").isNull());
+        }
+        assertEquals(gens.get(1).path("registeredRowSha256"), gens.get(2).path("registeredRowSha256"), "identical registrations under the fixture clock");
+        assertTrue(gens.get(1).path("assertion").asText().equals("F-GEN-NEW") && gens.get(0).path("assertion").isNull());
+    }
+
+    /** {@code smoke} as generation 1 of one store and as generation 3 of another: the summaries agree on every compared field. Runs the
+     *  harness and the oracle ({@code -Dforseti.python}, default {@code python}, with the oracle installed). */
+    @Test void aScenarioSummaryDoesNotDependOnItsGenerationNumber() throws Exception {
+        CoreGate.Context a = context(List.of("smoke")), b = context(List.of("smoke"));
+        for (int k = 0; k < 2; k++) {
+            ByteArrayOutputStream so = new ByteArrayOutputStream();
+            int exit = yggdrasil.forseti.cli.generation.GenerationCli.run(new String[] {"new", "--state", b.pipeline.dir().toString(), "--mappings", REGISTRY.resolve("mappings").toString(),
+                    "--trusted-keys", ROOT.resolve("fixtures/trusted-keys.jsonl").toString(), "--stream", "line2", "--rule", "line2-attribution@1.0.0"}, sink(so), sink(new ByteArrayOutputStream()),
+                java.time.Clock.fixed(java.time.Instant.ofEpochMilli(GateSigner.now(REGISTRY.resolve("mappings"), "line2")), java.time.ZoneOffset.UTC));
+            assertEquals(0, exit, so.toString(StandardCharsets.UTF_8));
+        }
+        JsonNode sa = Summaries.fromPipeline(a).runs.get("smoke"), sb = Summaries.fromPipeline(b).runs.get("smoke");
+        assertEquals(1, Scenarios.table(a).get("smoke").generation.generation());
+        assertEquals(3, Scenarios.table(b).get("smoke").generation.generation());
+        assertTrue(sa.path("ok").asBoolean(), sa.toString());
+        assertTrue(sb.path("ok").asBoolean(), sb.toString());
+        Set<String> fields = new TreeSet<>();
+        sa.fieldNames().forEachRemaining(fields::add);
+        sb.fieldNames().forEachRemaining(fields::add);
+        fields.removeAll(Shards.NOT_COMPARED);
+        for (String f : fields) assertTrue(Shards.same(sa.path(f), sb.path(f)), f + ": " + sa.path(f) + " vs " + sb.path(f));
+        assertNotEquals(a.evidence.runs().get(0).path("generation"), b.evidence.runs().get(0).path("generation"));
+    }
+
+    @Test void aFullRunWritesItsSummariesAndBindsTheirDigest() throws Exception {
+        Path out = tmp.resolve("full");
+        Run r = run(new CoreGate.Options(ROOT, MANIFEST, out, PYTHON, null, List.of(), CoreGate.DEFAULT_SEED, "test"), holding());
+        assertEquals(0, r.exit(), r.lines().toString());
+        byte[] summaries = Files.readAllBytes(out.resolve(Shards.SUMMARIES));
+        assertEquals(Canonical.digestOf(summaries), r.report().path("summariesSha256").asText());
+        JsonNode s = Json.read(summaries);
+        assertTrue(s.path("runs").isArray() && s.path("shuffled").isArray(), s.toString());
+        assertEquals(List.of(), GateEvidence.validate(ROOT, out), "the full run's bundle passes the validator as written");
+    }
+
+    /** Full layout: a shuffled run whose oracle comparison stops one cut short, and one whose comparison differs at one cut, are each a
+     *  coverage problem and exit 1. The run is a real {@code --shuffle} harness run of {@code smoke} on a pipeline generation; only its
+     *  summary is made by hand. */
+    @Test void aFullRunWithAMissingOrFailedShuffledComparisonExitsOne() throws Exception {
+        for (String fault : List.of("short", "differs")) {
+            List<Check> checks = new ArrayList<>(holding());
+            int i = registeredIds().indexOf("C-6-STAGE1");
+            checks.set(i, new Check("C-6-STAGE1", c -> {
+                GateEvidence.Registered g = GateEvidence.register(c, c.pipeline, REGISTRY, SMOKE, "smoke", GateEvidence.ONLINE, null);
+                Path out = c.newDir("shuffle").resolve("out");
+                ByteArrayOutputStream so = new ByteArrayOutputStream();
+                int exit = Main.run(new String[] {"run", "--engine", "core", "--recording", SMOKE.toString(), "--registry", REGISTRY.toString(), "--state", c.pipeline.dir().toString(),
+                    "--generation", Long.toString(g.generation()), "--out", out.toString(), "--seed", "7", "--shuffle"}, sink(so), sink(new ByteArrayOutputStream()));
+                if (exit != 0) return new Result(false, "harness exit " + exit + ": " + so);
+                GateEvidence.keep(c, g, out, SMOKE, "smoke", GateEvidence.ONLINE, 7, true, "smoke.shuffle-7");
+                JsonNode cutLog = Json.read(out.resolve("cuts.json"));
+                ObjectNode x = Json.object().put("name", "smoke");
+                Json.putSafe(x, "seed", 7L);
+                x.putNull("failure");
+                x.put("summary", "smoke seed 7: by hand");
+                x.put("recordingManifestSha256", Canonical.digestOf(Files.readAllBytes(SMOKE.resolve("manifest.json"))));
+                ArrayNode planned = x.putArray("plannedCutIds"), logged = x.putArray("cutLogIds"), compared = x.putArray("comparedCutIds");
+                for (JsonNode k : cutLog.path("cuts")) { planned.add(k.path("cutId").asLong()); logged.add(k.path("cutId").asLong()); compared.add(k.path("cutId").asLong()); }
+                Json.putSafe(x, "cutLogCuts", cutLog.path("cuts").size());
+                if (fault.equals("short")) compared.remove(compared.size() - 1);
+                Json.putSafe(x, "cutsCompared", compared.size());
+                x.put("equal", !fault.equals("differs"));
+                x.put("ok", false);
+                Summaries s = new Summaries();
+                s.shuffled.put("smoke@7", x);
+                c.memo(Summaries.MEMO, () -> s);
+                return new Result(true, "a shuffled run and its summary");
+            }));
+            Run r = run(MANIFEST, checks);
+            assertEquals(1, r.exit(), fault + ": " + r.lines());
+            assertTrue(r.lines().stream().anyMatch(l -> l.startsWith("COVERAGE smoke seed 7")), fault + ": " + r.lines());
+            if (fault.equals("short")) assertTrue(r.lines().stream().anyMatch(l -> l.startsWith("COVERAGE smoke seed 7: the gate compared cuts")), r.lines().toString());
+            else assertTrue(r.lines().contains("COVERAGE smoke seed 7: its comparison with the oracle is not equal (equal false)"), r.lines().toString());
+            assertTrue(r.report().path("error").asText().startsWith("java.lang.IllegalStateException: coverage: "), r.report().toString());
+            assertEquals(1, r.report().path("runs").size());
+        }
     }
 }

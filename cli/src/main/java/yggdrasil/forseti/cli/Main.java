@@ -5,18 +5,21 @@ import java.io.IOException;
 import java.io.PrintStream;
 import java.io.UncheckedIOException;
 import java.nio.file.*;
+import java.time.Clock;
 import java.util.*;
 import java.util.stream.Stream;
 import yggdrasil.forseti.cli.gate.CoreGate;
+import yggdrasil.forseti.cli.generation.GenerationCli;
 import yggdrasil.forseti.cli.harness.ReferenceEngine;
 import yggdrasil.forseti.cli.recording.Recording;
 import yggdrasil.forseti.cli.recording.ScenarioBuilder;
 import yggdrasil.forseti.core.Json;
 import yggdrasil.forseti.core.canon.Canonical;
 
-/** {@code forseti <command> <verb> [--flag value | --switch]...}. Exit codes: 0 done, 1 a check failed, 2 usage or input error.
- *  Commands are dispatched by name; {@code gate} and {@code run} take their flags from the second argument on
- *  ({@code forseti gate --engine core ...}, {@code forseti run --engine core ...}). */
+/** {@code forseti <command> <verb> [--flag value | --switch]...}. Exit codes: 0 done, 1 a check failed or a refusal, 2 usage or input
+ *  error. Commands are dispatched by name; {@code gate} and {@code run} take their flags from the second argument on
+ *  ({@code forseti gate --engine core ...}, {@code forseti run --engine core ...}); {@code generation <verb>} is {@link GenerationCli}'s,
+ *  on the system clock. */
 public final class Main {
     private Main() {}
 
@@ -32,6 +35,10 @@ public final class Main {
             Args flags;
             try { flags = Args.parse(args, 1, Set.of("shuffle")); } catch (IllegalArgumentException e) { err.println(e.getMessage()); return usage(err); }
             return run(flags, "forseti " + String.join(" ", args), out, err);
+        }
+        if (args.length >= 1 && args[0].equals("generation")) {
+            if (args.length < 2) return usage(err);
+            return GenerationCli.run(Arrays.copyOfRange(args, 1, args.length), out, err, Clock.systemUTC());
         }
         if (args.length < 2) return usage(err);
         Args flags;
@@ -55,13 +62,20 @@ public final class Main {
         err.println("       forseti recordings synth --scenario <synthetic scenario file> --out <dir> --registry <dir> [--lock]");
         err.println("       forseti recordings verify --scenario <file> --out <dir> [--registry <dir>]");
         err.println("       forseti gate --engine core [--out <dir>] [--python <interpreter>] [--negative-control <name>] [--seed <n>]");
+        err.println("                    [--shard <name> | --aggregate <dir>] [--state <out>/state]");
         err.println("       forseti run --engine core --recording <dir> --registry <dir> --state <dir> --generation <n> --out <run dir>");
         err.println("                   [--seed <n>] [--shuffle] [--subscribe <topic>=<p,p>[;<topic>=<p,p>]] [--artifact-sha256 <hex>]");
+        err.println("       forseti generation new --state <dir> --mappings <dir> --trusted-keys <file> --stream <s> [--stream <s2>] --rule <id>@<version>");
+        err.println("                   [--recording <dir>] [--definitions <file>]");
+        err.println("       forseti generation retire --state <dir> --generation <n>");
+        err.println("       forseti generation list --state <dir>");
         return 2;
     }
 
-    /** {@code forseti run --engine core ...}: the reference harness. Prints {@code {runId, generation, cuts, out}} (exit 0), a refusal
-     *  {@code {"refusal": <code>, ...evidence}} (exit 1), or a usage or input error (exit 2). */
+    /** {@code forseti run --engine core ...}: the run preparation ({@link GenerationCli#prepareRun}: the generation registered in a valid
+     *  history, the initial recovery declaration written once or the declared routing equal to the recording's), then the reference
+     *  harness. Prints {@code {runId, generation, cuts, out}} (exit 0), a refusal {@code {"refusal": <code>, ...evidence}} (exit 1; a
+     *  corrupt control log is the refusal {@code control-log-corrupt}), or a usage or input error (exit 2). */
     private static int run(Args f, String command, PrintStream out, PrintStream err) {
         ReferenceEngine.Options o;
         try {
@@ -75,6 +89,7 @@ public final class Main {
                 Path.of(f.required("out")), seed, f.has("shuffle"), subscribe(f.get("subscribe").orElse(null)), artifact, command);
         } catch (IllegalArgumentException e) { err.println(e.getMessage()); return usage(err); }
         try {
+            GenerationCli.prepareRun(o.state(), o.generation(), o.recording());
             ReferenceEngine.Result r = ReferenceEngine.run(o);
             ObjectNode n = Json.object().put("runId", r.runId());
             Json.putSafe(n, "generation", o.generation());
@@ -84,7 +99,11 @@ public final class Main {
         } catch (ReferenceEngine.Refused e) {
             out.println(Canonical.utf8(Canonical.bytes(e.toJson())));
             return 1;
-        } catch (IllegalArgumentException | IllegalStateException | UncheckedIOException e) {
+        } catch (IllegalStateException e) {
+            if (!GenerationCli.isCorrupt(e)) { err.println(e.getMessage()); return 2; }
+            out.println(Canonical.utf8(Canonical.bytes(GenerationCli.corrupt(e).toJson())));
+            return 1;
+        } catch (IllegalArgumentException | UncheckedIOException e) {
             err.println(e.getMessage());
             return 2;
         }

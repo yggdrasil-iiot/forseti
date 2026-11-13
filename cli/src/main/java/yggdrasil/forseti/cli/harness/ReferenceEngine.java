@@ -40,9 +40,11 @@ import yggdrasil.forseti.core.stage2.Stage2;
 /** The engine-independent reference adapter of stages 1 and 2 ({@code forseti run --engine core}). It owns only the adapter duties of
  *  Decision 12: partitioning (S1 routing to a {@link StationTask} or the {@link RejectCollector}, T1 routing of incidents to a
  *  {@link Stage2Task} or the stage-2 reject collector), timers, state, side outputs and sinks; every judgement is {@link Stage1#decide}'s
- *  or {@link Stage2#decide}'s. It runs a registered generation from its pinned snapshot: it reads the generation row,
- *  rebuilds the head from {@code releaseEvidence} and lets {@link ReleaseReader} verify {@code release.json} and every payload file against
- *  those digests; it never verifies a head and never writes a generation row. Per batch of the recording it delivers the records of
+ *  or {@link Stage2#decide}'s. It runs a registered generation from its pinned snapshot: it reads the store (a valid history with a
+ *  unique {@code registered} row of the number), rebuilds the head from {@code releaseEvidence} and lets {@link ReleaseReader} verify
+ *  {@code release.json} and every payload file against those digests; it never verifies a head and writes nothing to the store (the
+ *  initial recovery declaration is written by the run preparation, {@code GenerationCli.prepareRun}, which {@code forseti run} calls
+ *  first). Per batch of the recording it delivers the records of
  *  {@code (throughOffsets[k-1], throughOffsets[k]]} of every subscribed stage-1 partition, closes the cut at every station and the reject
  *  collector, then runs stage 2 of the cut at every station on what stage 1 wrote to its partition (rows, deletes, the two progress
  *  records) and the incidents of {@code (throughOffsets[k-1], throughOffsets[k]]} routed to it, closes the stage-2 reject collector, and
@@ -54,12 +56,13 @@ public final class ReferenceEngine {
     public static final long DEFAULT_SEED = 20261109L;
     static final List<String> STAGE1_TOPICS = List.of(InputParser.MESSAGES, InputParser.SESSIONS, InputParser.OCCUPANCY);
 
-    /** A start-up refusal: a code ({@code generation-unregistered}, {@code generation-rules-mismatch}, or a reader refusal such as
-     *  {@code provenance-mismatch}) and its evidence. */
+    /** A start-up refusal: a code ({@code generation-unregistered}, {@code generation-rules-mismatch}, {@code generation-routing-mismatch}
+     *  and {@code generation-transition} of the generation CLI, or a reader refusal such as {@code provenance-mismatch}) and its
+     *  evidence. */
     public static final class Refused extends RuntimeException {
         public final String code;
         public final ObjectNode evidence;
-        Refused(String code, ObjectNode evidence) { super(code); this.code = code; this.evidence = evidence; }
+        public Refused(String code, ObjectNode evidence) { super(code); this.code = code; this.evidence = evidence; }
         public ObjectNode toJson() { ObjectNode n = Json.object().put("refusal", code); n.setAll(evidence.deepCopy()); return n; }
     }
 
@@ -77,11 +80,11 @@ public final class ReferenceEngine {
 
     public static Result run(Options o) {
         // (1) the registered generation and its pinned snapshot
-        GenerationStore store = new FileGenerationStore(o.state());
-        List<GenerationStore.Entry> rows = store.byNumber(o.generation());
-        if (rows.isEmpty()) throw new Refused("generation-unregistered", Json.putSafe(Json.object(), "generation", o.generation()));
-        Generation g = rows.get(0).row();
-        for (GenerationStore.Entry e : rows) if (Generation.REGISTERED.equals(e.row().status())) { g = e.row(); break; }
+        FileGenerationStore store = new FileGenerationStore(o.state());
+        Optional<GenerationStore.Entry> registered = store.registered(o.generation());
+        if (registered.isEmpty()) throw new Refused("generation-unregistered", Json.putSafe(Json.object(), "generation", o.generation()));
+        Generation g = registered.get().row();
+        String scope = registered.get().scope(), registeredRowSha256 = store.registeredRowSha256(o.generation()).orElseThrow();
         JsonNode evidence = g.releaseEvidence();
         HeadVerifier.Head head = head(evidence);
         Path mappings = o.registry().resolve("mappings");
@@ -254,7 +257,7 @@ public final class ReferenceEngine {
         try { manifestSha = Canonical.digestOf(Files.readAllBytes(o.recording().resolve(Recording.MANIFEST))); } catch (IOException e) { throw new UncheckedIOException(e); }
         ObjectNode digests = Json.object();
         rec.digests().forEach(digests::put);
-        ObjectNode record = RunRecord.build(new RunRecord.Facts(runId, g.generation(), o.seed(), o.shuffle(), pins, manifestSha, digests,
+        ObjectNode record = RunRecord.build(new RunRecord.Facts(runId, g.generation(), registeredRowSha256, scope, o.seed(), o.shuffle(), pins, manifestSha, digests,
             head.releaseSha256(), rules.rulesDigest(), jcsJava(), subscribedAll, consumed, cutLog.size(), o.command()));
         RunRecord.write(o.out(), record);
         return new Result(runId, o.out(), cutLog.size(), record);
@@ -330,11 +333,13 @@ public final class ReferenceEngine {
 
     /** One read of {@code <stateDir>/recovery-control.jsonl} at a writer's initialization: the offset of the latest declaration of this
      *  generation and the record count H at that read. Each line is one declaration ({@code {generation, injectionId, stage, epochBefore,
-     *  targetEpoch, lastWrittenCutId, routingDigest}}). */
+     *  targetEpoch, lastWrittenCutId, routingDigest}}). The read is made inside the hold of {@code generations.lock}, under which every
+     *  declaration is appended (the run preparation), so it never sees a line half written by a run preparing in another process. */
     static Progress.InitEvidence initEvidence(Path state, long generation) {
         Path f = state.resolve(RECOVERY_CONTROL);
         byte[] bytes;
-        try { bytes = Files.readAllBytes(f); } catch (IOException e) { throw new IllegalStateException("no recovery control at " + f + " (generation new writes the initial declaration)"); }
+        try { bytes = new FileGenerationStore(state).locked(() -> Files.readAllBytes(f)); }
+        catch (java.io.UncheckedIOException e) { throw new IllegalStateException("no recovery control at " + f + " (the run preparation of forseti run writes the initial declaration)"); }
         if (bytes.length > 0 && bytes[bytes.length - 1] != '\n') throw new IllegalStateException("control-log-corrupt: " + RECOVERY_CONTROL + ": the last line has no LF");
         long count = 0, found = -1;
         int start = 0;

@@ -43,9 +43,82 @@ Owner decision of 2026-11-12, taken after two rounds of advice, applied in PR 4 
 3. Expectations that followed the plan instead of the spec now follow the spec text: `I-10f` (spec 648, "Next revision; disposition accepted (late-after-settlement)"): the visit, already complete, gets a next revision and both deliveries are accepted late-after-settlement; the provisional step between two completes cannot occur in `corrections`, because W1 is already past the new `leave + L` when the correction is delivered. `I-15` (spec 657): units per `onWithdrawn` with `incident-withdrawn`, resolution withdrawn; "never complete" holds from the cut that applies the withdrawn revision 2 (revision 1 is a closed incident whose set may settle complete earlier). `C-2-REFERENCE`: lateness is `admissionW - sourceTs` of an accepted sample; `held-back-10min`'s longest is `delayMs - scanMs - O - 1 = 568999`, not 600000.
 4. Ground truth. Four errors of the scenario generator (not of the spec) are fixed where core and oracle agreed with the spec, and five scenario locks change: session events of devices outside the plc rule's catalog are rejected `unknown-device`; `attributionEnd` at a VisitId change; no occupancy dispositions when occupancy is not subscribed; the third planned late sample is `replay-required`.
 
+## Amendment 2026-11-13
+
+Owner decisions of 2026-11-13 (items 1-4 and, after a review of the first draft, items 5-8, listed below in this amendment), taken
+after two proposals for Tasks 20-21 under the sharded gate, binding with the owner decisions of 2026-11-12 on the sharded gate
+(every PR runs all shards and the aggregate with no recording cache; promotion accepts a whole-gate report only; negative
+controls run in their owning shard only; the aggregate checks shard exit codes, failed and not-run results before PR #11
+merged). Applied from
+PR 5 on; "current spec" means the spec at `bc299d5` as edited by Step 20.0. Chunk 6 is replaced as a whole and cites current spec
+lines; the lines of Chunk 7, Open points and Verification that this amendment rewrites cite current spec lines too, every other
+line keeps its reference as Amendment 2026-11-11 states.
+
+1. **PR 5 is delivered as two PRs.** PR 5a (`feat/step3-generation-cli`, Task 20, manifest 72 -> 75) and PR 5b
+   (`feat/step3-promotion-and-replay`, Task 21, manifest 75 -> 79). PR 6 keeps its number, branch and gate (82). Task numbers and
+   assertion ids are unchanged (Chunk 6).
+2. **The spec is edited first.** Step 20.0 writes three additions into the spec before any code or lock: the run citation `run` on
+   `replaying`, `verified` and `current` rows (null otherwise) and the address of a generation outside its store (its store and
+   `registeredRowSha256`); the rule that the gate registers only through `generation new` in its pipeline store, with isolated
+   assertion stores as the only place a gate run may call `retire`, while harness and jobs only read; the event-time replay
+   (order, batches, watermarks and deadlines). Spec lines 414, 483 and 570 are adjusted so nothing contradicts. `Generation`
+   therefore gains the field `run` (the plan said it "gains nothing").
+3. **`generation new` may register without a recording** and writes no recovery declaration. The initial declaration is written by
+   the run preparation of the generation's first run, when the routing is known (Step 20.3). This replaces "appends `registered` and
+   the initial recovery declaration" of the former Step 20.2.
+4. **One pipeline store per gate run, registered through the verb.** Every run of a gate run (full or shard) reads a generation
+   registered by `generation new`, sequentially, in a fixed order, before the scenario pipeline starts; `Stage1Assertions.register`
+   (the hand-written row, always number 1) is deleted. `gate --state <dir>` is valid for a full run and a `--shard` run and a usage
+   error (exit 2) with `--aggregate` and `--negative-control`. With `--state` the registrations use the executable verb and the
+   system clock and are `shared`; without it they go to a temporary store with the fixture clock and are `isolated`. The sentence
+   "the gate appends nothing" now reads: the gate appends no row by any path of its own (Step 20.4).
+5. **Report format.** `report.json` gains `kind`, `layout`, `negativeControl`, `summariesSha256`, `results[].shard`, `shards[]`,
+   `generations[]` and `runs[]`; every generation and run entry carries `store`, a bundle-local identifier of the control store,
+   and identities are unique and resolved per `(shard, store)`, never by a digest alone. A full run writes `summaries.json` like a
+   shard run. `run.json` gains `registeredRowSha256`, `scope`, `replay` and `originalRecordingManifestSha256` in 5a (the last two
+   null until 5b sets them). The aggregate report binds every shard's `report.json` and `summaries.json` by raw SHA-256. One
+   validator, `GateEvidence.validate`, binds every run to its successful summary, its locked recording and its exact cut ids in
+   both layouts (Step 20.4).
+6. **Promotion policy** (2026-11-12 owner decision: promotion accepts a whole-gate report only, a full or aggregate report). `promote` accepts a whole-gate report only (`kind: gate`, `layout: full` or
+   `aggregate`), requires the result-id set to equal the committed manifest's, addresses the generation by store and
+   `registeredRowSha256`, re-reads the evidence files of either layout, refuses `isolated` generations, performs its final
+   approval, floor and history checks under the same hold of `generations.lock` as the publication (lock order: generation lock,
+   then floor lock), and appends its rows as one batch (Steps 21.1-21.2). Real registration and promotion use the system clock:
+   the fixture heads expire on 2027-11-12, after which they must be re-published through Bifrost for the required check to pass;
+   no flag sets the clock.
+7. **Shard ownership.** `F-GEN-NEW`, `F-GEN-REFUSES-UNREGISTERED`, `F-GEN-FLOOR` (5a) and `F-GEN-LIFECYCLE`,
+   `F-GEN-PROMOTE-REQUIRES-REPORT`, `I-20` (5b) belong to shard `hand-made`; `I-23` (5b) to `horizon-planned-late`, which from 5b on
+   also makes the generation run `horizon-planned-late@replay`. From 5b on no shard is empty: the exit-0 `0 / 0` branch of
+   `CoreGate.run` is removed and the plan refuses a shard without assertions. `F-GEN-FLOOR` and `I-20`'s generations stay in
+   isolated assertion stores.
+8. **`F-GEN-LIFECYCLE` writes no `current` row.** The gate never promotes on a report it wrote; positive promotion is proved by unit
+   tests on fixtures and, on real evidence, by `scripts/gate-then-promote.sh` (Step 21.7).
+9. **End-to-end promotion moves from PR 6 to PR 5b and promotes twice** (owner decision 4): `scripts/gate-then-promote.sh
+   --from-shards` runs in the `core-gate` job, promotes the base generation of `horizon-planned-late` and then its replay generation,
+   and requires the base generation to end `retired`. The nightly unsharded run uses the script's full mode. Task 23 no longer adds
+   that step.
+10. **Event-time replay** (owner decisions 5-7) is a materialized recording pinned by a committed lock
+    (`fixtures/scenarios/<name>.replay.lock.json`). Its batches follow telemetry-derived cut targets; the materializer computes the
+    actual replay watermark of every station at every cut and keeps a deadline's cut ids only where `W1_A < d ≤ W1_B` is proved on
+    that progression, replans the bracket otherwise and refuses when none exists; untimed partitions are exempt and an untimed
+    head keeps its original batches. A message is ordered by its smallest valid member `sourceTs`, while its largest still
+    advances the watermark. A replay timer row carries `{"kind": "replayed", "inputKind": "timer", "identity": {"deadline"}}`, and
+    `RunFold`, `JournalFold` and the stage-1 segment check read both timer causes through one function (Step 21.3).
+11. **Earlier-generation rows are kept as bytes.** The journals of the base run and of the replay run of a generation-run scenario
+    are preserved under distinct stable paths of the shard output and travel in the artifact; `I-23` hashes the base journals
+    before the replay, rereads them afterwards and requires unchanged bytes and fold results (Steps 21.4-21.5).
+12. **Corrections found on the way.** `LockedFile` did not exist (`FloorStore` inlined the lock): it is extracted in Step 20.1. The
+    former Step 20.4 expected `Tests run: 14` for sixteen listed tests: the counts of Chunk 6 replace it. The manifest description of
+    `C-2-REFERENCE` still said 600000: it reads 568999 (Amendment 2026-11-12, item 3). Spec references of Chunk 6 are the current ones
+    (Decision 11 = 73, recovery control = 414, topics = 483-484, generations = 552-570, engine-independent harness = 607, injection 23
+    planning = 611, injection 20 = 662, injection 23 = 665, proving the gates run = 690).
+
+Unchanged: every assertion id and task number, the manifest growth 72 -> 79 -> 82, the six shards and the aggregate job as the
+required check, no recording cache, PR 6's content.
+
 ## Sub-steps
 
-Seven PRs in this order (owner decision Q1). Each has its own branch off the merged predecessor, an executable gate (`forseti gate --engine core` with the committed manifest `gate/core-assertions.json` growing from 18 to 82 assertions, plus the Maven and pytest commands of its tasks), and a pull-request task. Earlier gates report their sub-step; only PR 6 closes step 3. No `tools/verify.py` wrapper is kept: the gate binary, Maven and pytest are the three commands, and a wrapper would be a fourth place where a skipped test could hide.
+Eight PRs in this order (owner decision Q1; PR 5 is delivered as 5a and 5b, Amendment 2026-11-13). Each has its own branch off the merged predecessor, an executable gate (`forseti gate --engine core` with the committed manifest `gate/core-assertions.json` growing from 18 to 82 assertions, plus the Maven and pytest commands of its tasks), and a pull-request task. Earlier gates report their sub-step; only PR 6 closes step 3. No `tools/verify.py` wrapper is kept: the gate binary, Maven and pytest are the three commands, and a wrapper would be a fourth place where a skipped test could hide.
 
 | PR | Branch | Tasks | Executable gate | Why the boundary is here |
 |---|---|---|---|---|
@@ -54,10 +127,11 @@ Seven PRs in this order (owner decision Q1). Each has its own branch off the mer
 | 2 | `feat/step3-attribution-core` | 10-13 | manifest at 24 (+6 `S-*`): stage 1 through the reference harness on the committed smoke recordings and inline sequences, without the oracle | Stage 1 is one rule and one owner; its outputs (`forseti.work-records`, `forseti.samples`) are stage 2's published inputs; the harness is how the core runs without an engine, so it belongs with the first decision function |
 | 3 | `feat/step3-impact-and-progress` | 14-15 | manifest at 29 (+5 `T-*`): `ProgressTracker`, stage 2, cascade, deletes on the same recording | The second rule and owner; the cascade and the progress protocol must exist before differential testing crosses two stages |
 | 4 | `feat/step3-recordings-and-oracle` | 16-19 | manifest at 72 (+32 `I-*`, +8 `J-*`, +3 `C-*`): every engine-independent injection except 20 and 23, the oracle, integrity, determinism, item 2 reference values | The independent implementation and the fixtures it is compared on are reviewed together; the synthesized horizon recordings (about 440k messages each) enter here |
-| 5 | `feat/step3-generation-cli` | 20-21 | manifest at 79 (+5 `F-GEN-*`, `I-20`, `I-23`) | Persistent control state, promotion and generation replay are reviewed apart from business evaluation |
+| 5a | `feat/step3-generation-cli` | 20 | manifest at 75 (+`F-GEN-NEW`, `F-GEN-REFUSES-UNREGISTERED`, `F-GEN-FLOOR`); six shards and the aggregate | The spec additions, the locked control store and the move of every run onto a verb-registered generation are reviewed apart from new semantics; a mistake breaks the 72 existing assertions |
+| 5b | `feat/step3-promotion-and-replay` | 21 | manifest at 79 (+`F-GEN-LIFECYCLE`, `F-GEN-PROMOTE-REQUIRES-REPORT`, `I-20`, `I-23`); `scripts/gate-then-promote.sh --from-shards` exits 0 in `core-gate` | Promotion bound to whole-gate evidence and the event-time replay are reviewed apart from business evaluation |
 | 6 | `test/step3-core-gate` | 22-23 | manifest at 82 (+`C-1`, +2 gate self-tests); eight negative controls exit 1; CI | Closes the step: assertion accounting proven to run, controls, CI, documentation |
 
-PR 0 is merged (forseti #6, `main` = `7dce7c0`). Between PR 0 and PR 1 come the amendment PR and three PRs in the sibling repositories (Amendment 2026-11-11, decision 3; section Prerequisites before PR 1). They add no forseti code and no assertion; the seven PRs above keep their numbers, branches and gates.
+PR 0 is merged (forseti #6, `main` = `7dce7c0`). Between PR 0 and PR 1 come the amendment PR and three PRs in the sibling repositories (Amendment 2026-11-11, decision 3; section Prerequisites before PR 1). They add no forseti code and no assertion; the PRs above keep their numbers, branches and gates (PR 5 as 5a and 5b, Amendment 2026-11-13).
 
 ## File Structure
 
@@ -65,7 +139,7 @@ PR 0 is merged (forseti #6, `main` = `7dce7c0`). Between PR 0 and PR 1 come the 
 |---|---|
 | `docs/superpowers/specs/2026-11-05-forseti-design.md` | **PR 0** - Task 1 insertions only (pins, reader path, step-3 interpretations); contracts and gate meaning unchanged |
 | `.gitattributes`, `.gitignore` | LF everywhere; `fixtures/** -text`, `vectors/** -text`, `schemas/** -text`, `core/src/main/resources/forseti/** -text`; ignore `target/`, `build/`, caches, private keys |
-| `.github/workflows/ci.yml` | Linux: ASCII names, dependency-closure check, `mvn -B -ntp install`, oracle `pytest`, `forseti gate --engine core` (exit 0), every control in `gate/core-negative-controls.json` (exit 1), the Bifrost seam job with pinned sibling checkouts; Windows: `mvn -B -ntp install` + oracle tests |
+| `.github/workflows/ci.yml` | Linux: ASCII names, dependency-closure check, `mvn -B -ntp install`, oracle `pytest`, the core gate in one job per shard of `gate/core-shards.json` with `--state` (PR 5a), the `core-gate` job (aggregate, from PR 5b `scripts/gate-then-promote.sh --from-shards`, every control in `gate/core-negative-controls.json` exits 1), the Bifrost seam job with pinned sibling checkouts; Windows: `mvn -B -ntp install` + oracle tests |
 | `scripts/check-ascii-names.sh`, `scripts/check-dependency-closure.sh` | the family's product-name check; `mvn dependency:tree` grep for banned groups (`yggdrasil.bifrost`, `org.apache.flink`, `org.apache.kafka`) |
 | `pom.xml`, `core/pom.xml`, `cli/pom.xml` | `forseti-parent` 0.1.0-SNAPSHOT (pins above); `forseti-core` (Jackson, JCS, networknt only); `forseti-cli` -> shaded `cli/target/forseti.jar`, main `yggdrasil.forseti.cli.Main` |
 | `core/src/main/resources/forseti/schemas/{occupancy,incident}-1.0.0.schema.json` | the two input schemas (spec 280-315); their raw-byte SHA-256 is the profiles' `format.schemaSha256` |
@@ -79,14 +153,20 @@ PR 0 is merged (forseti #6, `main` = `7dce7c0`). Between PR 0 and PR 1 come the 
 | `core/.../core/rules/{Hierarchy,MemberCatalog,AttributionRule,ImpactRule,OccupancyBinding,IncidentBinding,RuleSet}.java` | typed views of the released documents, member resolution and roles (spec 132), `binding.schema-mismatch`, `pins()` and `rulesDigest()` (spec 355) |
 | `core/.../core/stage1/{Events,Stage1State,Stage1,PlcStamped,VisitClaim,Attribution,Coverage,Sessions,WorkRecord,SampleRow}.java` | stage 1 (rule sheet S1-S11 and P1-P3) |
 | `core/.../core/stage2/{Events2,ProgressTracker,Stage2State,Stage2,Incidents,Relatedness,DecisionTable,SetCoverage,Assessment,AffectedSet}.java` | stage 2 (rule sheet T1-T10) |
-| `core/.../core/generation/{Generation,GenerationStore}.java` | the generation row (spec 540-548) and the store interface (**PR 2**, Task 11: the harness reads them from its first run) |
-| `core/.../core/generation/GenerationPolicy.java` | the pure transition policy (`registered -> replaying -> verified -> current -> retired`, one current per scope) (**PR 5**) |
+| `core/.../core/generation/{Generation,GenerationStore}.java` | the generation row (current spec 555-566; `run` added in **PR 5a**) and the store interface (**PR 2**, Task 11: the harness reads them from its first run; history validation in PR 5a) |
+| `core/.../core/generation/GenerationPolicy.java` | the pure transition policy (`registered -> replaying -> verified -> current -> retired`, one current per scope) (**PR 5a**) |
+| `core/.../core/release/LockedFile.java` | the two-level lock (in-JVM lock per real path, then the `FileLock`) shared by `FloorStore` and the generation store (**PR 5a**) |
 | `cli/.../cli/{Main,Args}.java` | `forseti generation ...`, `forseti recordings build|synth|verify`, `forseti run --engine core`, `forseti gate --engine core` |
 | `cli/.../cli/recording/{Recording,RoutingManifest,Murmur2}.java` | recording directory format, routing manifest and `routingDigest`, Kafka's default partitioner for raw device keys (**PR 1**) |
 | `cli/.../cli/recording/{ScenarioBuilder,Overlays,GroundTruth,Synthesizer,Telemetry}.java` | scenario JSON -> recording + ground truth; injection overlays; streamed continuous recordings and lock files (**PR 4**) |
 | `core/.../core/NegativeControls.java` | the record of control flags the decision functions are constructed with, `NONE` in production (**PR 2**, Task 10, as a parameter nothing reads yet); PR 6 adds the behaviours and cli composes its values from `--negative-control`; core never depends on cli |
 | `cli/.../cli/harness/{ReferenceEngine,StationTask,RejectCollector,ContractOrder,JournalFiles,CutLog,RunRecord}.java` | the engine-independent reference adapter (stage 1 in PR 2, stage 2 in PR 3, controls in PR 6) |
-| `cli/.../cli/generation/{GenerationCli,FileGenerationStore,GateReportReader}.java` | the CLI verbs and gate-report verification for `promote` (**PR 5**); `FileGenerationStore`'s read side arrives in **PR 2** (Task 11) and its locked, durable `append` in PR 5 |
+| `cli/.../cli/generation/{GenerationCli,FileGenerationStore,GateReportReader}.java` | `new`, `retire`, `list`, the run preparation and the locked, durable `append` (**PR 5a**); `promote` and the whole-gate report reader (**PR 5b**); `FileGenerationStore`'s read side arrives in **PR 2** (Task 11) |
+| `cli/.../cli/gate/GateEvidence.java` | the one evidence validator of a gate output directory: store-qualified identities, every run bound to its successful summary, locked recording and exact cut ids (**PR 5a**; generation runs and kept journals in PR 5b) |
+| `cli/.../cli/recording/ReplayRecording.java` | materializes the event-time replay recording of current spec 570: order, telemetry-derived batches, replay watermarks, proved or replanned deadline brackets (**PR 5b**) |
+| `gate/core-shards.json` | the shard plan: scenarios, shuffled runs, assertions and (PR 5b) `generationRuns` per shard; the aggregate list |
+| `fixtures/scenarios/{horizon-planned-late,smoke}.replay.lock.json` | the pinned digests of the two materialized replay recordings (**PR 5b**) |
+| `scripts/gate-then-promote.sh` | gate (full or `--from-shards`), then promote the base and the replay generation of `horizon-planned-late` through the CLI (**PR 5b**; run by `core-gate` and nightly) |
 | `cli/.../cli/gate/{CoreGate,Assertions,Comparison,Integrity,Injections}.java` | manifest loading, assertion accounting, folding, oracle comparison, integrity checks, per-injection assertions |
 | `gate/core-assertions.json`, `gate/core-negative-controls.json` | the committed assertion manifest of `--engine core` (ids below) and the control list CI loops over |
 | `oracle/pyproject.toml`, `oracle/src/forseti_oracle/{canon,inputs,rules,recording,cuts,stage1,stage2,fold,cli}.py`, `oracle/tests/*.py` | the oracle and its pytest suite |
@@ -120,10 +200,10 @@ PR 0 is merged (forseti #6, `main` = `7dce7c0`). Between PR 0 and PR 1 come the 
 | 11e | In | 4 | needs the horizon |
 | 12-17 | In | 4 | stage 2 from stage-1 journals and incident content |
 | 18, 19 | In | 4 | the cascade through the harness: stage-1 output re-drives stage 2 |
-| 20 | In | 5 | two generations of one recording with two rule versions through the generation CLI and the two registry fixtures |
+| 20 | In | 5b | two generations of one recording with two rule versions through the generation CLI and the two registry fixtures |
 | 21 | Out | 6, 7 | `kill -9`, checkpoint restore and transactional sinks are engine behaviour |
 | 22 (i)-(iv) | Out | 6, 7 | restart, rebalance and recovery control need the engines and Kafka |
-| 23 | In | 5 | planned late samples at `A - horizonMs +- 1`; the second generation replays in event-time order |
+| 23 | In | 5b | planned late samples at `A - horizonMs +- 1`; the second generation replays in event-time order |
 | 24 | Out | 6, 7 (`forseti requirements`) | starvation and the 60 s observation deadline are engine time behaviour; both raw placements are step-5 fixtures |
 | 25 (a), (b) | In (consumption) | 4; classification in 5 | the core consumes `stale-death` (session stays open) and `session-ambiguous` (coverage `unknown`); NDEATH assignment and missing-NBIRTH detection (Decision 10) are bridge logic |
 | 26 | In | 4 | a quiet occupancy stream is a recording variant compared with its control run |
@@ -1420,7 +1500,7 @@ The stage-1 rule sheet below is the two implementations' shared reading of the s
 - **S8 Sessions** (spec 68, 271-278, 502 as extended by Task 1). Per device: `seq-gap {from, to}` gives a gap interval `[from, to)`; `session-down {from}` gives `[from, nextUp.at)` or `[from, W1)` while open; `stale-death` opens no gap; `session-ambiguous {detectedEventTime}` gives an unknown interval `[lastObservationBefore(detectedEventTime), nextUp.at or W1)`; `definition-changed` marks the session so its samples are `rejected definition-mismatch`. A gap interval of a device of the station overlapping `J` of a non-retracted visit adds `session-gap`; an unknown interval adds `session-ambiguous`. Open gaps end at `W1` and count only inside `J`.
 - **S9 Sample attribution** (spec 491 as extended by Task 1, 364-368). For an admitted sample (device `d`, member `m`, `sourceTs t`), in order: no `sourceTs` -> `unattributed no-source-timestamp`; measurement conflict -> `quarantined measurement-conflict`; a non-finite Double (`NaN`, `Infinity`, or an overflowing literal in either notation: `1e400` and `-1e400`, which Jackson's `Double.parseDouble` and Python's `json` map to a signed infinity, and an integer literal beyond the double range such as `1` followed by 400 zeros, which Jackson's `BigInteger.doubleValue()` maps to a signed infinity and the oracle maps the same way after catching Python's `OverflowError`) -> `unattributed non-finite`, the message's other members unaffected; a finite value is one value whatever its notation (`9007199254740992`, `9007199254740992.0`, `9.007199254740992e15` parse to the same double on both sides; the canonicalizer's integer-domain refusal never reaches a sample's reason); Bad, or Uncertain under `reject` -> `unattributed bad-quality`; `t` inside a `session-down` interval of `d` -> `unattributed outside-session`; `t` inside an unknown interval of `d` -> `unattributed session-ambiguous`; else candidates = visits of the station whose window `[enter - tolE, upper)` contains `t` (`upper = leave + tolL` closed; `attributionEnd` when open and known; else unbounded): two or more non-retracted candidates -> `unattributed ambiguous` (contributes to no visit, not an overlap cause); exactly one non-retracted -> `attributed`; no non-retracted candidate -> `attributed` to the retracted candidate whose actual `[enter, leave)` contains `t`, and `unattributed ambiguous` when none or several do; no candidate -> `unattributed no-occupancy`. The quality-blind candidate (the same rule evaluated before the quality, finiteness and session steps) decides which visit a Bad or rejected-Uncertain observation counts for in S6. `active` = the accepted-quality value of `d`'s activity member in the same message (Good, or Uncertain when the rule's `uncertainInput` is `propagate`), else `"unknown"`. Row body `{sourceTs, state, reason (null when attributed and no diagnostic applies), active, attributedTo}`. A change of state, reason or `attributedTo` is a new revision; an `unattributed` sample with reason `no-occupancy` or `ambiguous` and `active true` is unattributed activity (spec 368).
 - **S10 Timers and `W1`** (spec 491, 495-496, 508; Task 1's line 588). Deadlines per visit: `leave + L` (settle), `enter + H` (missing departure), `onlineExpiresAt` (expiry); the `DeadlineIndex` is ordered by `(deadline, logical key bytes, purpose)`, deduplicated, with obsolete registrations removed; a timer fires when `W1 >= deadline`, after every input of the cut, in that order, and recomputes its visit. The harness computes `W1(s) = max sourceTs of telemetry routed to s over everything delivered through the cut - O - 1`, never decreasing.
-- **S11 Emission** (Decision 6; spec 331, 412). A work record row is emitted when its `bodyDigest` changes; `revision` from 1 per key per generation; `supersedesDigest`; `cause` `{"kind": "input", "inputKind", "identity"}` or `{"kind": "timer", "deadline"}` (`replayed` in PR 5); `basisRevisions []`. No stage-1 row is ever deleted. Progress per cut after the timers: `{type: "progress", generation, station, cutId, producerEpoch: 0, W1, admissionW, barrierRefs, restartEpoch: 0, recoveryRef: null, mergedCutIds: [], initEvidence (first progress only: {declarationOffset: the offset of this generation's latest declaration in `recovery-control.jsonl` as read at initialization, endOffset: the file's record count H at that read, restore: "none"}; spec 408: the chosen declaration's real offset and H, never constants, because every `generation new` appends a declaration to the shared control log)}`; the station's ledger progress the same cut.
+- **S11 Emission** (Decision 6; spec 331, 412). A work record row is emitted when its `bodyDigest` changes; `revision` from 1 per key per generation; `supersedesDigest`; `cause` `{"kind": "input", "inputKind", "identity"}` or `{"kind": "timer", "deadline"}` (`replayed` in PR 5b); `basisRevisions []`. No stage-1 row is ever deleted. Progress per cut after the timers: `{type: "progress", generation, station, cutId, producerEpoch: 0, W1, admissionW, barrierRefs, restartEpoch: 0, recoveryRef: null, mergedCutIds: [], initEvidence (first progress only: {declarationOffset: the offset of this generation's latest declaration in `recovery-control.jsonl` as read at initialization, endOffset: the file's record count H at that read, restore: "none"}; spec 408: the chosen declaration's real offset and H, never constants, because every `generation new` appends a declaration to the shared control log)}`; the station's ledger progress the same cut.
 
 - [ ] **Step 10.1** `core/.../core/NegativeControls.java` (created here, B2: the record of the eight boolean flags, `processingTime, dropLate, noCascade, firstWins, stationGranularity, ignoreSessionGap, wrongRulesPin, lenientOracle`, with `NegativeControls.NONE`; in this PR every flag is false and no code path reads one yet, so the record is a constructor parameter of `Stage1` from the first commit and PR 6 only adds the behaviours). `Events.java`: `sealed interface Event permits Admit, Timer, CutClose`; `Admit(InputRecord record, int kindRank)`, `Timer(long deadline, JsonNode key, String purpose)`, `CutClose(long cutId, long w1, List<JsonNode> barrierRefs)`. `Stage1.decide(Stage1State state, Event e, Long watermark) -> Result(state, List<Object> outputs)` (`watermark` = `admissionW` for `Admit`, nullable before the first progress; `W1` for `Timer` and `CutClose`); outputs are `Row`, `Disposition`, `Progress.Stage1`, `Progress.Ledger`, `QuarantineRecord`. `Stage1State`: `visits`, `pendingLeaves`, `tombstones`, `deliveries` (S2), `measurements`, `samples`, `sessions`, `deadlines: DeadlineIndex`, `revisions`, `lastW1`, `admissionW`, `progressCount`; versioned `toJson()`/`fromJson()` for the adapters' stores.
 
@@ -1433,7 +1513,7 @@ The stage-1 rule sheet below is the two implementations' shared reading of the s
 ### Task 11: Reference harness for stage 1: stations, cuts, `W1`, timers, journals, ledgers, cut log, run record
 
 **Files:**
-- Create: `core/src/main/java/yggdrasil/forseti/core/generation/{Generation,GenerationStore}.java` (B2: the row record and the store interface the harness reads), `cli/src/main/java/yggdrasil/forseti/cli/generation/FileGenerationStore.java` (read side only; `append` unsupported until PR 5)
+- Create: `core/src/main/java/yggdrasil/forseti/core/generation/{Generation,GenerationStore}.java` (B2: the row record and the store interface the harness reads), `cli/src/main/java/yggdrasil/forseti/cli/generation/FileGenerationStore.java` (read side only; `append` unsupported until PR 5a)
 - Create: `cli/src/main/java/yggdrasil/forseti/cli/harness/{ReferenceEngine,StationTask,RejectCollector,ContractOrder,JournalFiles,CutLog,RunRecord}.java`
 - Create: `cli/src/test/java/yggdrasil/forseti/cli/harness/ReferenceEngineTest.java`
 
@@ -1703,7 +1783,7 @@ Horizon scenarios (current spec 613) need continuous telemetry on every subscrib
 | `J-DISPOSITION-COVERAGE`, `J-REVISION-CONTINUITY`, `J-NO-EQUAL-CONSECUTIVE`, `J-PROGRESS-ORDER`, `J-W1-FORMULA`, `J-W2-EQUALS-W1`, `J-BASIS-CURRENT` | all scenarios | the integrity checks above, aggregated over every run of the gate |
 | `J-AFTER-HORIZON-CUTS` | the five horizon scenarios | cuts exist with `W1 >= enter + H + L` of the open visits; `onlineVisits` drops after expiry while the rows remain in the fold |
 | `C-6-STAGE1`, `C-6-STAGE2` | `baseline`, `stage2` x 3 seeds (`--shuffle`) | identical bodies at every cut; revision counts in `report.json` |
-| `C-2-REFERENCE` | `held-back-10min`, `horizon-planned-late` (its generation-1 run only; `I-23` is PR 5) | `report.json` records `longestLatenessCorrectedOnlineMs` (600000 from 1; `H` from 23's second late sample), journal row counts per topic per scenario, `inputsWithoutDisposition 0` Corrected to the spec text: Amendment 2026-11-12, item 3. |
+| `C-2-REFERENCE` | `held-back-10min`, `horizon-planned-late` (its online run only; `I-23` is PR 5b) | `report.json` records `longestLatenessCorrectedOnlineMs` (568999 from 1, Amendment 2026-11-12, item 3; `H` from 23's second late sample), journal row counts per topic per scenario, `inputsWithoutDisposition 0` Corrected to the spec text: Amendment 2026-11-12, item 3. |
 
 (43 new ids: 32 injections, 8 `J-*`, 3 `C-*`; the manifest now has 72.)
 
@@ -1711,63 +1791,660 @@ Horizon scenarios (current spec 613) need continuous telemetry on every subscrib
 
 - [ ] **Step 19.3** `mvn -B -ntp -q install` (the jar gains `Comparison`, `Integrity` and `Injections`), then the gate -> every scenario built or verified, every run compared, last line `assertions run 72 / expected 72`, exit 0; `build/gate/diffs` absent. Expected wall time 13-23 minutes (the 10-18 minutes planned for four devices, times 5/4 for the fifth; the five horizon recordings dominate; building the twenty hand-made recordings at gate time, about 330k messages together and fewer than one horizon recording, is estimated at a minute or less within that range; above 15 minutes measured, the `build` job is split as Open point 2 decides). Commit `feat(cli): core gate folds, compares with the oracle, checks integrity and asserts the engine-independent injections`. Pull request 4: Tasks 16-19 (5 commits); CI green; PR body records the gate's wall time, the scenario sizes, the diff-artifact path, and that the twenty hand-made recordings are built at gate time from committed scenarios and locks, not committed (Amendment 2026-11-11, decision 6). The expected wall time above is superseded by Amendment 2026-11-12, item 2 (measured times, sharded CI).
 
-## Chunk 6: Generation control (PR 5)
+## Chunk 6: Generation control (PR 5a and PR 5b)
 
-Branch: `git switch -c feat/step3-generation-cli main` after PR 4 merged.
+Two PRs (Amendment 2026-11-13, decision 1). PR 5a changes the generation every existing run reads and the report format, with no
+new semantics; PR 5b adds promotion and the event-time replay. Spec references are current lines (Decision 11 = 73; generations =
+552-570 as edited by Step 20.0).
 
-### Task 20: Generation rows, transition policy, the locked durable file store, the CLI verbs
+### Report format (written by 5a, extended by 5b)
+
+`report.json` keeps every field it has and gains:
+
+| Field | Value |
+|---|---|
+| `kind` | `gate`, or `negative-control` exactly when `--negative-control` was given. Never inferred from `intendedFailures` |
+| `negativeControl` | null, or the control's name |
+| `layout` | `full` (no `--shard`, no `--aggregate`), `shard`, or `aggregate`. The existing field `shard` is non-null exactly when `layout` is `shard` |
+| `summariesSha256` | `full` and `shard`: the raw-byte SHA-256 of the `summaries.json` this run wrote beside the report (a full run writes one too, from 5a on). `aggregate`: null (the shards' are in `shards[]`) |
+| `results[].shard` | `full`: null. `shard`: the shard's name. `aggregate`: the plan owner of the id (a shard name, or the literal `aggregate` for an id of the plan's `aggregate` list) |
+| `shards[]` | `aggregate` only, else `[]`: one entry per shard of the committed plan, in plan order, `{name, exit, reportSha256, summariesSha256}`; the two digests are the raw-byte SHA-256 of the exact bytes the aggregate run parsed (read once; hash and parse the same buffer) |
+| `generations[]` | every generation this gate run registered: `{shard, store, generation, scope, rulesDigest, registeredRowSha256, state, scenario, variant, assertion}`. `shard`: null in `full`. `store`: see below. `generation`: the number inside its store. `scope`: the record key. `state`: `shared` or `isolated`. `variant`: `online`, `self-test` (5a), `event-time-replay`, `rule-change` (5b). `assertion`: the id that registered it outside the pipeline, null for a pipeline generation |
+| `runs[]` | every harness run of this gate run: `{shard, store, scenario, variant, seed, shuffle, runId, generation, registeredRowSha256, state, runRecord, runRecordSha256, cutLog, cutLogSha256, recordingManifestSha256, originalRecordingManifestSha256, offsetRanges}` (5b adds `journals`, `journalsIndexSha256`). `runRecord` and `cutLog` are paths relative to the output directory of the gate run that made the run (`runs/<scenario>.run.json`, `runs/<scenario>.cuts.json`, `runs/<scenario>.shuffle-<seed>.run.json`, `runs/<scenario>.replay.run.json`, ...), never absolute and never containing `..`. In `full` and `shard` layout that directory is the report's own. In an aggregate report it is the producing shard's directory under the directory given to `--aggregate` and to `promote --shards`, `<shards dir>/<shard>/`, never the aggregate run's `--out`. The two digests are raw-byte SHA-256. `originalRecordingManifestSha256` is null unless `variant` is `event-time-replay`. `offsetRanges` is copied from the run record |
+
+`store` is the bundle-local identifier of the control store an entry lives in, deterministic for a selection: the literal
+`pipeline` for the gate run's own store (the `--state` directory, or the temporary store of a run without `--state`), and
+`assertion:<ID>` for the store an assertion creates for itself (`assertion:<ID>#2`, `#3`, ... for a further store of the same
+assertion, in creation order; an assertion creates its stores sequentially). It names no path. A generation number and a
+`registeredRowSha256` are unique only inside one `(shard, store)`: isolated stores each start at generation 1, and identical
+registrations under the fixture clock produce identical rows. Every uniqueness rule and every reference in a report therefore uses
+`(shard, store, generation)` or `(shard, store, registeredRowSha256)`; a digest alone never identifies a generation or a run.
+
+`state`: `shared` = registered by the executable `generation new` (system clock) in the store given by `--state` of the gate run that
+registered it, and kept (for a shard run, that shard's own directory; "shared" never means shared between runners). Only entries
+with `store: pipeline` can be `shared`. `isolated` = registered in a temporary store the gate deletes: every generation of a run
+without `--state`, and every generation of an `assertion:` store. An aggregate report's `generations[]` and `runs[]` are the shard
+reports' arrays concatenated in plan order, unchanged; the aggregate run registers and runs nothing.
+
+`registeredRowSha256` = `Canonical.digest` of the transport record `{topic, key, headers, value}` of the `registered` row (spec 566
+paragraph "Run citation"). Because the store writes exactly `Canonical.bytes(record) + LF`, it equals the raw SHA-256 of the stored
+line without its LF.
+
+`generations[]` and `runs[]` live in `report.json` only. `summaries.json` carries no generation number, row digest, store or run id
+in a compared field, so two shards that make the same scenario still agree on every field outside `Shards.NOT_COMPARED`.
+
+## PR 5a
+
+Branch: `git switch -c feat/step3-generation-cli main` (`main` = `bc299d5`, PR 4 merged).
+
+### Task 20: Generation rows, transition policy, the locked durable file store, the CLI verbs, one store per gate run
 
 **Files:**
-- Create: `core/src/main/java/yggdrasil/forseti/core/generation/GenerationPolicy.java`, `core/src/test/java/yggdrasil/forseti/core/generation/GenerationPolicyTest.java`; Modify: `core/.../generation/{Generation,GenerationStore}.java` (created in Task 11; `Generation` gains nothing, `GenerationStore` gains `latestStatus(n)`)
-- Create: `cli/src/main/java/yggdrasil/forseti/cli/generation/GenerationCli.java`, `cli/src/test/java/yggdrasil/forseti/cli/generation/{GenerationCliTest,FileGenerationStoreTest}.java`; Modify: `cli/.../generation/FileGenerationStore.java` (the locked, durable `append` replaces Task 11's read-only stub), `ReferenceEngine` (reads the real store; writes nothing to it)
+- Modify: `docs/superpowers/specs/2026-11-05-forseti-design.md` (the SPEC block of this amendment), this plan (Amendment 2026-11-13)
+- Create: `core/src/main/java/yggdrasil/forseti/core/release/LockedFile.java`, `core/src/test/java/yggdrasil/forseti/core/release/LockedFileTest.java`; Modify: `FloorStore` (uses `LockedFile`; behaviour and `FloorStoreTest` unchanged)
+- Create: `core/.../generation/GenerationPolicy.java`, `core/src/test/.../generation/GenerationPolicyTest.java`; Modify: `core/.../generation/Generation.java` (+ `run`), `GenerationStore.java` (+ `latestStatus(n)`, `registered(n)`, `validate()`)
+- Create: `cli/.../generation/GenerationCli.java`, `cli/src/test/.../generation/{GenerationCliTest,FileGenerationStoreTest,GenerationStoreMain}.java`; Modify: `cli/.../generation/FileGenerationStore.java` (locked durable `append`, `registeredRowSha256(n)`), `Main` (the `generation` command, usage text; `run` calls the run preparation), `ReferenceEngine` (reads the store, writes nothing to it), `RunRecord` (+ `registeredRowSha256`, `scope`, `replay`, `originalRecordingManifestSha256`)
+- Create: `cli/.../gate/GenerationAssertions.java`, `cli/.../gate/GateEvidence.java`; Modify: `cli/.../gate/{CoreGate,Scenarios,Summaries,Shards,Stage1Assertions,Stage2Assertions,Foundation}.java` (every hand-written registration path replaced, the smoke, shuffle and derived-recording helpers among them), `gate/core-assertions.json` (+3 = 75; descriptions, see OTHER-EDITS), `gate/core-shards.json`, `.github/workflows/{ci,nightly-gate}.yml`; tests `CoreGateTest`, `ShardsTest`, `ReferenceEngineTest` (its private `append` helper is replaced by the verb)
 
-Decision 11, spec 540-553 as extended by Task 1's line 553. `GenerationStore` is the transport boundary; `FileGenerationStore` is the step-3 implementation: `<stateDir>/generations.jsonl`, one transport record per line `{"topic": "forseti.generations", "key": "<scope>", "headers": {"forseti-generation": "<n>"}, "value": <the generation row>}` (the payload is the spec's row, the wrapping stays outside it), appended under the two-level lock of Task 6 (`LockedFile`: an in-JVM `ReentrantLock` per canonical path of `<stateDir>/generations.lock`, then the `FileLock`; one JVM's threads would otherwise meet `OverlappingFileLockException`), each append `force(true)`d, a partial last line (no trailing newline, or invalid JSON) fails closed with `control-log-corrupt` and is never discarded silently; `<stateDir>/recovery-control.jsonl` holds the generation's initial declaration `{generation, injectionId: null, stage: 1, epochBefore: null, targetEpoch: 0, lastWrittenCutId: 0, routingDigest}` (spec 408). `GenerationPolicy` (core, pure): `next(number)`, the allowed transitions `registered -> replaying -> verified -> current -> retired` (and `registered|replaying|verified -> retired`), "one current per scope", numbers unique across scopes (`next()` reads the highest number of the whole store), `promoteRequires(report)`. The scope of a generation is the `streamId` of the release holding its attribution rule (the key of `forseti.generations`, spec 474); `run`, `promote` and `retire` address a generation by its store-wide unique number and need no scope argument.
+**Decisions.**
 
-- [ ] **Step 20.1** `Generation` and `GenerationStore` exist since Task 11 (`GenerationStore` gains `latestStatus(n)` here); `GenerationPolicy` (+ `GenerationPolicyTest`: every allowed and refused transition; one current per scope; numbers increase across scopes), `GenerationStore` (`append`, `all`, `current(scope)`, `byNumber`, `latestStatus(n)`), `FileGenerationStore` (+ `FileGenerationStoreTest`: append and read back; two writers under the lock allocate distinct numbers; two scopes share one number sequence (`line2` -> 1, `line2-plc` -> 2, `line2` -> 3); a truncated last line fails closed; `force` called (a spy on the channel); the header and key are present).
+Decision 11 (spec 73), spec 552-570 as edited by Step 20.0. `GenerationStore` is the transport boundary; `FileGenerationStore` is the
+step-3 implementation: `<stateDir>/generations.jsonl`, one transport record per line `{"topic": "forseti.generations", "key":
+"<scope>", "headers": {"forseti-generation": "<n>"}, "value": <the generation row>}`, `<stateDir>/generations.lock`,
+`<stateDir>/recovery-control.jsonl`, `<stateDir>/head-floors/`.
 
-- [ ] **Step 20.2** `GenerationCli` (one JSON object on stdout; exit 0 ok, 1 refusal, 2 usage):
+1. **Writers.** Only `GenerationCli` appends to `generations.jsonl`. The harness and the jobs read. The gate appends no row by any
+   path of its own: in its pipeline store it invokes `generation new` and no other writing verb (decision 6); an assertion that
+   tests the lifecycle may invoke `new` and `retire`, and `promote` for a refusal, in its own `assertion:` store (spec, Gate
+   registration). No verb other than `new`, `promote` (5b) and `retire` writes a row.
+2. **Lock, lock order and durability.** Every verb holds `LockedFile` on `<stateDir>/generations.lock` for its whole operation (an
+   in-JVM `ReentrantLock` per real path, then the `FileLock`; one JVM's threads would otherwise meet
+   `OverlappingFileLockException`): read and validate the whole log, verify what the verb verifies, allocate, append, `force(true)`.
+   The head verification of `new` (and of `promote`, 5b) runs inside that hold and takes the floor lock of `FloorStore` inside it:
+   the order is always generation lock, then floor lock, and no code path takes the floor lock first and then waits for the
+   generation lock. A partial last line (no LF, or invalid JSON) fails closed with `control-log-corrupt` on every verb and on every
+   read, and is never discarded.
+3. **History validation** (`GenerationStore.validate()`, run on every read): the first row of a number is its only `registered`
+   row; numbers increase in registration order across the whole store, whatever the scope; `rulesDigest`, `inputReleases`,
+   `replayFrom`, `headVersion`, `releaseEvidence` and the record key are identical on every row of a number; every transition is
+   allowed by `GenerationPolicy`; at most one generation per scope has `current` as its latest status; no generation rests at
+   `replaying` or `verified` (in the file store those rows exist only inside one promotion batch, so such a tail is an interrupted
+   promotion). Any violation is `control-log-corrupt`. `current(scope)` never picks "the last current" out of a contradictory log.
+4. **Policy** (`GenerationPolicy`, core, pure): `next(highest number of the whole store)`; the transitions `registered -> replaying
+   -> verified -> current -> retired` and `registered -> retired`; one current per scope. The scope of a generation is the `streamId`
+   of the release holding its attribution rule (the key of `forseti.generations`, spec 483). `run` and `retire` address a generation
+   by its number inside the store they are given; outside a store a generation is named by its store and `registeredRowSha256`.
+5. **`new` without a recording, no declaration** (owner decision 3). `new` writes exactly one row. With `--recording` it pins
+   `replayFrom` at offset 0 of every subscribed partition of that recording; without one `replayFrom` is `{}`. The initial recovery
+   declaration `{generation, injectionId: null, stage: 1, epochBefore: null, targetEpoch: 0, lastWrittenCutId: 0, routingDigest}`
+   (spec 414 as edited) is written by the run preparation: `forseti run`, before the engine starts and under `generations.lock`,
+   appends it with the recording's `routingDigest` when the generation has no declaration, and otherwise requires the declared
+   `routingDigest` to equal the recording's (`generation-routing-mismatch`, exit 1) and writes nothing. Shuffled runs and the replay
+   run of a generation therefore find the declaration of the first run.
+6. **The gate and the store.** `gate --state <dir>` is valid for a full run and a `--shard` run; with `--aggregate` or
+   `--negative-control` it is a usage error (exit 2). In both layouts the directory must be `<out>/state` (compared by real path;
+   anything else is a usage error, exit 2), so the store of a shared run is always inside its own bundle: a shard run's at
+   `<shards dir>/<shard>/state`, a full run's at `<out>/state`. No external-state binding exists. With `--state` the gate runs `forseti generation new` as a child JVM on its
+   own classpath (as it already launches `forseti run`), system clock, entries `shared`; the directory is never deleted and an
+   existing store is continued above its highest number. Without `--state` it calls `GenerationCli.run` in-process with the fixture
+   clock (`GateSigner.now`) on a temporary store, entries `isolated`. Both are `store: pipeline`. Same code, same lock, same
+   numbering. The assertions' private states (`Stage1Assertions`, `Stage2Assertions`, `Foundation`, `GenerationAssertions`) always
+   use the in-process form on their own temporary stores, `store: assertion:<ID>`.
+7. **Fixed order.** Before `Scenarios.Pipeline` submits anything, the gate registers sequentially one generation per selected
+   scenario in `Scenarios.all()` order (5b: then one per generation run in plan order), each with `--recording`. Shuffled runs read
+   their scenario's generation and register none. The child harness gets `--generation <n>` from that table (`"--generation", "1"` is
+   hard-coded at `Scenarios.java` 276 today); `RunFold`, the diagnostics and the smoke and shuffle helpers take the number and the
+   `rulesDigest` from the table, never from the first line of the store (as `Scenarios.java` 204 does today).
+8. **Clock.** `GenerationCli.run(args, out, err, Clock)`; `Main` passes `Clock.systemUTC()`. No flag and no environment variable sets
+   the clock.
+9. **Kept evidence.** After folding, the gate copies each run's `run.json` and `cuts.json` to `<out>/runs/` (names in Report format)
+   before deleting the run directory (`Scenarios.java` 210-212 delete the oracle output, the harness output and the state today;
+   the state of a pipeline run is now the gate run's store and is not deleted). A full run writes `summaries.json` beside its
+   report exactly as a shard run does, and both bind it in `summariesSha256`.
+10. **One evidence validator, `GateEvidence.validate(root, bundle)`**, used by a full run and a shard run on their own output
+    before they report, by `Shards.read` on every shard directory, and by `GateReportReader` (5b) on either layout. A bundle is one
+    output directory: `report.json`, `summaries.json`, `runs/`, and `state/` when the run had `--state`. It returns problems; any
+    problem is a coverage problem (exit 1). It requires:
+    - identity: `(store, generation)` and `(store, registeredRowSha256)` are unique in the bundle's `generations[]`; every `runs[]`
+      entry resolves to exactly one generation entry by `(store, registeredRowSha256)` and repeats its `generation` and `state`;
+      `runId` is unique;
+    - coverage, both directions: every `store: pipeline` run resolves to exactly one summary of the bundle's `summaries.json`
+      (`runs[<scenario>]` for the non-shuffled `online` run, `shuffled[<scenario>@<seed>]` for a shuffled run, from 5b
+      `generationRuns[<name>]`), and every summary has exactly one such run; a run entry without a summary, a summary without a
+      run entry, and two entries for one summary are problems. The summary holds (`ok` true; for a shuffled summary
+      `failure` null, `ok` true and `equal` true);
+    - the locked recording: the summary's `recordingManifestSha256`, the entry's, the run record's
+      `fixtureDigests.recordingManifestSha256` and the committed lock's `files["manifest.json"]` are one value;
+    - exact cuts: the summary's `plannedCutIds`, `cutLogIds` and `comparedCutIds` are equal lists of length `counts.cuts` of the lock
+      (the existing `Shards.coverage` rules, moved here), and the cut ids of the kept `cuts.json` (whose raw digest is
+      `cutLogSha256`) are that list. This holds for a shuffled summary exactly as for a scenario summary: its three lists are
+      its own (decision 12), and a shuffled summary without `comparedCutIds`, with a shorter list, or with `equal` false is a
+      problem;
+    - the run record (raw digest `runRecordSha256`) against the entry, the cut log and the report: `runId`, `generation`,
+      `registeredRowSha256`, `scope`, `seed`, `shuffle`, `offsetRanges` and `cuts`; `subscribed` equals the partitions of the cut
+      log's `offsetRanges` and `offsetRanges` is their union from offset 0; `fixtureDigests.rulesDigest` and
+      the rules digest of the envelope pin set `pins` (computed as `RunFold` computes it for its `PINS` finding) equal the
+      generation entry's `rulesDigest`; `pins.job.routingDigest` equals the cut log's `routingDigest`;
+      `artifactSha256` equals the report's `pins.forseti.artifactSha256`; `jcs.java` equals the report's `pins.jcs.java`;
+    - for every `shared` entry, the store: `state/generations.jsonl` holds exactly one `registered` row with that digest under that
+      number, whose `rulesDigest`, key and pinned `releaseSha256` equal the entry's `rulesDigest`, `scope` and the run record's
+      `fixtureDigests.releaseSha256`.
+11. **Aggregate checks added to `Shards.read`.** Hash and parse the same bytes of each shard's `report.json` and `summaries.json`
+    (`shards[]`); the shard report's own `summariesSha256` equals the digest of the `summaries.json` read; a shard report with
+    `kind != gate` or `layout != shard` is a problem; `GateEvidence.validate` runs on every shard directory; merged `generations[]`
+    and `runs[]` carry that shard's name, so `(shard, store, generation)` and `(shard, store, registeredRowSha256)` are unique and
+    every run resolves by `(shard, store, registeredRowSha256)`; every planned scenario has exactly one non-shuffled `online`
+    pipeline run in each shard that plans it. A missing or different file is a coverage problem (exit 1), so an incomplete artifact
+    never reaches `promote`.
+12. **Shuffled runs are compared with the oracle directly.** Today `Scenarios.shuffle` (394-420) folds the shuffled run and never
+    calls the oracle, and `Summaries.of(Shuffled)` (127-135) writes `name, seed, failure, findings, rows` only; the per-cut equality
+    with the base run lives in `Injections.determinism`. From 5a on a shuffled run goes through `Scenarios.fold` (306) like its
+    scenario's run: the oracle is run on the same locked recording with the shuffled run's own `cuts.json`, and every cut is
+    compared. Of the two possible meanings of "compared" this is the stricter one, and it is implementable: the oracle does not
+    depend on delivery order inside a cut and already takes any run's `cuts.json`, so the code path exists; equality with the base
+    run would rest the shuffled evidence on the base run and would leave out the cuts `Comparison.notComparable` skips. The
+    equality with the base run stays where it is (`Injections.determinism`) as an additional check; it is not what "compared"
+    means. Shuffled-summary schema: `{name, seed, failure, ok, summary, recordingManifestSha256, plannedCutIds, cutLogCuts,
+    cutLogIds, cutsCompared, comparedCutIds, equal, findings, rows, ms}`. `recordingManifestSha256` is the raw digest of the
+    manifest file the shuffled harness read (recomputed from the file, not copied from the base summary); `plannedCutIds` are that
+    manifest's batch cut ids; `cutLogIds` are the ids of the shuffled run's own `cuts.json`; `comparedCutIds` are
+    `tally.comparedIds` of the shuffled run's own oracle comparison, one id per cut actually compared, and are never derived from
+    `plannedCutIds` or `cutLogIds`; `equal` is that tally's; `ok` = no failure, `equal`, and the three lists equal. A shuffled run
+    whose base run failed, whose oracle run crashed, or whose comparison stopped early has a `failure` or a short
+    `comparedCutIds` and is a coverage problem. Cost: one oracle run per shuffled run (two hand-made scenarios, three seeds), in
+    the `hand-made` shard.
+13. **Not in 5a:** `promote`, `GateReportReader`, `--replay` (the run record's `replay` and `originalRecordingManifestSha256` exist
+    and are null), `I-20`, `I-23`, the non-empty-shard rule (`horizon-planned-late` still owns no assertion and still reports
+    `0 / 0`, exit 0; no reader of reports exists yet).
+
+- [ ] **Step 20.0** Spec and plan. Apply the SPEC block (a1, a2, b1-b5, c) and add Amendment 2026-11-13, the replaced Chunk 6 and the
+  OTHER-EDITS to this plan. `git diff --stat` shows the spec and the plan only. Commit `docs(spec,plan): run citation on generation
+  rows, gate registration through generation new, event-time replay; PR 5 as 5a and 5b`.
+
+- [ ] **Step 20.1** `LockedFile` (+ `LockedFileTest`, 2: `threadsOfOneJvmWaitInsteadOfThrowing`, `theLockIsReleasedAfterAnException`);
+  `FloorStore` on it. `Generation` gains `run` (null, or an object with exactly `runId` text, `runRecordSha256` 64 hex and
+  `offsetRanges` an object; written after `gateReportSha256`, before `at`; a missing `run` is `IllegalArgumentException`).
+  `GenerationPolicy` (+ `GenerationPolicyTest`, 6: `everyAllowedTransitionIsAllowed`, `everyOtherTransitionIsRefused`,
+  `oneCurrentPerScope`, `numbersIncreaseAcrossScopes`, `aRetiredGenerationNeverReturns`,
+  `aGenerationRestingAtReplayingOrVerifiedIsCorrupt`). `GenerationStore` gains `latestStatus(n)`, `registered(n)`, `validate()`.
+  `mvn -q -pl core -Dtest='LockedFileTest,FloorStoreTest,GenerationPolicyTest' test` -> `Tests run: 2`, `Tests run: 3`,
+  `Tests run: 6`, 0 failures.
+
+- [ ] **Step 20.2** `FileGenerationStore.append` and `registeredRowSha256(n)` (+ `FileGenerationStoreTest`, 10: `appendAndReadBack`,
+  `theKeyAndHeaderAreWritten`, `twoThreadsAllocateDistinctNumbers`, `twoProcessesAllocateDistinctNumbers` (two child JVMs through
+  `GenerationStoreMain`, as `FloorStoreMain` does for the floor), `twoScopesShareOneNumberSequence` (`line2` -> 1, `line2-plc` -> 2,
+  `line2` -> 3), `aTruncatedLastLineFailsClosed`, `aContradictoryHistoryFailsClosed` (a second `registered` row of one number;
+  changed pins on a later row; two currents in one scope; a tail at `verified`: each `control-log-corrupt`), `everyAppendIsForced`
+  (a spy on the channel), `anAppendNeverRewritesEarlierBytes`, `theRegisteredRowDigestIsTheDigestOfTheStoredLine`).
+
+- [ ] **Step 20.3** `GenerationCli` (exit 0 ok, 1 refusal, 2 usage; `new` and `retire` print one JSON object, `list` prints the
+  store's transport records one per line, byte for byte):
 
 ```
 forseti generation new     --state <dir> --mappings <dir> --trusted-keys <file> --stream <s> [--stream <s2>] --rule <id>@<version> [--recording <dir>] [--definitions <file>]
-forseti generation promote --state <dir> --mappings <dir> --trusted-keys <file> --generation <n> --run <run.json> --gate-report <file> [--accept-scope core]
 forseti generation retire  --state <dir> --generation <n>
 forseti generation list    --state <dir>
 ```
 
-Only these verbs write `forseti.generations` (spec 72, 474: jobs never write it; the harness and the gate are held to the same rule). `promote` writes the three progress rows in one locked operation (Task 21).
+  `new`, inside one hold of `generations.lock` (decision 2): for every `--stream`, `HeadVerifier.verify(mappings, stream, trusted,
+  new FloorStore(state), clock.millis())` (spec 568: the floor survives generation changes), `ReleaseReader.read`, `RuleSet.load`
+  (a `Refusal` prints `{"refusal", ...evidence}`, exit 1); pins `rulesDigest`, `inputReleases [{stream, releaseId, version,
+  releaseSha256, headVersion, statementSha256}]`, `replayFrom` (decision 5), `headVersion`, `releaseEvidence` (the verified `Head`
+  summary, the `release.json` digest, the `pins` object), `gateReportSha256 null`, `run null`, `at`; appends `registered`; prints
+  `{"generation", "status": "registered", "scope", "rulesDigest", "registeredRowSha256"}`. A floor raised by a verified head is
+  never rolled back by a later failure of the same call. `retire` appends `retired` (`run null`, `gateReportSha256 null`); refusals
+  `generation-unregistered`, `generation-transition`. `forseti run` gains the run preparation of decision 5 and records
+  `registeredRowSha256`, `scope`, `replay` (null) and `originalRecordingManifestSha256` (null) in `run.json`; the two null fields
+  are part of the record from this PR on, so every reader and test of 5b reads run records of one shape. It requires a unique valid
+  registration and a valid history, verifies the release files against the pinned `releaseEvidence`, does not re-verify the head,
+  and appends no generation row.
 
-`new` (injectable `Clock`; the CLI uses `Clock.systemUTC()`): for every `--stream`, `HeadVerifier.verify(mappings, stream, trusted, new FloorStore(state), clock.millis())` (spec 553: the floor survives generation changes), `ReleaseReader.read`, `RuleSet.load` (a `Refusal` prints `{"refusal", ...evidence}`, exit 1); pins `rulesDigest`, `inputReleases [{stream, releaseId, version, releaseSha256, headVersion, statementSha256}]`, `replayFrom` (offset 0 of every subscribed partition of the recording, `{}` without one), `headVersion`, `releaseEvidence` (the verified `Head` summary, the `release.json` digest, the `pins` object), `gateReportSha256 null`, `at`; appends `registered` and the initial recovery declaration. `forseti run` reads the row and its `releaseEvidence` (Task 11) and appends nothing; the gate appends nothing. `retire` appends `retired`. `list` prints every row.
+  `GenerationCliTest` (14; fixed clock = fixture `signedAt + 60 s`): `newRegistersAGenerationWithPins` (row fields, `run` null,
+  `head-floors/line2.json`), `newWithoutARecordingPinsNoOffsetsAndWritesNoDeclaration`,
+  `newWithARecordingPinsOffsetZeroAndWritesNoDeclaration`, `theFirstRunPreparationWritesTheInitialDeclarationOnce` (two runs of one
+  generation: one declaration), `newRefusesAnExpiredHead` (`head-expired`), `newRefusesAProfileWithAnotherDigest`
+  (`binding.schema-mismatch` on `fixtures/registry-mismatch`), `newFromRegistryNextRaisesTheFloor`,
+  `anUnregisteredGenerationRefusesTheHarness` (`generation-unregistered`), `runAppendsNoGenerationRow`, `retireAppendsARetiredRow`,
+  `twoScopesInOneStoreAreAddressedByNumber` (`new` on `line2` -> 1, on `line2-plc` -> 2; `run` and `retire` on each by number;
+  `byNumber(1)` and `byNumber(2)` return one row sequence each), `aCorruptControlLogFailsClosed`,
+  `listPrintsTheStoredRecordsByteForByte`, `theClockIsNotSettableFromTheCommandLine` (`--now` is a usage error, exit 2).
+  `ReferenceEngineTest` +2 (19 -> 21): `aRunOnAnotherRoutingThanTheDeclaredOneIsRefused`,
+  `anOnlineRunRecordsItsRegistrationAndNullReplayFields`.
+  `mvn -q -pl core install -DskipTests && mvn -q -pl cli -Dtest='FileGenerationStoreTest,GenerationCliTest,ReferenceEngineTest' test`
+  -> `Tests run: 10`, `Tests run: 14`, `Tests run: 21`, 0 failures. Commit `feat(core,cli): generation policy, locked durable
+  control log, generation new|retire|list, run preparation`.
 
-- [ ] **Step 20.3** `GenerationCliTest` (fixed clock = fixture `signedAt + 60 s`): `newRegistersAGenerationWithPins` (row fields; `head-floors/line2.json`; `recovery-control.jsonl`); `newRefusesAnExpiredHead` (exit 1 `head-expired`); `newRefusesAProfileWithAnotherDigest` (`binding.schema-mismatch` on `fixtures/registry-mismatch`, the registry of Task 7's refusal test); `newFromRegistryNextRaisesTheFloor`; `anUnregisteredGenerationRefusesTheHarness`; `runAndGateAppendNoRow`; `retireAppendsARetiredRow`; `generationNumbersIncrease`; `twoScopesInARowAreAddressedByNumber` (`new` on `line2` -> generation 1, `new` on `line2-plc` -> generation 2; `run`, `promote --accept-scope core` and `retire` on each by number; `current(line2)` and `current(line2-plc)` are both set at once and neither row is ambiguous; `byNumber(1)` and `byNumber(2)` return one row sequence each); `aCorruptControlLogFailsClosed`.
+- [ ] **Step 20.4** The gate on one store. `CoreGate`: `--state`, the registration table (decisions 6-7), `kind`, `layout`,
+  `negativeControl`, `summariesSha256`, `results[].shard`, `generations[]`, `runs[]` (each with `store`), `<out>/runs/`, and
+  `summaries.json` in a full run. `Scenarios`: the generation from the table; `shuffle` runs the oracle comparison and `Summaries.of(Shuffled)` writes the schema of
+  decision 12. `GateEvidence.validate` (decision 10), called by the
+  full and the shard run on their own output; `Shards.coverage`'s rules move into it. `Shards.read`: decision 11 and `shards[]`.
+  `Stage1Assertions.register` and `Stage1Assertions.append` are deleted; the private states register through the in-process verb.
+  Tests: `CoreGateTest` +8 (8 -> 16): `stateIsRefusedWithAggregateAndWithANegativeControl` (exit 2),
+  `theReportNamesItsKindAndLayout`, `theGateRegistersThroughTheVerbInAFixedOrder` (two runs of one selection give the same
+  scenario -> number table; the store holds only `registered` rows), `aRunWithoutStateMarksEveryGenerationIsolated`,
+  `aScenarioSummaryDoesNotDependOnItsGenerationNumber` (`smoke` as generation 1 of one store and as generation 3 of another:
+  summaries equal on every field outside `Shards.NOT_COMPARED`), `aFullRunWritesItsSummariesAndBindsTheirDigest`,
+  `stateOutsideTheOutputDirectoryIsAUsageError` (full and shard), `aFullRunWithAMissingOrFailedShuffledComparisonExitsOne` (full
+  layout: a shuffled run whose oracle comparison stops one cut short, and one whose comparison differs at one cut: a coverage
+  problem and exit 1, each). `ShardsTest` +11 (14 -> 25): `theAggregateReportBindsEveryShardReportAndSummariesDigest`, `generationsAndRunsAreMergedUnderTheirShard`,
+  `aSharedGenerationWhoseRowRunRecordOrCutLogIsNotInTheArtifactIsAProblem`, `aControlOrAggregateReportAmongTheShardsIsAProblem`,
+  `twoShardsMayRegisterTheSameScenarioUnderDifferentNumbers`, `identicalRegistrationsInTwoStoresOfOneShardStayDistinct` (the
+  pipeline store and two `assertion:` stores each hold generation 1; two of them hold byte-identical rows under the fixture clock:
+  no problem, and each run resolves to the entry of its own store), `aRunThatResolvesOnlyByDigestInAnotherStoreIsAProblem`,
+  `aRunWithoutASuccessfulSummaryOrWithOtherCutIdsIsAProblem` (an inserted run entry with no summary; a summary whose `ok` is false;
+  compared cut ids one short; a kept cut log with another id: each a problem),
+  `aRunRecordWhoseSubscriptionsPinsRoutingOrArtifactDifferIsAProblem` (each of the four),
+  `aShuffledSummaryWithoutItsOwnComparedCutIdsIsAProblem` (aggregate layout: the old five-field summary; `comparedCutIds` absent;
+  one id short; a `recordingManifestSha256` other than the lock's), `aShuffledSummaryWhoseComparisonFailedIsAProblem` (aggregate
+  layout: `equal` false with complete lists; `failure` set).
+  `mvn -q -pl cli -Dtest='CoreGateTest,ShardsTest' test` -> `Tests run: 16`, `Tests run: 25`, 0 failures.
 
-- [ ] **Step 20.4** `mvn -q -pl core -Dtest=GenerationPolicyTest test && mvn -q -pl core install -DskipTests && mvn -q -pl cli -Dtest='GenerationCliTest,FileGenerationStoreTest' test` -> `Tests run: 6` and `Tests run: 14`, 0 failures. Commit `feat(core,cli): generation rows and policy; locked durable file control log; generation new|retire|list`.
-
-### Task 21: Promotion bound to verified gate evidence; injections 20 and 23; pull request 5
-
-**Files:**
-- Create: `cli/src/main/java/yggdrasil/forseti/cli/generation/GateReportReader.java`, `cli/src/test/java/yggdrasil/forseti/cli/generation/GateReportReaderTest.java`; Modify: `GenerationCli` (`promote`), `ReferenceEngine` (`--replay event-time`, cause `replayed`), `CoreGate` (`--state`, `generations[]` and `runs[]` in the report; the real store), `Stage1`/`Stage2` (cause kind), `Injections` (+ `I-20`, `I-23`), `gate/core-assertions.json` (+7 = 79)
-
-- [ ] **Step 21.1** `GateReportReader`: reads a `report.json`, verifies its raw SHA-256 (the digest `promote` records), `exit == 0`, loads the committed `gate/core-assertions.json` itself and requires `assertionsExpected == N` and `assertionsRun == N` where N is that manifest's entry count (a report's own counts are never trusted against each other: a `0/0` or a reduced `k/k` report is refused, spec 671), `failed` and `notRun` empty, `manifestSha256` equals the committed manifest's, `generations[]` names the generation with its `rulesDigest` and `runs[]` names the run record given by `--run` (`runId`, recording digests, offset ranges), and `scope`. `promote --generation n --run <run.json> --gate-report <report>` refuses a report whose scope is `core` unless `--accept-scope core` is given explicitly (a core report never impersonates the semantic gate; the default policy requires scope `semantic`, steps 6-7; Open point 3), verifies the head again now (approval evidence valid now), and appends in one locked operation `replaying` (citing the run), `verified` (citing the report digest), `current`, and `retired` for the previous current of the scope. The gate gains `--state <dir>`: with it the generations it registers for its runs live in that store (and `report.json.generations[]`/`runs[]` describe them, each with `state: shared`); without it a temp state is used and discarded. Two assertions never touch the shared state, because a verified head of version 2 would raise that state's `line2` floor and every later version-1 registration and the final `promote --mappings fixtures/registry/mappings` would be `head-rollback` (spec 84, 553; the floor is not weakened): `F-GEN-FLOOR` and the generation-2 half of `I-20` run in their own temporary state directories and appear in the report as `state: isolated`, which `promote` refuses as a target (`gate-report-generation-isolated`); every shared-state generation reads `fixtures/registry` (head version 1), so the floor of the shared state stays at 1 and the Verification promote stays valid whatever the assertion order. Isolation was chosen over ordering because the floor belongs to the state directory, so the version-raise evidence and the operational state must not share one directory, and because the manifest order is not a contract.
-
-- [ ] **Step 21.2** `--replay event-time` (Decision 11, spec 72, 646; Task 1's line 553): the harness first materializes the replay as its own recording under `<out>/replay-recording/` (every record of the original re-ordered by event time, new contiguous offsets per partition, batches planned by the same `batchMs` and deadline brackets, its own `manifest.json` with `source.replayOf = <original manifest digest>`, `routing.json` and digests), then runs on it like any recording; the oracle is given that recording and that run's `cuts.json`, so the input set of every cut is an offset range of the recording it reads (spec 406, 588); every row's `cause` is `{"kind": "replayed", "inputKind", "identity"}`; the generation's `replayFrom` is offset 0 of every partition of the original (the retained input), and `run.json` records both digests.
-
-- [ ] **Step 21.3** Assertions:
+- [ ] **Step 20.5** Assertions (+3, `pr: 5`, class `GenerationAssertions`), all owned by shard `hand-made`
+  (`gate/core-shards.json`: `hand-made.assertions` += `F-GEN-NEW`, `F-GEN-REFUSES-UNREGISTERED`, `F-GEN-FLOOR`; 59 -> 62; no other
+  shard and the `aggregate` list change):
 
 | Id | What runs |
 |---|---|
-| `F-GEN-NEW` | `generation new` in a temp state with the fixed clock: the row, the floor, the recovery declaration |
-| `F-GEN-LIFECYCLE` | in a temp state: `new` -> one `registered` row; `run` on `smoke` -> still one row; the assertion itself writes a gate report in the report format (scope `core`, exit 0, the committed manifest's digest, `generations[]` and `runs[]` naming this generation and run) and calls `promote --run --gate-report --accept-scope core` -> `replaying`, `verified`, `current` appended; `retire` -> `retired`; a report naming another generation or run is refused; a refused transition is refused. No gate is launched inside the gate (B4): the real gate-then-promote integration is a separate command, Verification step 7 |
-| `F-GEN-PROMOTE-REQUIRES-REPORT` | no report or no run: exit 2; a report with `exit 1`, a wrong digest, a wrong generation, a wrong `rulesDigest`, a run not listed in the report, a `notRun` entry, counts `0/0`, equal but reduced counts (`40/40` against a manifest of 82), a count above the manifest's, or scope `core` without `--accept-scope`: exit 1 with the reason; a valid report with `--accept-scope core`: the three rows and `current` |
-| `F-GEN-REFUSES-UNREGISTERED` | the harness refuses generation 7 |
-| `F-GEN-FLOOR` | in an isolated temporary state (never the gate's `--state`): `new` on `registry` (floor 1), then on `registry-next` (floor 2), then on `registry` again: `head-rollback`; the shared state's floor is unaffected |
-| `I-20` | `baseline` under generation 1 (`registry`, rule 1.0.0, in the gate's state) and generation 2 (`registry-next`, rule 1.0.1, in an isolated temporary state whose floor rises to 2, so the shared state's floor stays at 1): every row of generation 2 carries the new `rulesDigest` and `pins.rules.attribution.version 1.0.1`; the fold of each generation holds only its digest; the oracle agrees for both; the report lists generation 2 with `state: isolated` |
-| `I-23` | `horizon-planned-late` generation 1, then generation 2 `--replay event-time`: at the planned cut the reported `W1` equals `A` (else `error`, never a moved hole); the three boundaries hold at one millisecond (`holeAt` and `holeAt - 1` admitted, `holeAt - 2` `replay-required beyond-horizon`); visit 3's `missingPeriods` 1 before the late batch and 0 after; in generation 2 (run and oracled on the materialized replay recording) the third sample is `attributed` with `cause.kind replayed`; generation 1's rows remain in the journals |
+| `F-GEN-NEW` | `generation new` in its own temporary state with the fixture clock: the `registered` row and its pins, `run` null, `head-floors/line2.json`, no recovery declaration; `registeredRowSha256` printed = digest of the stored line; then `forseti run` on `smoke`: exactly one declaration with the recording's `routingDigest`, still one generation row; a second run adds neither. Listed `store: assertion:F-GEN-NEW`, `state: isolated`, `variant: self-test` |
+| `F-GEN-REFUSES-UNREGISTERED` | the harness refuses generation 7 (`generation-unregistered`) and writes no declaration |
+| `F-GEN-FLOOR` | in its own temporary state (never the gate's `--state`): `new` on `registry` (floor 1), on `registry-next` (floor 2), on `registry` again: `head-rollback`; the two registered generations are listed `store: assertion:F-GEN-FLOOR`, `state: isolated`, `variant: self-test`, `assertion: F-GEN-FLOOR` |
 
-- [ ] **Step 21.4** `GateReportReaderTest` (each refusal above, the `0/0` and `40/40` reports among them, with the manifest size read from the committed file). `mvn -B -ntp -q install` (the jar gains the generation CLI, `--state` and the event-time replay), then the gate -> `assertions run 79 / expected 79`, exit 0; `--negative-control` list still empty. Commit `feat(cli): promotion bound to verified gate evidence; event-time replay generation; injections 20 and 23`. Pull request 5: Tasks 20-21 (3 commits); CI green. PR body: the lifecycle, the promotion policy (Open point 3), the gate line.
+  Report-format additions of this PR: the table "Report format" above, with `variant` values `online` and `self-test` only.
+
+- [ ] **Step 20.6** CI. `ci.yml`, job `gate`: the step "Core gate shard" gains `--state "build/shards/${{ matrix.shard }}/state"`
+  (inside the uploaded path), so each `gate-shard-<shard>` artifact holds `build/shards/<shard>/{report.json, summaries.json, logs/,
+  diffs/ (on failure), runs/*.run.json, runs/*.cuts.json, state/{generations.jsonl, generations.lock, recovery-control.jsonl,
+  head-floors/<stream>.json}}`. `upload-artifact` v4 leaves hidden files out, which drops `head-floors/.lock`; `FloorStore`
+  recreates it and no lock file is evidence. Job `core-gate` gains a first step that fails the always-running required job when a
+  dependency did not succeed:
+
+```yaml
+      - name: Build and every shard job succeeded
+        if: needs.build.result != 'success' || needs.gate.result != 'success'
+        run: |
+          echo "build: ${{ needs.build.result }}; gate shards: ${{ needs.gate.result }}"
+          exit 1
+```
+
+  Its aggregate step is unchanged in this PR (the aggregate now also checks decisions 10-11). `nightly-gate.yml`: the gate step
+  gains `--state build/gate/state` (the full run's `<out>/state`); the artifact path stays `forseti/build/gate/`, which now holds
+  the store. Pins, the six-shard
+  matrix, `fail-fast: false`, the 60-minute shard timeout, PR cancellation and "no recording cache" are unchanged.
+
+- [ ] **Step 20.7** `mvn -B -ntp -q install`; then locally each of the six shards with `--state build/shards/<shard>/state`
+  (`hand-made`: `assertions run 62 / expected 62`; `horizon-no-departure`, `horizon-reopened`, `horizon-correction-beyond`,
+  `plc-horizon-no-end`: `1 / 1`; `horizon-planned-late`: `0 / 0`, exit 0), then `--aggregate build/shards` -> last line
+  `assertions run 75 / expected 75`, exit 0 (62 + 4 + 9); a full unsharded run with `--out build/gate-full --state build/gate-full/state` -> the same line, and without
+  `--state` -> the same line with every `generations[].state` `isolated`; `--negative-control` list still empty. Commits `feat(cli):
+  the gate registers through generation new into one store per run; report kind, layout, shards, generations, runs, store; one
+  evidence validator; F-GEN-NEW, F-GEN-REFUSES-UNREGISTERED, F-GEN-FLOOR` and `ci: shard artifacts carry the control store and run
+  records; core-gate fails on a failed dependency`.
+
+- [ ] **Step 20.8** Pull request 5a: Task 20 (4 commits); CI green. PR body: the spec additions, the store and lock rules, the
+  registration order, the report format, the gate line `assertions run 75 / expected 75`, the shard times.
+
+  **What 5a's CI proves:** `assertions run 75 / expected 75` from six shards and the aggregate; every scenario is still compared
+  with the oracle at every planned cut after its generation moved from a hand-written row to the verb (the change that touches
+  every run, so a mistake breaks the 72 existing assertions); the numbers of a gate run are a function of its selection; the
+  aggregate report commits to its inputs by digest, resolves every generation and run inside its own `(shard, store)`, and refuses
+  an artifact without its store, run records or cut logs, or with a run that no successful summary covers; the nightly unsharded
+  run with `--state` agrees and passes the same validator.
+
+## PR 5b
+
+Branch: `git switch -c feat/step3-promotion-and-replay main` after PR 5a merged.
+
+### Task 21: Promotion bound to verified whole-gate evidence; event-time replay; injections 20 and 23
+
+**Files:**
+- Create: `cli/.../generation/GateReportReader.java`, `cli/src/test/.../generation/GateReportReaderTest.java`; `cli/.../recording/ReplayRecording.java`, `cli/src/test/.../recording/ReplayRecordingTest.java`; `cli/src/test/.../gate/RunFoldTest.java`; `scripts/gate-then-promote.sh`; `fixtures/scenarios/horizon-planned-late.replay.lock.json`, `fixtures/scenarios/smoke.replay.lock.json`
+- Modify: `GenerationCli` (`promote`), `GenerationPolicy`, `FileGenerationStore` (`appendBatch`), `Main` (`run --replay event-time`, `recordings replay`), `ReferenceEngine` and `RunRecord` (set `replay`, `originalRecordingManifestSha256`), `core/.../journal/Envelope.java` (`timerDeadline(cause)`), `core/.../journal/JournalFold.java`, `cli/.../gate/RunFold.java`, `Stage1Assertions` (the three timer-cause readers), `Stage1`/`Stage2` (cause kind), `Scenarios`/`Summaries` (generation runs, kept journals), `GateEvidence` (generation runs, journals), `Shards` (no empty shard; plan field `generationRuns`), `CoreGate` (the `emptyShard` branch removed), `Injections` (+ `I-20`, `I-23`), `GenerationAssertions` (+ `F-GEN-LIFECYCLE`, `F-GEN-PROMOTE-REQUIRES-REPORT`), `gate/core-assertions.json` (+4 = 79), `gate/core-shards.json`, `.github/workflows/{ci,nightly-gate}.yml`, `oracle/src/forseti_oracle/recording.py` (accepts the replay `source` fields), `oracle/tests`, `core/src/test/.../journal/JournalFoldTest.java`
+
+- [ ] **Step 21.1** `GateReportReader`. Everything is checked against files the reader loads itself from the repository root it
+  runs in, `gate/core-assertions.json` and `gate/core-shards.json`; no flag and no report field points it at another manifest or
+  plan. The evidence bundle is, for `full`, the report's own directory, and for `aggregate`, each `<shards dir>/<shard>/`.
+  Refusals are closed codes, exit 1, with evidence, checked in this order:
+
+| # | Check | Refusal |
+|---|---|---|
+| 1 | the file parses strictly (duplicate keys refused, every required field present with its type); its raw SHA-256 is the digest `promote` records | `gate-report-unreadable` |
+| 2 | `kind == gate`, `negativeControl` null, `intendedFailures` empty | `gate-report-negative-control` |
+| 3 | `layout` is `full` or `aggregate`; `shard` null | `gate-report-shard` |
+| 4 | `exit == 0`, `error` null, `failed` and `notRun` empty, every result `ok` | `gate-report-failed` |
+| 5 | `manifestSha256` equals the committed manifest's raw SHA-256 | `gate-report-manifest` |
+| 6 | the set of `results[].id` equals the committed manifest's id set, each id once; then `assertionsExpected == assertionsRun == N`, N the manifest's entry count. Counts alone never pass: `0/0`, a reduced `k/k`, a count above N, and N results with one id replaced by a repeat of another are all refused (spec 690) | `gate-report-assertions` |
+| 7 | `full`: `shardPlanSha256` null, `shards[]` empty, every `results[].shard` null, `summariesSha256` 64 hex. `aggregate`: `summariesSha256` null; `shardPlanSha256` equals the committed plan's; `Shards.validate(plan, manifest ids)` holds; `shards[]` names equal the plan's shard names in plan order, each once, each `exit == 0` with two 64-hex digests; every `results[].shard` equals the plan owner of its id | `gate-report-layout` |
+| 8 | evidence files, both layouts, by the one validator. `aggregate`: `--shards <dir>` is given; for every shard the raw SHA-256 of `<dir>/<name>/report.json` and `summaries.json` equal `shards[]`; `Shards.read(<dir>)` (the aggregate run's own checks: accounting, ownership, pins, cut identities, duplicate summaries, `GateEvidence.validate` on every shard, generation-run coverage) reports no problem and its merged `results`, `generations[]` and `runs[]` equal the report's. `full`: `--shards` is absent; the raw SHA-256 of `<report dir>/summaries.json` equals `summariesSha256`; `GateEvidence.validate(<report dir>)` reports no problem; the scenario, shuffled and generation-run sets of `summaries.json` are exactly the ones a full run of the committed plan makes (every scenario of `Scenarios.all()`, every planned shuffled key, every planned generation run; none missing, none extra). So in either layout every `runs[]` entry is one that a successful summary, a locked recording and the exact planned, completed and compared cut ids cover, and an entry added to `runs[]` beside a complete result-id set is refused. Every `runRecord`, `cutLog` and `journals` path is relative, has no `..` and resolves inside its bundle | `gate-report-evidence` |
+| 9 | the target generation is selected by producer and store first, then by digest: among the `generations[]` entries with `store == pipeline` whose `shard` is the bundle of `--state` (the location is enforced by real path in both layouts: `full`: `shard` null and `--state` is `<report dir>/state`; `aggregate`: `--state` is `<dir>/<entry.shard>/state`; any other directory is refused, even one holding a byte-identical log, so promotion happens in the bundle's own preserved store), exactly one has the `registeredRowSha256` given by `--registered-row-sha256`. An entry with that digest in another shard or another store neither qualifies nor makes the selection ambiguous. The digest `promote` computes from the `registered` row of `--generation n` in its own `--state` equals it; that entry's `generation == n`, `scope` equals the row's key, `rulesDigest` equals the row's | `gate-report-generation` |
+| 10 | that entry's `state == shared` | `gate-report-generation-isolated` |
+| 11 | exactly one `runs[]` entry with the target's `(shard, store, registeredRowSha256)` has `runRecordSha256` equal to the raw SHA-256 of the `--run` file; `shuffle` false; the run record's own `generation`, `registeredRowSha256`, `scope`, `runId`, `fixtureDigests.rulesDigest`, `fixtureDigests.recordingManifestSha256`, `replay`, `originalRecordingManifestSha256` and `offsetRanges` equal the entry's and the row's; the cut log beside it has `cutLogSha256`; when `journals` is non-null the journal index has `journalsIndexSha256` and every listed file its digest | `gate-report-run` |
+| 12 | the target run's coverage, read from the validated bundle (check 8): its summary (`runs[<scenario>]` for `variant: online`, `generationRuns[<name>]` for `event-time-replay`) holds, names the committed lock of its recording (the replay lock for a replay run), and its planned, completed and compared cut ids are the cut ids of the cited cut log, one list; its subscriptions, release and rule pins, `routingDigest` and `artifactSha256` equal the run record's and the report's pins | `gate-report-coverage` |
+| 13 | `scope` is accepted: `semantic` by default, `core` only with `--accept-scope core` | `gate-report-scope` |
+
+  Digests establish integrity between the files. The report is not authenticated: what makes its success trustworthy is the
+  operator-selected bundle or the CI run that produced it. Closing that (an in-toto attestation over the report digest) belongs to
+  the semantic gate of steps 6-7.
+
+- [ ] **Step 21.2** `promote`:
+
+```
+forseti generation promote --state <dir> --mappings <dir> --trusted-keys <file> --generation <n> --registered-row-sha256 <hex>
+                           --run <run.json> --gate-report <report.json> [--shards <dir>] [--accept-scope core]
+```
+
+  A missing `--run`, `--gate-report`, `--generation` or `--registered-row-sha256` is a usage error (exit 2). Everything after
+  argument parsing happens in one hold of `generations.lock`, in this order (lock order: generation lock, then floor lock; Task 20,
+  decision 2):
+
+  1. re-read and validate the whole history (`control-log-corrupt`);
+  2. the reader checks of Step 21.1 against the store as it is now;
+  3. the final approval and floor verification: for every stream of `inputReleases`, the head verified with the system clock and
+     the store's own floor (spec 568; `head-expired`, `head-rollback`), which must still name the pinned release (`releaseSha256` and
+     `statementSha256` equal the pin; else `generation-release-superseded`). Because this runs inside the hold, a registration that
+     raised the floor before the hold began is seen, and none can raise it between this check and the publication;
+  4. the generation's latest status is `registered` (`generation-transition`; a second promote is refused);
+  5. publication: one buffer holding `replaying`, `verified`, then, when the scope has a current generation, that generation's
+     `retired` row, then `current` (so that no prefix of the batch holds two currents); the three rows of the promoted generation
+     carry `run {runId, runRecordSha256, offsetRanges}`; `verified` and `current` carry `gateReportSha256` = the raw SHA-256 of the
+     whole report given, also when it is an aggregate. Three rows when the scope has no current generation, four otherwise. The
+     buffer is appended at the end of the file by a loop that continues until it is drained (a short write is continued, never
+     treated as done), then `force(true)`; success is printed only after `force` returns.
+
+  Refusals before publication (steps 1-4: usage, validation and policy refusals) write nothing: the bytes of `generations.jsonl`
+  are those the hold found. That is the meaning of "no refusal writes a row". An I/O failure during publication is different: when
+  a write or `force` throws, or the channel stops accepting bytes, the verb exits 1 with `control-log-io` and the count of bytes
+  it appended, never prints success, and makes no promise about the file, which may hold a partial batch. The next read decides:
+  zero appended bytes is the old valid state; any non-empty proper prefix of the batch is `control-log-corrupt` on every reader
+  and every verb (a tail at `replaying` or `verified`, a retired previous current with the target at `verified`, or a partial
+  line; Task 20, decision 3). The design is fail-closed under prefix truncation, consistent with spec 570; it is not an atomic
+  filesystem transaction and does not claim to be.
+  Output `{"generation", "status": "current", "registeredRowSha256", "gateReportSha256", "run", "retired": <number or null>}`.
+
+  Tests. `GateReportReaderTest` (34): `aValidFullReportIsAccepted`, `aValidAggregateReportIsAccepted`,
+  `theManifestAndPlanAreReadFromTheRepositoryNotFromTheReport`, `aReportThatIsNotStrictJsonIsRefused`,
+  `aNegativeControlReportIsRefused`, `aShardReportIsRefused`, `aFailedOrErroredReportIsRefused` (exit 1; `error` set; a `failed`
+  entry; a `notRun` entry; a result with `ok` false: each alternative exercised), `anotherManifestDigestIsRefused`,
+  `zeroOfZeroIsRefused`, `reducedEqualCountsAreRefused`, `aCountAboveTheManifestIsRefused`, `aRepeatedIdInPlaceOfAnotherIsRefused`,
+  `anotherShardPlanDigestIsRefused`, `aMissingDuplicateOrUnplannedShardIsRefused` (each of the three), `aResultUnderTheWrongOwnerIsRefused`,
+  `aFullReportWithShardsIsRefused`, `aChangedShardReportOrSummariesIsRefused` (each of the two),
+  `aTargetPresentOnlyInTheAggregateIsRefused`, `anEvidencePathOutsideTheBundleIsRefused` (absolute; `..`),
+  `anotherRegisteredRowDigestIsRefused`, `aStateThatIsNotTheShardsOwnStoreIsRefused`, `anIsolatedGenerationIsRefused`,
+  `anotherRunRecordDigestIsRefused`, `aRunUnderAnotherShardOrRegistrationIsRefused` (each of the two), `aShuffledRunIsRefused`,
+  `aChangedCutLogIsRefused`, `coreScopeWithoutAcceptanceIsRefused`, `aFullReportWithAnInsertedUnvalidatedRunIsRefused` (a complete
+  result-id set plus one `runs[]` entry no summary covers, its run record and cut log present: `gate-report-evidence`),
+  `aFullReportMissingVariantOrCutCoverageIsRefused` (the replay generation run absent from `summaries.json`; a compared cut id
+  removed; a planned scenario absent: each refused), `aFullReportWhoseSummariesChangedIsRefused`,
+  `aDigestThatMatchesOnlyInAnotherStoreOrShardSelectsNothing` (the same `registeredRowSha256` in an `assertion:` store and in
+  another shard's pipeline store: `gate-report-generation`; and with the right entry present beside them: accepted),
+  `aTargetWhoseJournalsChangedIsRefused`, `aFullReportPromotedInAStateOutsideItsBundleIsRefused` (a copy of the store elsewhere:
+  `gate-report-generation`), `aMissingOrFailedShuffledComparisonIsRefusedInBothLayouts` (a full and an aggregate bundle, each
+  with a shuffled summary lacking one compared cut id and with one whose `equal` is false: `gate-report-evidence`). The manifest size is read from the committed file; the positive fixtures list every
+  committed manifest id and are validation fixtures, not delivery evidence.
+  `GenerationCliTest` +10 (14 -> 24; fixed clock, fixture reports): `promoteAppendsReplayingVerifiedCurrentInOneOperation` (the three
+  rows carry the same `run`), `promoteRetiresThePreviousCurrentOfTheScope`, `promoteVerifiesTheHeadAtTheCurrentTime` (an expired
+  head: `head-expired`; a lowered head: `head-rollback`; no row either time), `promoteRefusesAGenerationWhoseHeadMovedOn`,
+  `promoteWithoutARunOrAReportIsAUsageError`, `twoScopesAreCurrentAtOnce`, `aSecondPromoteOfTheSameGenerationIsRefused`,
+  `aFloorRaisedByAnotherRegistrationBeforePublicationRefusesThePromotion` (the interleaving test: a package-private hook that
+  `promote` calls after parsing its arguments and before taking the lock runs `generation new` on `registry-next` in the same
+  store, raising the floor to 2; the promotion of the generation pinned at head 1 is refused `head-rollback`; the log holds the new
+  `registered` row and no `replaying`, `verified`, `current` or `retired` row),
+  `aRegistrationStartedDuringAPromotionLandsAfterItsRows` (a hook inside the hold starts `generation new` on another thread and
+  the promotion completes: the log's order is the whole promotion batch, then the `registered` row; the registration never falls
+  between verification and publication), `aWriteOrForceFailureIsControlLogIoAndNeverSuccess`.
+  `FileGenerationStoreTest` +5 (10 -> 15), the interruption obligations of a promotion batch, on a fake channel that the test
+  drives: `zeroAppendedBytesLeaveTheOldValidState` (the write throws before any byte: the store reads as before, the previous
+  current is still current, verbs work); `everyNonemptyProperBytePrefixOfAPromotionFailsClosed` (for a three-row and a four-row
+  batch, every length from 1 to the batch length minus 1, among them the complete-line boundaries after `replaying`, after
+  `verified` and after the previous current's `retired`: `validate`, `current(scope)`, `byNumber`, `list`, `new`, `retire`,
+  `promote` and the harness's read each refuse with `control-log-corrupt`, and none repairs or truncates the file);
+  `aCompleteForcedBatchValidatesAndPreservesEveryEarlierByte` (the file's earlier bytes are a prefix of the new file, byte for
+  byte; three rows without a previous current, four with one; the rows' `run` and `gateReportSha256` are consistent with one run
+  record and one report; exactly one current for the scope); `aShortWriteIsContinuedAndNeverReportedAsSuccessEarly` (a channel
+  that accepts a few bytes per call: the batch is complete before `force`, and success is returned only after `force`; a channel
+  that accepts some bytes and then nothing: no success); `aWriteOrForceExceptionNeverProducesASuccess` (an exception at each
+  write call and at `force`: an exception propagates, no success response).
+  `GenerationPolicyTest` +1 (6 -> 7): `aPromotionCitesOneRunAndOneReportDigest`.
+  `mvn -q -pl core -Dtest=GenerationPolicyTest test && mvn -q -pl core install -DskipTests && mvn -q -pl cli
+  -Dtest='GateReportReaderTest,GenerationCliTest,FileGenerationStoreTest' test` -> `Tests run: 7`; `Tests run: 34`, `Tests run: 24`,
+  `Tests run: 15`; 0 failures. Commit `feat(cli): promotion bound to whole-gate evidence by store, registered-row and run digest,
+  verified under the generation lock`.
+
+- [ ] **Step 21.3** `--replay event-time` (Decision 11, spec 73; the four paragraphs "Event-time replay", "Replay order", "Replay
+  batches", "Replay watermarks and deadlines" after spec 570; injection 23, spec 665; owner decisions 5-7).
+
+  `ReplayRecording.materialize(original, outOfOrdernessMs, out)`; also `forseti recordings replay --recording <dir>
+  --out-of-orderness-ms <n> --out <dir> [--lock <file>]`. In order:
+  1. Refuse `replay-input-unconsumed` (a record beyond the last batch's through-offset) and `replay-idle-inputs` (a non-empty
+     `idleInputs`; every committed recording has `[]`).
+  2. Ordering key per record, by the spec: a process message's smallest valid member `sourceTs` (validity = the per-member
+     validation the harness already applies to each member, unchanged; an invalid member contributes no key and keeps its ordinary disposition);
+     session event time; occupancy `eventTime`; untimed records take the key of the nearest earlier keyed record of their
+     partition; the untimed head stays first. Sort each keyed partition by (key, original offset). A partition without any key
+     (the six `quality.incidents` partitions) is copied: order, offsets, through-offsets. The ordering key is computed by
+     `ReplayRecording` and is not `Events.eventTime` (`core/.../stage1/Events.java` 51-57), which keeps returning a message's largest
+     member `sourceTs` for the contract order inside a cut; nothing in `Stage1` or the watermark changes.
+  3. Cut targets from telemetry only: `T_k(p)` and `C_k` from the original batches' `ot.messages` records (largest valid member
+     `sourceTs`); the qualifying-prefix rule per partition; undefined targets include only the untimed-head records the original
+     batches include; the last batch includes everything. Through-offsets per batch follow; cut ids are the original's.
+  4. Watermark progression: `W1_k(s)` over the original and `W1'_k(s)` over the replay batches for every station and cut, by the
+     formula of spec 607 with the given `outOfOrdernessMs` (stations by `routing.json`, as the harness routes).
+  5. Deadlines, never copied unproved: stations of each original deadline (`replay-deadline-unproved` when none); keep `cutA`,
+     `cutB` only when `W1'_cutA(s) < at ≤ W1'_cutB(s)` for every one of its stations; else replan to the consecutive pair that
+     satisfies it for all of them; else `replay-deadline-unbracketed` (exit 1, with the deadline, its stations and their `W1'`
+     sequences). The replay manifest's `deadlines` carry the resulting cut ids (the shape `Recording.readDeadlines` reads, lines
+     111-121), and `source.deadlines` the proof (`stations`, `originalCutA`, `originalCutB`, `cutA`, `cutB`, `w1A`, `w1B`).
+  6. Files: every record once, bytes unchanged, contiguous offsets from 0; `offset-map/<topic>/<partition>.jsonl` (replay offset ->
+     original offset), listed in the manifest's `digests`; `idleInputs` `[]`; `manifest.json` with `source.replayOf` = the original
+     manifest's raw SHA-256 and `source.outOfOrdernessMs`; `routing.json` unchanged (equal `routingDigest`, so the run preparation
+     finds the generation's declaration valid); `expected.json` `{"expectedVersion": 1, "scope": "replay", "mode", "visits": [...],
+     "transitions": [...]}`. `visits` are the immutable facts of the input, copied per visit from the original's `expected.json`:
+     `visitRef`, `key`, `unitId`, `station`, `enter`, `leave`, `attributionEnd` (what the recording's occupancy or stamps say, the
+     same in every generation; the expiry `enter + H + L` or `leave + H + L` is computed from them with the run's rule). The
+     online outcomes are not carried over: no `finalStatus`, `insufficiencyReasons`, `retraction`, `equipmentEvidence`, `samples`,
+     `sampleRuns`, `dispositions`, `messageDispositionRuns` or `incidents`. `transitions` are the replay brackets per station.
+     `Expectations` treats scope `replay` like `minimal` (no per-sample ground truth), and replay output is never compared with
+     the online run's late-arrival expectations. An original whose `expected.json` has no `visits` (the minimal scope of the smoke
+     recordings) gives `visits: []`.
+
+  After-horizon evidence of a replay summary. `Summaries.afterHorizon` (`Summaries.java` 111-125) computes `need`, `station`,
+  `lastW1`, the largest and the last `onlineVisits`, `workRecords` and `visits` for a replay run from the replay recording's
+  `expected.visits` and the replay run's own cut log and fold, exactly as for an online run; no online sample outcome is read.
+  `Injections.afterHorizonNeed` (904-915) no longer returns `Long.MIN_VALUE` (which `Json.putSafe` rejects): without visits it
+  throws, the summary of a synthetic run then carries a `failure` naming the missing visit facts, and `J-AFTER-HORIZON-CUTS`
+  fails for that run by name.
+
+  `forseti run --replay event-time` materializes into `<out>/replay-recording/` with the `outOfOrdernessMs` of the generation's
+  attribution rule, verifies it against `--replay-lock <file>` when given, runs on it, and refuses a replay recording whose
+  `source.outOfOrdernessMs` is not its rule's (`replay-recording-rule-mismatch`). It stamps `cause.kind replayed` on every row: an
+  input-triggered row keeps its `inputKind`, `identity` and `trigger` (replay offsets); a timer-emitted row carries `inputKind`
+  `timer`, `identity {"deadline"}` and a null `trigger` (`Stage1` lines 373 and 432 and `Stage2` lines 226 and 234 build the timer
+  cause today; they take the kind as a constructor value; outside a replay nothing changes). It sets `replay: "event-time"`,
+  `originalRecordingManifestSha256` and the replay manifest's digest (`fixtureDigests.recordingManifestSha256`) in `run.json`;
+  `--replay` with `--shuffle` is a usage error (exit 2). The generation's `replayFrom` is offset 0 of every partition of the
+  original; `run.json.offsetRanges` and `cuts.json` name replay offsets.
+
+  One deadline check for both timer causes (owner decision 6). `Envelope.timerDeadline(cause)` (core) returns the deadline of
+  `{"kind": "timer", "deadline": d}` and of `{"kind": "replayed", "inputKind": "timer", "identity": {"deadline": d}}`, and null for
+  every other cause. It replaces the three places that recognize only `kind: timer` today: `RunFold.belongsToEarlier` (265-273:
+  a replayed timer row has a null trigger and would otherwise pass as belonging to no cut), `JournalFold.belongsTo` (timer branch
+  at 87) and the stage-1 segment check of `Stage1Assertions` (371). A row whose `timerDeadline` is at or below the event time of
+  a progress belongs to that cut or an earlier one, whichever cause carried it.
+
+  The oracle is given the materialized recording and that run's `cuts.json`, unchanged apart from accepting the replay `source`
+  fields (`oracle/tests`: +1, `test_a_replay_recording_is_read_like_any_recording`). The replay recording is pinned like any other:
+  `fixtures/scenarios/<name>.replay.lock.json` (file digests, `counts.cuts`, the original lock's `scenarioSha256`, the
+  `outOfOrdernessMs` used) is committed for `horizon-planned-late` and `smoke`, and the gate compares the materialized bytes with
+  it before the run. After a replay run the gate checks, on the `W1` the run reported in `cuts.json`, `W1_cutA(s) < at ≤ W1_cutB(s)`
+  for every deadline and station of `source.deadlines`, and `W1` equal to the manifest's `w1A`, `w1B`.
+
+  `ReplayRecordingTest` (15): `everyRecordOfTheOriginalAppearsOnceWithItsBytes`,
+  `eachPartitionIsOrderedByOrderingKeyThenOriginalOffset`, `aRecordWithoutEventTimeTravelsWithItsPredecessor`,
+  `aPartitionWithoutEventTimesKeepsItsOrderAndBatches`, `materializingTwiceGivesTheSameBytes`, `theSmokeReplayEqualsItsCommittedLock`,
+  `aFutureDatedOccupancyOrSessionEventSetsNoCutTarget` (an occupancy and a session event dated beyond every telemetry timestamp in
+  original batch 1: no later telemetry is pulled into replay batch 1, every station's `W1'` at every cut is as without them, and
+  the two events wait for the last batch), `partitionsWithUnequalProgressFollowTheirOwnTargets` (raw partition 0 ahead of
+  partition 1: each `ot.messages` partition is cut at its own `T_k(p)`, a station fed by the slower one does not advance, and a
+  session event up to `C_k` is included), `aMixedMemberMessageIsOrderedByItsSmallestAndAdvancesByItsLargestTimestamp` (the message
+  enters the batch its smallest timestamp qualifies for; `W1'` of that cut is computed from its largest; the manifest records the
+  larger watermark), `aDeadlineWhoseBracketNoLongerHoldsIsReplanned` (that message lifts `W1'_cutA` to the deadline: the bracket
+  moves to the earlier consecutive pair, `source.deadlines` names both pairs), `aDeadlineWithNoBracketRefusesTheMaterialization`
+  (`replay-deadline-unbracketed`; nothing is written), `theUntimedHeadKeepsItsOriginalBatches`,
+  `aBatchPrefixWithoutTimestampedTelemetryIncludesOnlyTheUntimedHead`, `thePlannedLateFixtureKeepsEveryBracketAndItsPlannedA` (the
+  real `horizon-planned-late` recording, built as the gate builds it: every deadline keeps its cut ids, `W1'_k(s) = W1_k(s)` at
+  every cut, the planned cut's `W1'` equals `A`, the three late samples sit at their event-time positions, and the bytes equal
+  the committed replay lock), `thePlannedLateReplayKeepsTheVisitFactsItsAfterHorizonNeedIsComputedFrom` (the real fixture: the
+  replay `expected.json` holds every visit of the original with equal `station`, `enter` and `leave` and no outcome field;
+  `afterHorizonNeed` on it equals the original's and is at or below the last cut's `W1'` of its station; and the summary built
+  by `Summaries.of` from a replay run of that recording, with a cut log carrying the manifest's `W1'`, has a complete
+  `afterHorizon` object that `J-AFTER-HORIZON-CUTS` accepts).
+  `RunFoldTest` (new, 3): `anOrdinaryTimerRowAfterItsClosingProgressFailsProgressOrder`,
+  `aReplayTimerRowAfterItsClosingProgressFailsProgressOrder` (a row with the replayed timer cause, a null trigger and a deadline at
+  or below the `W1` of a progress is placed after that progress: the fold's findings contain `J-PROGRESS-ORDER`),
+  `aReplayTimerRowBeforeItsClosingProgressHolds`. `JournalFoldTest` +1 (6 -> 7): `aReplayTimerRowIsJudgedByItsDeadlineLikeATimerRow`.
+  `ReferenceEngineTest` +4 (21 -> 25): `aReplayedRunCarriesCauseReplayedOnEveryRow` (input rows keep their trigger; timer rows carry
+  the replayed timer cause and a null trigger), `aReplayedRunRecordsBothManifestDigests`, `replayWithShuffleIsAUsageError`,
+  `aReplayRecordingOfAnotherOutOfOrdernessIsRefused`.
+  `mvn -q -pl core -Dtest=JournalFoldTest test && mvn -q -pl core install -DskipTests && mvn -q -pl cli
+  -Dtest='ReplayRecordingTest,RunFoldTest,ReferenceEngineTest' test` -> `Tests run: 7`; `Tests run: 15`, `Tests run: 3`,
+  `Tests run: 25`; 0 failures; `python -m pytest -q oracle` -> all passed.
+
+- [ ] **Step 21.4** Generation runs in the pipeline. A generation run is a named extra run of a scenario:
+  `horizon-planned-late@replay` (shard `horizon-planned-late`, the gate run's pipeline store, registered after the scenario
+  generations, run on the heavy executor after its base run, `variant: event-time-replay`) and `baseline@rule-1.0.1` (shard
+  `hand-made`, the store `assertion:I-20`, `variant: rule-change`). `summaries.json` gains `generationRuns` keyed by that name with
+  the fields of `runs`; `GateEvidence.validate` covers them (lock digest, here the replay lock; planned = completed = compared cut
+  ids; exactly one run entry each) and the eight `J-*` aggregates include them: `J-AFTER-HORIZON-CUTS` (the loop over
+  `Scenarios.HORIZON` in `Injections`) also reads the `afterHorizon` object of the generation run of a horizon scenario, here
+  `horizon-planned-late@replay`, and fails when it is absent. `C-2-REFERENCE` keeps reading the online runs only.
+  `gate/core-shards.json` gains the per-shard field `generationRuns`; `Shards.validate` refuses a generation run no shard makes or
+  two make, and a shard that owns no assertion (`shard <name> owns no assertion`); `Shards.read` requires each planned generation
+  run exactly once. `CoreGate.run` loses the `emptyShard` branch (`CoreGate.java` 222-223): after this no code path writes an
+  `exit 0`, `0 / 0` report.
+
+  Kept journals. For a scenario that has a generation run, the harness output of the base run and of the generation run are not
+  deleted (today `Scenarios.java` 211 deletes the harness output after the fold, and `cuts.json` holds no journal row): after its
+  fold each is moved to its own stable path, `<out>/journals/<scenario>/online/` and `<out>/journals/<scenario>/event-time-replay/`,
+  and an index `<out>/journals/<scenario>/<variant>.index.json` (`{relative file: raw SHA-256}`, canonical bytes) is written. The
+  run's `runs[]` entry carries `journals` (the directory, relative like `runRecord`) and `journalsIndexSha256`; both are null for
+  every other run. The two directories share no file. `GateEvidence.validate` requires, for an entry with `journals`, the index
+  with its digest and every listed file with its digest, and no unlisted file.
+
+  Tests: `ShardsTest` +5 (25 -> 30): `aPlannedGenerationRunMissingFromItsShardIsAProblem`,
+  `aReplayRunIsCheckedAgainstItsReplayLock`, `keptJournalsMissingOrChangedInTheArtifactAreAProblem`,
+  `aReplaySummaryWithoutAfterHorizonValuesFailsJAfterHorizonCuts`, `theAggregateReadsTheAfterHorizonValuesOfThePlannedLateReplay`
+  (a `generationRuns` summary of the shape the planned-late replay run writes: `need` from the visit facts, `lastW1 >= need`,
+  `onlineVisits` falling, `workRecords` = `visits`; and each of the four conditions broken once); the existing
+  `aShardWithoutAssertionsOfItsOwnExitsZero` becomes `aShardWithoutAssertionsIsRefusedByThePlan`. `CoreGateTest` +3 (16 -> 19):
+  `theAggregateRegistersNothingAndRunsNothing`, `floorAndRuleChangeGenerationsAreIsolated`,
+  `aGenerationRunIsListedOnceWithItsVariant`. `mvn -q -pl cli -Dtest='CoreGateTest,ShardsTest' test` -> `Tests run: 19`,
+  `Tests run: 30`, 0 failures. On real evidence the aggregate of Step 21.6 evaluates `J-AFTER-HORIZON-CUTS` over the real
+  `horizon-planned-late@replay` summary; its evidence line names that run.
+
+- [ ] **Step 21.5** Assertions (+4, `pr: 5`):
+
+| Id | Shard | What runs |
+|---|---|---|
+| `F-GEN-LIFECYCLE` | `hand-made` | in its own temporary state (`store: assertion:F-GEN-LIFECYCLE`, as the spec's Gate registration allows for a lifecycle assertion), through the CLI only: `new` -> one `registered` row; `run` on `smoke` -> still one row, one declaration; `promote` without a report -> exit 2, no row; `retire` -> `retired`; `retire` again and `run` on the retired generation refused; every pair of `GenerationPolicy` that is not an allowed transition refused. It writes no `replaying`, `verified` or `current` row: the gate never promotes on a report it wrote, and the positive path on real evidence is Step 21.7. No gate is launched inside the gate. The gate run's pipeline store receives nothing from it |
+| `F-GEN-PROMOTE-REQUIRES-REPORT` | `hand-made` | in its own temporary state with one registered generation and its `smoke` run: no report or no run: exit 2. A complete fixture bundle (report with every committed manifest id, `kind: gate`, `layout: full`; `summaries.json`; the temporary store's row and run digests, `store: pipeline`, `state: shared`) passes `GateReportReader` with scope `core` accepted, checked without calling `promote`; then one change at a time is refused by `promote` with its code and leaves the store's bytes unchanged: a shard report; a control report; `exit 1`; another manifest digest; `0/0`; a reduced `k/k`; a count above N; N results with one id repeated; an aggregate report without one shard in `shards[]`; another plan digest; a result under the wrong owner; an aggregate report without `--shards`; an inserted run no summary covers; a summary with a compared cut removed; another `registeredRowSha256`; the right digest under `store: assertion:X` only; `state: isolated`; another `runRecordSha256`; a shuffled run; scope `core` without `--accept-scope` |
+| `I-20` | `hand-made` | A: the pipeline's `baseline` run (`registry`, rule 1.0.0, the gate run's pipeline store). In the store `assertion:I-20`, through the verb: generation 1 on `registry` (floor 1), then generation 2 on `registry-next` (rule 1.0.1; that store's floor rises to 2, the pipeline store keeps floor 1); B = `baseline@rule-1.0.1` runs under generation 2. Every row of B carries the new `rulesDigest`, `pins.rules.attribution.version 1.0.1` and `evaluationGeneration 2`; every row of A the old digest; the two digests differ; the fold of each generation holds only its own digest; the oracle agrees with both at every cut. A and B are named by `(store, registeredRowSha256)`. Both generations of `assertion:I-20` are listed `state: isolated`, `assertion: I-20` (B with `variant: rule-change`) |
+| `I-23` | `horizon-planned-late` | the scenario's base run and `horizon-planned-late@replay`, both in the gate run's pipeline store. Online: at the planned cut the reported `W1` equals `A` (else `error`, never a moved hole; spec 611); the three boundaries hold at one millisecond (`holeAt` and `holeAt - 1` admitted online, `holeAt - 2` `replay-required` `beyond-horizon`); visit 3's `missingPeriods` 1 before the late batch and 0 after. Replay (run and oracled on the materialized, locked replay recording): every deadline of `source.deadlines` keeps its original cut ids and the reported `W1` satisfies `W1_cutA(s) < at ≤ W1_cutB(s)` for each of its stations; the third sample is `attributed` with `cause.kind replayed`; no `replay-required` disposition exists; every timer-emitted row carries the replayed timer cause and precedes the progress of its cut (`J-PROGRESS-ORDER` findings empty for the replay fold). Earlier generation's rows remain (spec 665), proved on bytes: after the base run's fold its journals are moved to `journals/horizon-planned-late/online/` and every file is hashed (the index) before the replay run starts; after the replay run has finished and its journals are at `journals/horizon-planned-late/event-time-replay/`, the base files are read again from disk: every byte digest equals the index, no file was added or removed, and a second fold of the reread base journals equals the first (rows per topic, final revisions, fold digest); the replay journals are a different directory and every row in them carries the replay generation's number. Both generations `state: shared` under `--state` |
+
+  `gate/core-shards.json`: `hand-made.assertions` += `F-GEN-LIFECYCLE`, `F-GEN-PROMOTE-REQUIRES-REPORT`, `I-20` (62 -> 65);
+  `hand-made.generationRuns = ["baseline@rule-1.0.1"]`; `horizon-planned-late.assertions = ["I-23"]`,
+  `horizon-planned-late.generationRuns = ["horizon-planned-late@replay"]`; every other shard `generationRuns = []`; `aggregate`
+  unchanged (nine ids: eight `J-*` and `C-2-REFERENCE`). The aggregate run records the seven `pr: 5` ids from the shard reports
+  like every other shard-owned id.
+  Report-format additions of this PR: `variant` values `event-time-replay` and `rule-change`; `runs[].journals` and
+  `runs[].journalsIndexSha256`; `runs[].originalRecordingManifestSha256` non-null for a replay run; `summaries.json.generationRuns`;
+  `run.json.replay` and `originalRecordingManifestSha256` set for a replay run (the fields exist since 5a).
+
+- [ ] **Step 21.6** `mvn -B -ntp -q install`; each of the six shards with `--state build/shards/<shard>/state` (`hand-made`:
+  `assertions run 65 / expected 65`; each of the five horizon shards `1 / 1`), then `--aggregate build/shards` -> last line
+  `assertions run 79 / expected 79`, exit 0 (65 + 5 + 9); a full unsharded run -> the same line; `--negative-control` list still
+  empty. Record in the PR body the size of `build/shards/horizon-planned-late/journals/` and the shard's time. Commit `feat(cli):
+  event-time replay generation on a locked replay recording with proved deadline brackets; injections 20 and 23; kept journals;
+  no empty shard`.
+
+- [ ] **Step 21.7** `scripts/gate-then-promote.sh <out> <python>` (full, unsharded; the store is `<out>/state`, there is no state
+  argument) or `scripts/gate-then-promote.sh --from-shards <dir> <out> <python>`. It registers nothing by hand. Any outcome other
+  than the stated one exits 1:
+  1. Full: `forseti gate --engine core --state <out>/state --out <out>`. Shards: `forseti gate --engine core --aggregate <dir> --out
+     <out>` (no `--state`). Exit 0 and the last line `assertions run N / expected N`, N computed by the script from the committed
+     manifest.
+  2. From `<out>/report.json`: BASE = the one `generations[]` entry with `store pipeline`, `scenario horizon-planned-late`, `variant
+     online`, `state shared`, and its one non-shuffled `runs[]` entry (matched by `shard`, `store` and `registeredRowSha256`);
+     REPLAY = the one entry with `store pipeline`, `variant event-time-replay`, `state shared`, the same `shard`, and its run. State
+     directory: `<out>/state`, or `<dir>/<entry.shard>/state`; run records relative to `<out>`, or to `<dir>/<entry.shard>/`. Zero or
+     two matches exit 1.
+  3. `promote` BASE without `--accept-scope` -> exit 1, `gate-report-scope`; `generations.jsonl` byte-identical before and after.
+  4. Shards mode only: `promote` BASE with `--gate-report <dir>/<entry.shard>/report.json --accept-scope core` -> exit 1,
+     `gate-report-shard` (the report of the very shard that registered the generation is refused).
+  5. `promote` BASE with `--accept-scope core` (shards mode: `--shards <dir>`) -> exit 0, `status current`, `gateReportSha256` = the
+     raw SHA-256 of `<out>/report.json`.
+  6. `promote` REPLAY the same way -> exit 0, `status current`, `retired` = BASE's number (owner decision 4).
+  7. `generation list`: BASE's statuses are `registered, replaying, verified, current, retired`; REPLAY's are `registered,
+     replaying, verified, current`; each promotion's three rows carry the `run` of its run record (`runRecordSha256` recomputed by
+     the script); every other generation of the store has `registered` only; `head-floors/line2.json` still reads `headVersion 1`.
+     Shards mode: no other shard's `state/generations.jsonl` holds a row other than `registered`.
+  8. The base journals after both promotions: every file under `journals/horizon-planned-late/online/` still has the digest of
+     its index, and the index the `journalsIndexSha256` of BASE's run entry.
+
+- [ ] **Step 21.8** CI. `ci.yml`, job `core-gate`: the step "Core gate over every shard" becomes
+
+```yaml
+      - name: Core gate over every shard, then promote through the CLI
+        working-directory: forseti
+        run: bash scripts/gate-then-promote.sh --from-shards build/shards build/gate "$(command -v python)"
+```
+
+  and the step "Gate reports" uploads the post-promotion store with the reports:
+
+```yaml
+        with:
+          name: core-gate
+          path: |
+            forseti/build/gate*/
+            forseti/build/shards/horizon-planned-late/state/
+          if-no-files-found: error
+```
+
+  The control loop stays as it is (empty list; PR 6 replaces it with per-shard control runs, which take no `--state`, so their
+  reports are `kind: negative-control` with `isolated` generations only and are refused twice over). The `gate-shard-horizon-planned-late`
+  artifact now holds: `report.json`, `summaries.json`, `logs/`, `diffs/` (on failure), `runs/horizon-planned-late.run.json`,
+  `runs/horizon-planned-late.cuts.json`, `runs/horizon-planned-late.replay.run.json`, `runs/horizon-planned-late.replay.cuts.json`,
+  `runs/horizon-planned-late.replay.recording/{manifest.json, routing.json, expected.json}` (the replay manifest, whose
+  `source.replayOf`, `source.deadlines` and `digests` bind the materialized files, the bracket proof and the offset map),
+  `journals/horizon-planned-late/online/` with `online.index.json` (the base generation's journal rows as bytes),
+  `journals/horizon-planned-late/event-time-replay/` with `event-time-replay.index.json`, and `state/{generations.jsonl` (two
+  `registered` rows: base and replay), `generations.lock`, `recovery-control.jsonl` (one declaration per generation),
+  `head-floors/line2.json}`. The recordings themselves do not travel. Lock files are recreated where the store is restored; no path
+  of the producing runner is identity.
+  `nightly-gate.yml` runs `bash scripts/gate-then-promote.sh build/gate "$(command -v python)"` (store `build/gate/state`, inside
+  the uploaded `forseti/build/gate/`) with
+  `-Dforseti.gate.horizonXmx=6g` passed through `JAVA_TOOL_OPTIONS`, which exercises the reader's `full` branch, the same evidence
+  validator included, every night. Expected shard time for `horizon-planned-late`: about twice its 11 minutes (a second harness and
+  oracle run), inside the 60-minute timeout. Commit `ci: gate-then-promote from the shard artifacts in core-gate and unsharded
+  nightly`.
+
+- [ ] **Step 21.9** Locally: the six shards, then `bash scripts/gate-then-promote.sh --from-shards build/shards build/gate
+  "$(command -v python)"` -> exit 0 (`assertions run 79 / expected 79`; BASE `retired`, REPLAY `current`); `bash
+  scripts/gate-then-promote.sh build/gate-e2e "$(command -v python)"` -> exit 0. Pull request 5b: Task 21
+  (3 commits); CI green. PR body: the lifecycle, the promotion policy (Open point 3), the replay order, batches and bracket proof
+  and its lock, the gate line `assertions run 79 / expected 79`, the artifact contents, the shard times.
+
+  **What 5b's CI proves:** `assertions run 79 / expected 79` from six shards and the aggregate; two generations registered and run
+  in the `horizon-planned-late` shard are promoted in the aggregate job, in the store that travelled as an artifact, from the
+  aggregate report and from nothing less (the shard's own report and an unaccepted core scope are refused live); the previous
+  current ends `retired` and one current per scope holds on real gate evidence; the store's floor stays at 1; the replay run is
+  compared with the oracle at every cut of a locked recording whose deadline brackets are proved on its own watermark progression;
+  the base generation's journal bytes are unchanged after the replay run and after both promotions; the full-layout branch of the
+  reader runs nightly. It does not prove the report's origin (unsigned), and from 2027-11-12 it fails until the fixture heads are
+  re-published.
 
 ## Chunk 7: Negative controls, CI, documentation, the step-3 gate (PR 6)
 
-Branch: `git switch -c test/step3-core-gate main` after PR 5 merged.
+Branch: `git switch -c test/step3-core-gate main` after PR 5b merged.
 
 ### Task 22: The eight negative controls and the gate self-tests
 
@@ -1775,12 +2452,12 @@ Branch: `git switch -c test/step3-core-gate main` after PR 5 merged.
 - Modify: `core/src/main/java/yggdrasil/forseti/core/NegativeControls.java` (created in Task 10 with `NONE`; unchanged shape, now read by the code paths below), `Stage1`, `Stage2`, `ReferenceEngine` (composes the record from `--negative-control`), `CoreGate`, `oracle/src/forseti_oracle/stage1.py` (`--lenient`), `gate/core-negative-controls.json` (8), `gate/core-assertions.json` (+2 = 81)
 - Create: `cli/src/test/java/yggdrasil/forseti/cli/gate/NegativeControlsTest.java`
 
-The controls are flags the harness passes to the core (the core's `NegativeControls` record, `NONE` in production; `Stage1` and `Stage2` are constructed with it; core never references cli) or to the oracle. They prove the gate's assertions can fail (spec 655-667). A control run uses the same manifest and must exit 1 with its intended assertion in `failed`; `report.json.intendedFailures` lists the ids and CI checks the subset.
+The controls are flags the harness passes to the core (the core's `NegativeControls` record, `NONE` in production; `Stage1` and `Stage2` are constructed with it; core never references cli) or to the oracle. They prove the gate's assertions can fail (current spec 674-686). A control run uses the same manifest, never takes `--state` (a usage error, exit 2), writes a report of `kind: negative-control` whose generations are all `isolated`, so it can never authorize a promotion, and must exit 1 with its intended assertion in `failed`; `report.json.intendedFailures` lists the ids and CI checks the subset.
 
 | Control | Mutation | Intended failure |
 |---|---|---|
 | `processing-time` | the harness replaces every sample `sourceTs` and occupancy `eventTime` by the delivery sequence number before `decide` | `I-1` |
-| `drop-late` | the harness drops a beyond-horizon input without its `replay-required` disposition | `J-DISPOSITION-COVERAGE` (on `horizon-planned-late`, spec 660) |
+| `drop-late` | the harness drops a beyond-horizon input without its `replay-required` disposition | `J-DISPOSITION-COVERAGE` (on `horizon-planned-late`, current spec 679) |
 | `no-cascade` | stage 2 ignores basis revisions after a row exists | `I-18`, `J-BASIS-CURRENT` |
 | `lenient-oracle` | the oracle (`--lenient`) reports `provisional` visits as `complete` | `I-2`, `I-6` at the mandatory cuts |
 | `first-wins` | S7 keeps the visit with the earlier arrival delivery and retracts only the later one | `I-4` |
@@ -1795,15 +2472,15 @@ The controls are flags the harness passes to the core (the core's `NegativeContr
 ### Task 23: Item 1 aggregate, CI, README and documentation, pull request 6
 
 **Files:**
-- Modify: `CoreGate` (`C-1`), `gate/core-assertions.json` (+1 = 82), `.github/workflows/ci.yml` (already loops the controls; add the step "Gate on a shared state, then promote through the CLI (end to end)" running `bash scripts/gate-then-promote.sh build/state-e2e build/gate-e2e "$(command -v python)"` right after the "Core gate" step, and the artifact of oracle diffs on failure; the step is added only now because the script, the generation CLI and `gate --state` exist from PR 5 on, so the workflows of PRs 1-4 never call anything built later: their steps are the ASCII and closure scripts of Task 2, the Maven build, the oracle tests, the gate of the manifest at that PR, the control loop over the controls file as it stands, and the seam test of Task 6), `README.md`; Create: `docs/CORE-GATE.md`, `docs/superpowers/plans/2026-11-09-forseti-step3-core-and-oracle.md` (this plan)
+- Modify: `CoreGate` (`C-1`), `gate/core-assertions.json` (+1 = 82), `.github/workflows/ci.yml` (already loops the controls and, since PR 5b, runs `scripts/gate-then-promote.sh --from-shards` in `core-gate`; PR 6 changes only the expected manifest size, which the script reads from the committed manifest, and the control runs), `README.md`; Create: `docs/CORE-GATE.md`, `docs/superpowers/plans/2026-11-09-forseti-step3-core-and-oracle.md` (this plan)
 
-- [ ] **Step 23.1** `C-1`: aggregate over every scenario of the gate: every compared cut matched the oracle (item 1, spec 562); `report.json` lists scenarios, cuts compared, rows compared, dispositions reconciled.
+- [ ] **Step 23.1** `C-1`: aggregate over every scenario of the gate: every compared cut matched the oracle (item 1, current spec 579); `report.json` lists scenarios, cuts compared, rows compared, dispositions reconciled. `C-1` joins the `aggregate` list of `gate/core-shards.json` and covers `runs`, `shuffled` and `generationRuns`; the two gate self-tests are owned by `hand-made` (67 hand-made + 5 horizon + 10 aggregate = 82).
 
-- [ ] **Step 23.2** `README.md`: what forseti is (the spec's purpose in two sentences); the three regimes of Decision 16 as text (a), (b), (c) (spec 93); the module layout; how to run the core gate and the controls; the fixture provenance (`registry.lock.json`, `upstream/manifest.json`); the step-3 completion gate statement with `assertions run 82 / expected 82`; the pins; what the core scope does not establish (native event time, recovery, exactly-once, broker retention, transaction visibility, isolation, bridge classification, engine eligibility: steps 5-8). `docs/CORE-GATE.md`: the assertion ids with their spec rows (the table of this plan), the scenario list with sizes and which recordings are committed (smoke) or built at gate time (every other), the recording, journal and cut-log formats, the controls, the deferred obligations table. `bash scripts/check-ascii-names.sh` -> `product names: ASCII only`.
+- [ ] **Step 23.2** `README.md`: what forseti is (the spec's purpose in two sentences); the three regimes of Decision 16 as text (a), (b), (c) (current spec 95); the module layout; how to run the core gate and the controls; the fixture provenance (`registry.lock.json`, `upstream/manifest.json`); the step-3 completion gate statement with `assertions run 82 / expected 82`; the pins; what the core scope does not establish (native event time, recovery, exactly-once, broker retention, transaction visibility, isolation, bridge classification, engine eligibility: steps 5-8). `docs/CORE-GATE.md`: the assertion ids with their spec rows (the table of this plan), the scenario list with sizes and which recordings are committed (smoke) or built at gate time (every other), the recording, journal and cut-log formats, the controls, the deferred obligations table. `bash scripts/check-ascii-names.sh` -> `product names: ASCII only`.
 
-- [ ] **Step 23.3** `scripts/gate-then-promote.sh <state> <out> <python>` (created in Task 21 with the `--state` flag; wired into CI here): registers nothing by hand, runs `forseti gate --engine core --state <state>`, selects the `horizon-planned-late` non-replay generation and its run record from the report (`state: shared`), runs `promote` without `--accept-scope` (must exit 1, `gate-report-scope`), then with `--accept-scope core` (must print `current`), then `generation list` must show `registered, replaying, verified, current` for that generation and the state's `head-floors/line2.json` must still read `headVersion 1`; any other outcome exits 1. This task adds the CI step that runs it after the normal gate (`.github/workflows/ci.yml`, step "Gate on a shared state, then promote through the CLI (end to end)"); Task 2's workflow does not contain it, so the CI of PRs 1-4 runs only what exists at each PR. Full run: `mvn -B -ntp install`; `python -m pytest -q oracle`; gate -> `assertions run 82 / expected 82`; eight controls -> exit 1 each with their intended failures; `bash scripts/check-dependency-closure.sh` -> clean. Commit `docs: README, core gate documentation and the step-3 plan; item 1 aggregate`.
+- [ ] **Step 23.3** `scripts/gate-then-promote.sh` exists and runs in CI since PR 5b (Step 21.7, Step 21.8): it promotes the base generation of `horizon-planned-late` and then its replay generation from the whole-gate report and requires the base generation to end `retired`. This task adds nothing to it; with the manifest at 82 its first step prints `assertions run 82 / expected 82`. Full run: `mvn -B -ntp install`; `python -m pytest -q oracle`; gate -> `assertions run 82 / expected 82`; eight controls -> exit 1 each with their intended failures; `bash scripts/check-dependency-closure.sh` -> clean. Commit `docs: README, core gate documentation and the step-3 plan; item 1 aggregate`.
 
-- [ ] **Step 23.4** Pull request 6: Tasks 22-23 (3 commits); CI green (`build`: tests, oracle, gate 82/82, eight controls; `bifrost-seam`; `windows`). PR body: the step-3 completion gate statement (spec row 3), the gate line, the engine-independent injection list and the deferred obligations with their steps, the remaining Open points, the gate wall time, the fixture provenance. After the merge the controller runs the Verification commands from `main` and retains the logs (spec 703).
+- [ ] **Step 23.4** Pull request 6: Tasks 22-23 (3 commits); CI green (`build`: tests, oracle; six `gate` shards; `core-gate`: aggregate 82/82, promotion of the base and the replay generation, eight controls; `bifrost-seam`; `windows`). PR body: the step-3 completion gate statement (spec row 3), the gate line, the engine-independent injection list and the deferred obligations with their steps, the remaining Open points, the gate wall time, the fixture provenance. After the merge the controller runs the Verification commands from `main` and retains the logs (current spec 722).
 
 ## Follow-up (moved before PR 1)
 
@@ -1814,8 +2491,8 @@ By the owner decision of 2026-11-11 the two follow-up PRs (the Tyr re-author and
 Everything the owner decided on 2026-11-09 (the split and PR order, Kafka Streams 4.2.2, the interpretations written into the spec by Task 1, `forseti gate --engine core`, pytest, file-backed generation store and recovery control, horizon recordings built at gate time) and the fixture arrangement that replaced Q3 on 2026-11-11 are applied above and not repeated here. The four points that remained were decided by the owner on 2026-11-11 (`DECISIONS-P3.md`, last section); each is kept here with its outcome, and none is open.
 
 1. **The rule change of `registry-next` (injection 20). Decided: accepted as recommended.** The plan bumps `line2-attribution` to `1.0.1` with `coverage.maxMissingPeriods` 3 -> 4 (and the impact rule to `1.0.1`). Reason: any observable change would do; this one changes no body of the baseline, so `I-20` tests the pins and the generation isolation, not a behaviour difference, which is what current spec line 662 asks ("every row of that generation carries the new `rulesDigest`, no generation mixes rules").
-2. **Gate runtime and CI layout. Decided: accepted as recommended.** Five horizon recordings of about 443k messages each (five devices) are built, run and oracled per gate, and the twenty hand-made recordings are built per gate too (Amendment 2026-11-11, decision 6); 13-23 minutes are expected in CI (Step 19.3). When the measured time exceeds 15 minutes, the `build` job is split into `gate-hand-made` and `gate-horizon` with the same jar and the manifest filtered by `pr`/scenario, both required. Reason: Decision 8 (current spec line 61) forbids shortening the horizon; parallel jobs keep the requirement and the PR feedback time. Applied as `gate/core-shards.json` with six shards and an aggregate job, Amendment 2026-11-12, item 2.
-3. **Promotion scope policy. Decided: accepted as recommended.** `promote` accepts a `core`-scope report only with the explicit flag `--accept-scope core`; the default requires scope `semantic` (steps 6-7); step 3's Verification promotes one generation this way as evidence of the lifecycle. Reason: Decision 11 (current spec line 73) requires the gate report digest without naming the gate; a core report must never impersonate the semantic gate of current spec line 690, and an explicit flag keeps the local test environment's policy out of the business rows.
+2. **Gate runtime and CI layout. Decided: accepted as recommended.** Five horizon recordings of about 443k messages each (five devices) are built, run and oracled per gate, and the twenty hand-made recordings are built per gate too (Amendment 2026-11-11, decision 6); 13-23 minutes are expected in CI (Step 19.3). When the measured time exceeds 15 minutes, the `build` job is split into `gate-hand-made` and `gate-horizon` with the same jar and the manifest filtered by `pr`/scenario, both required. Reason: Decision 8 (current spec line 61) forbids shortening the horizon; parallel jobs keep the requirement and the PR feedback time. Applied as `gate/core-shards.json` with six shards and an aggregate job, Amendment 2026-11-12, item 2. From PR 5b on every shard owns at least one assertion (`horizon-planned-late` owns `I-23`) and the plan refuses a shard without one; from PR 5a on every shard runs with `--state` and its artifact carries its control store.
+3. **Promotion scope policy. Decided: accepted as recommended.** `promote` accepts a `core`-scope report only with the explicit flag `--accept-scope core`; the default requires scope `semantic` (steps 6-7); step 3's Verification and the `core-gate` job promote two generations this way (the base generation of `horizon-planned-late`, then its replay generation, which retires the first) as evidence of the lifecycle. Owner decisions of 2026-11-12 and 2026-11-13: `promote` reads only a whole-gate report (`kind: gate`, `layout: full` or `aggregate`); a shard report and a control report are refused whatever their counts; the result-id set must equal the committed manifest's ids; the generation is addressed by its store (the gate run's pipeline store) and `registeredRowSha256` and the run by `runRecordSha256`, never by a bare number and never by a digest found in another store; the evidence files of either layout are re-read and re-hashed, and every run must be covered by a successful summary, its locked recording and its exact cut ids; an `isolated` generation is never a target; promotion happens in the store that registered the generation, and its final approval and floor checks run under the same lock hold as its publication. Reason: Decision 11 (current spec line 73) requires the gate report digest without naming the gate; a core report must never impersonate the semantic gate of current spec line 690, and an explicit flag keeps the local test environment's policy out of the business rows.
 4. **Two-station scenario shape against the three-station sim of step 4. Decided: the recommendation is rejected.** The recommendation was to keep the fixtures' two stations in step 3 and extend the scenarios in step 5. The owner decided that Line2 has three stations (`station1`, `station2`, `station3`; two nutrunners under Station1) in every repository, as current spec lines 111, 487 and 734 state for the sim and the partitions. Applied in this plan: station partitions 0, 1, 2 (Conventions); Tyr's and Bifrost's fixtures re-authored before PR 1 (Prerequisites before PR 1); five devices and sixteen baseline visits (Task 16); the recomputed counts of Tasks 6-8, 13, 15, 16, 17 and 19. The plc-stamped rule keeps identity on `station1` and `nutrunner1` and gains station3 in `stations[]` only. The Tyr plan's Open point 7, which recorded the two-station choice for the contract fixtures, is superseded by Prerequisite (b).
 
 ## Verification
@@ -1824,7 +2501,7 @@ Run from the forseti repository root on `main` after the PR 6 merge (or on `test
 
 ```bash
 git status --short                                        # empty
-git log --oneline 384933d..                               # Tasks 1-23 (about 31 commits over seven PRs)
+git log --oneline 384933d..                               # Tasks 1-23 (about 35 commits over eight PRs)
 git diff --check 384933d...HEAD                           # nothing
 bash scripts/check-ascii-names.sh                         # product names: ASCII only
 bash scripts/check-dependency-closure.sh                  # dependency closure: clean
@@ -1896,9 +2573,9 @@ java -jar cli/target/forseti.jar recordings build --scenario fixtures/scenarios/
 java -jar cli/target/forseti.jar recordings verify --scenario fixtures/scenarios/horizon-planned-late.json --out build/recordings/horizon-planned-late   # lock matches, exit 0
 rm -rf build/state && java -jar cli/target/forseti.jar generation new --state build/state --mappings fixtures/registry/mappings --trusted-keys fixtures/trusted-keys.jsonl \
   --stream line2 --rule line2-attribution@1.0.0 --recording build/recordings/horizon-planned-late
-#   -> {"generation":1,"status":"registered","rulesDigest":"<64 hex>",...}; build/state/head-floors/line2.json exists; build/state/recovery-control.jsonl has one declaration
+#   -> {"generation":1,"status":"registered","rulesDigest":"<64 hex>",...}; build/state/head-floors/line2.json exists; build/state/recovery-control.jsonl does not exist yet (the first run preparation writes the declaration)
 java -jar cli/target/forseti.jar run --engine core --recording build/recordings/horizon-planned-late --registry fixtures/registry \
-  --state build/state --generation 1 --out build/runs/planned-late-g1                      # runs from the pinned releaseEvidence; appends no generation row
+  --state build/state --generation 1 --out build/runs/planned-late-g1                      # runs from the pinned releaseEvidence; writes the generation's initial recovery declaration; appends no generation row
 python -I -m forseti_oracle.cli all --recording build/recordings/horizon-planned-late --cuts build/runs/planned-late-g1/cuts.json --mappings fixtures/registry/mappings \
   --release line2-rules@1.0.0 --rule line2-attribution@1.0.0 --definitions build/recordings/horizon-planned-late/manifest.json --out build/oracle/planned-late-g1
 python -I - <<'PY'
@@ -1913,25 +2590,30 @@ java -jar cli/target/forseti.jar generation new --state build/state --mappings f
   --stream line2 --rule line2-attribution@1.0.0 --recording build/recordings/horizon-planned-late      # generation 2
 java -jar cli/target/forseti.jar run --engine core --replay event-time --recording build/recordings/horizon-planned-late --registry fixtures/registry \
   --state build/state --generation 2 --out build/runs/planned-late-g2
-ls build/runs/planned-late-g2/replay-recording/manifest.json                        # the materialized replay recording (source.replayOf = the original manifest digest)
+ls build/runs/planned-late-g2/replay-recording/manifest.json                        # the materialized replay recording (source.replayOf = the original manifest digest; offsets in replay order, batches by telemetry-derived cut targets, source.deadlines = the proved brackets; current spec 570)
 grep -c '"replayed"' build/runs/planned-late-g2/journals/forseti.samples/0.jsonl    # > 0
 grep -c 'beyond-horizon' build/runs/planned-late-g2/journals/forseti.samples/0.jsonl   # 0
 
-# the lifecycle through the CLI only: a gate run on this state (its report lists the state's generations and runs), then promote.
-# scripts/gate-then-promote.sh <state> <out> <python> (added in Task 21, run by CI as the end-to-end regression) performs exactly these lines
-# and exits 1 if any step refuses; the hand run below shows them one by one. The shared state's line2 floor stays at 1 throughout, because
-# F-GEN-FLOOR and I-20's registry-next generation run in isolated temporary states (Task 21.1).
-java -jar cli/target/forseti.jar gate --engine core --state build/state --out build/gate-state --python "$(command -v python)"   # assertions run 82 / expected 82; exit 0
-G=$(python -I -c "import json;r=json.load(open('build/gate-state/report.json'));print([g['generation'] for g in r['generations'] if g['scenario']=='horizon-planned-late' and not g.get('replay')][0])")
-R=$(python -I -c "import json;r=json.load(open('build/gate-state/report.json'));print([x['runRecord'] for x in r['runs'] if x['generation']==$G][0])")
-java -jar cli/target/forseti.jar generation promote --state build/state --mappings fixtures/registry/mappings --trusted-keys fixtures/trusted-keys.jsonl \
-  --generation "$G" --run "$R" --gate-report build/gate-state/report.json; echo "-> $?"   # -> 1 {"refusal":"gate-report-scope",...}  (a core report needs --accept-scope core)
-java -jar cli/target/forseti.jar generation promote --state build/state --mappings fixtures/registry/mappings --trusted-keys fixtures/trusted-keys.jsonl \
-  --generation "$G" --run "$R" --gate-report build/gate-state/report.json --accept-scope core   # {"generation":<G>,"status":"current","gateReportSha256":"<sha256 of report.json>",...}
-java -jar cli/target/forseti.jar generation list --state build/state | python -I -c "import json,sys;rows=[json.loads(l)['value'] for l in sys.stdin];print([(r['generation'],r['status']) for r in rows if r['generation']==$G])"
-#   -> [(<G>,'registered'),(<G>,'replaying'),(<G>,'verified'),(<G>,'current')]   (the hand-run generations 1 and 2 above stay registered: no row was written by run or by the gate)
+# the lifecycle through the CLI only, as CI runs it: scripts/gate-then-promote.sh (Task 21, Step 21.7; run by the core-gate job with
+# --from-shards and nightly in this full form) exits 1 if any step refuses; the hand run below shows its steps one by one. The gate
+# registers its own generations through `generation new` in its own store, build/gate-state/state (a shared gate run's store is
+# always <out>/state; the two generations made by hand above stay in build/state and are not touched); that store's line2 floor
+# stays at 1, because F-GEN-FLOOR and I-20's generations live in isolated assertion stores.
+ST=build/gate-state/state
+java -jar cli/target/forseti.jar gate --engine core --state "$ST" --out build/gate-state --python "$(command -v python)"   # assertions run 82 / expected 82; exit 0
+sel() { python -I -c "import json,sys;r=json.load(open('build/gate-state/report.json'));g=[x for x in r['generations'] if x['store']=='pipeline' and x['scenario']=='horizon-planned-late' and x['variant']==sys.argv[1] and x['state']=='shared'];assert len(g)==1;u=[x for x in r['runs'] if x['store']=='pipeline' and x['registeredRowSha256']==g[0]['registeredRowSha256'] and not x['shuffle']];assert len(u)==1;print(g[0]['generation'],g[0]['registeredRowSha256'],'build/gate-state/'+u[0]['runRecord'])" "$1"; }
+read G D R <<< "$(sel online)"; read G2 D2 R2 <<< "$(sel event-time-replay)"
+P="java -jar cli/target/forseti.jar generation promote --state $ST --mappings fixtures/registry/mappings --trusted-keys fixtures/trusted-keys.jsonl --gate-report build/gate-state/report.json"
+$P --generation "$G" --registered-row-sha256 "$D" --run "$R"; echo "-> $?"   # -> 1 {"refusal":"gate-report-scope",...}  (a core report needs --accept-scope core)
+$P --generation "$G" --registered-row-sha256 "$D" --run "$R" --accept-scope core      # {"generation":<G>,"status":"current","gateReportSha256":"<sha256 of report.json>","retired":null,...}
+$P --generation "$G2" --registered-row-sha256 "$D2" --run "$R2" --accept-scope core   # {"generation":<G2>,"status":"current",...,"retired":<G>}
+java -jar cli/target/forseti.jar generation list --state "$ST" | python -I -c "import json,sys;rows=[json.loads(l)['value'] for l in sys.stdin];print([[r['status'] for r in rows if r['generation']==g] for g in ($G,$G2)])"
+#   -> [['registered','replaying','verified','current','retired'], ['registered','replaying','verified','current']]
+#      (every other generation of that store stays registered; the gate wrote no row itself: every `registered` row of its runs was written by `generation new`)
+python -I -c "import json,sys;print(json.load(open(sys.argv[1]+'/head-floors/line2.json'))['headVersion'])" "$ST"   # 1
+bash scripts/gate-then-promote.sh build/gate-e2e "$(command -v python)"; echo "-> $?"   # -> 0 (the same steps on a fresh output directory, store build/gate-e2e/state)
 
-# 8. On GitHub: the seven PRs merged (docs, PR 1-6); main CI green (build with gate 82/82 and eight controls, bifrost-seam at the pinned refs, windows); the gate artifact `core-gate` attached to the last run
+# 8. On GitHub: the eight PRs merged (docs, PR 1-4, 5a, 5b, 6); main CI green (build; six gate shards; core-gate with the aggregate 82/82, the promotion of the base and the replay generation and eight controls; bifrost-seam at the pinned refs; windows); the gate artifact `core-gate` attached to the last run
 ```
 
 (On Windows under Git Bash, pass the jar, registry, recording and key paths through `cygpath -m` if `java` cannot open them, as Bifrost's gate scripts do; the controller machine's JDK 25 runs the jar too, but the recorded run should use Temurin 17 to match CI.)
@@ -1945,10 +2627,10 @@ java -jar cli/target/forseti.jar generation list --state build/state | python -I
 | Decision 14, line 84 (as extended); line 725 (a Bifrost-published head) | `F-HEAD-*`, `F-RELEASE-DIGEST`, `F-PAYLOAD-DIGEST`, `BifrostSeamTest` | 1 |
 | Decision 6 (line 52), lines 331, 412-452 (revisions, deletes, progress, ledgers) | `F-JOURNAL-REDUCERS`, `S-REVISIONS`, `S-PROGRESS`, `T-PROGRESS-TRACKER`, `T-DELETE`, `T-LEDGER-2`, `J-REVISION-CONTINUITY`, `J-NO-EQUAL-CONSECUTIVE`, `J-PROGRESS-ORDER` | 2, 3, 4 |
 | Decision 12 (line 76): pure decisions, `ProgressTracker` | `S-DETERMINISM`, `T-PROGRESS-TRACKER`, `J-W2-EQUALS-W1` | 2, 3, 4 |
-| Decision 11, lines 72, 540-553 (as extended) | `F-GEN-*`, `I-20`, `I-23` | 5 |
+| Decision 11, current spec lines 73, 552-570 (as edited by Step 20.0) | `F-GEN-*`, `I-20`, `I-23`; `scripts/gate-then-promote.sh` | 5a, 5b |
 | Injections 1-5, 7-11d, 25, 26 (lines 613-650) | `I-1` ... `I-26` as listed | 4 |
 | Injections 6, 10e, 11e; horizon scenarios (lines 592-594) | `I-6`, `I-10e`, `I-11e`, `J-AFTER-HORIZON-CUTS` | 4 |
-| Injection 23 (line 646) and the event-time replay | `I-23`, `C-2-REFERENCE` | 4, 5 |
+| Injection 23 (current spec lines 611, 665) and the event-time replay (current spec 570) | `I-23`, `C-2-REFERENCE` | 4, 5b |
 | Injections 12-19 (lines 635-642), H-cascade, H-tool | `T-SMOKE-INCIDENT`, `T-CASCADE`, `I-12` ... `I-19`, `J-BASIS-CURRENT` | 3, 4 |
 | H-gap (line 21), dispositions (lines 437-452) | `J-DISPOSITION-COVERAGE`, `I-17`, `I-25` | 4 |
 | H-pin (line 22), item 1 (line 562) | `C-1`, the pins cross-check in `Integrity`, `wrong-rules-pin` control | 4, 6 |
@@ -1957,4 +2639,4 @@ java -jar cli/target/forseti.jar generation list --state build/state | python -I
 | Item 2 (line 563) reference values | `C-2-REFERENCE` | 4 |
 | Step-3 `W1` formula (Task 1's line 588) | `S-W1`, `J-W1-FORMULA` | 2, 4 |
 | Negative controls alpha-iota except theta (lines 657-667) | the eight controls exit 1 with their intended failures | 6 |
-| Proving the gates run (line 671) | `assertions run N / expected N`, `G-SELF-OMITTED`, `G-SELF-MISSING-REPORT`, the CI control loop | 1, 6 |
+| Proving the gates run (current spec line 690) | `assertions run N / expected N`, `G-SELF-OMITTED`, `G-SELF-MISSING-REPORT`, the CI control loop | 1, 6 |
