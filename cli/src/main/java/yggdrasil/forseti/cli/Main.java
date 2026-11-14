@@ -11,6 +11,7 @@ import java.util.stream.Stream;
 import yggdrasil.forseti.cli.gate.CoreGate;
 import yggdrasil.forseti.cli.generation.GenerationCli;
 import yggdrasil.forseti.cli.harness.ReferenceEngine;
+import yggdrasil.forseti.cli.live.CaptureLock;
 import yggdrasil.forseti.cli.recording.Recording;
 import yggdrasil.forseti.cli.recording.ReplayRecording;
 import yggdrasil.forseti.cli.recording.ScenarioBuilder;
@@ -47,6 +48,13 @@ public final class Main {
             try { flags = Args.parse(args, 2, Set.of()); } catch (IllegalArgumentException e) { err.println(e.getMessage()); return usage(err); }
             return replay(flags, out, err);
         }
+        if (args[0].equals("recordings") && args[1].equals("verify-capture")) {
+            if (args.length < 3 || args[2].startsWith("--")) { err.println("recordings verify-capture needs a recording directory"); return usage(err); }
+            Args flags;
+            try { flags = Args.parse(args, 3, Set.of("write-lock")).only(Set.of("lock", "write-lock")); flags.required("lock"); }
+            catch (IllegalArgumentException e) { err.println(e.getMessage()); return usage(err); }
+            return verifyCapture(Path.of(args[2]), Path.of(flags.required("lock")), flags.has("write-lock"), out, err);
+        }
         Args flags;
         try { flags = Args.parse(args, 2, Set.of("lock")); }
         catch (IllegalArgumentException e) { err.println(e.getMessage()); return usage(err); }
@@ -68,6 +76,7 @@ public final class Main {
         err.println("       forseti recordings synth --scenario <synthetic scenario file> --out <dir> --registry <dir> [--lock]");
         err.println("       forseti recordings verify --scenario <file> --out <dir> [--registry <dir>]");
         err.println("       forseti recordings replay --recording <dir> --out-of-orderness-ms <n> --out <dir> [--lock <file>]");
+        err.println("       forseti recordings verify-capture <recording> --lock <capture lock> [--write-lock]");
         err.println("       forseti gate --engine core [--out <dir>] [--python <interpreter>] [--negative-control <name>] [--seed <n>]");
         err.println("                    [--shard <name> | --aggregate <dir>] [--state <out>/state]");
         err.println("       forseti run --engine core --recording <dir> --registry <dir> --state <dir> --generation <n> --out <run dir>");
@@ -146,6 +155,28 @@ public final class Main {
             err.println(e.getMessage());
             return 2;
         }
+    }
+
+    /** {@code recordings verify-capture <recording> --lock <file> [--write-lock]}: a captured (step-5) recording checked without a
+     *  rebuild ({@link CaptureLock#check}), then its lock compared with {@code --lock}, or with {@code --write-lock} written there for a
+     *  fresh capture. Exit 0 verified (or locked), 1 a problem (each printed), 2 an input error. */
+    private static int verifyCapture(Path dir, Path lockFile, boolean write, PrintStream out, PrintStream err) {
+        try {
+            List<String> problems = new ArrayList<>(CaptureLock.check(dir));
+            ObjectNode lock = null;
+            if (problems.isEmpty()) {
+                lock = CaptureLock.lock(dir);
+                if (!write) {
+                    if (!Files.isRegularFile(lockFile)) problems.add("no capture lock " + lockFile);
+                    else problems.addAll(CaptureLock.compare(lock, Files.readAllBytes(lockFile)));
+                }
+            }
+            if (!problems.isEmpty()) { problems.forEach(err::println); return 1; }
+            if (write) { Json.write(lockFile.toAbsolutePath(), lock); out.println("locked " + dir.getFileName() + " -> " + lockFile); }
+            else out.println("verified capture " + dir.getFileName() + ": " + Canonical.utf8(Canonical.bytes(lock.get("counts"))));
+            return 0;
+        } catch (IOException e) { err.println(e.getMessage()); return 2; }
+        catch (IllegalArgumentException | IllegalStateException | UncheckedIOException e) { err.println(e.getMessage()); return 2; }
     }
 
     private static long number(String text, String flag, long min) {

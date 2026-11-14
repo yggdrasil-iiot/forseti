@@ -298,9 +298,20 @@ public final class ReplayRecording {
     /** The ordering key, the largest valid member {@code sourceTs} and the routed station of one record. A process message is read by
      *  {@link InputParser} unchanged: a member it keeps and that carries a {@code sourceTs} is valid; a message it rejects is untimed. */
     private static Rec record(String topic, int partition, Recording.Line l, RoutingManifest routing, JsonNode definitions) {
-        long offset = l.record().offset();
-        if (topic.equals(InputParser.INCIDENTS)) return new Rec(offset, l.bytes(), null, null, null);
-        InputParser.Read read = InputParser.read(new Inputs.Origin(topic, partition, offset), l.record().key(), Recording.valueBytes(l.bytes()));
+        Timing t = timing(topic, partition, l.record().offset(), l.record().key(), Recording.valueBytes(l.bytes()), routing, definitions);
+        return new Rec(l.record().offset(), l.bytes(), t.key(), t.maxTs(), t.station());
+    }
+
+    /** The replay's view of one input record: its ordering key (null: untimed), and for a process message its largest valid member
+     *  {@code sourceTs} and the station the harness routes it to (null when it routes it to none). Shared with the step-5 recorder,
+     *  which plans the batches of a live capture on the same watermark rule. */
+    public record Timing(Long key, Long maxTs, String station) {}
+
+    /** {@link Timing} of one record, read by {@link InputParser} unchanged: a member it keeps and that carries a {@code sourceTs} is
+     *  valid; a message it rejects is untimed. */
+    public static Timing timing(String topic, int partition, long offset, String key, byte[] value, RoutingManifest routing, JsonNode definitions) {
+        if (topic.equals(InputParser.INCIDENTS)) return new Timing(null, null, null);
+        InputParser.Read read = InputParser.read(new Inputs.Origin(topic, partition, offset), key, value);
         Object parsed = read.rejected() ? null : read.record().parsed();
         if (parsed instanceof Inputs.ProcessMessage m) {
             Long min = null, max = null;
@@ -313,10 +324,10 @@ public final class ReplayRecording {
             String station = null;
             JsonNode def = definitions.path(m.device()).path("sha256");
             if (max != null && routing.devices().contains(m.device()) && def.isTextual() && def.textValue().equals(m.definitionSha256())) station = routing.stationOf(m.device());
-            return new Rec(offset, l.bytes(), min, max, station);
+            return new Timing(min, max, station);
         }
-        if (parsed instanceof Inputs.SessionEvent || parsed instanceof Inputs.OccupancyEvent) return new Rec(offset, l.bytes(), Events.eventTime(read.record()), null, null);
-        return new Rec(offset, l.bytes(), null, null, null);
+        if (parsed instanceof Inputs.SessionEvent || parsed instanceof Inputs.OccupancyEvent) return new Timing(Events.eventTime(read.record()), null, null);
+        return new Timing(null, null, null);
     }
 
     /** Untimed records take the key of the nearest earlier keyed record; the head stays first; then by key and original offset. */
