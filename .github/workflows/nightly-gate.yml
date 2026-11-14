@@ -27,6 +27,9 @@ jobs:
       - name: Build the jar
         working-directory: forseti
         run: mvn -B -ntp install -DskipTests
+      - name: Core-input key
+        working-directory: forseti
+        run: echo "FORSETI_INPUT_KEY=$(bash scripts/core-input-key.sh)" >> "$GITHUB_ENV"
       # The gate's own JVM gets an explicit 6g heap (the runner default is a quarter of its RAM); the harness children keep the heaps the
       # gate gives them on their command lines. The step records the gate JVM's GC log and the summed resident memory of every java and
       # python process every 2 s, and prints the peaks.

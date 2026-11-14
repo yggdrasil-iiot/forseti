@@ -329,6 +329,36 @@ class ShardsTest {
         assertTrue(r.problems().contains("shard plc-horizon-no-end: ran against another " + Shards.PLAN), r.problems().toString());
     }
 
+    /** Under a core-input key (CI sets FORSETI_INPUT_KEY) every shard carries the aggregate run's key, and no run counts from unpacked classes. */
+    @Test void aKeyedAggregateRefusesAnotherKeyAndUnpackedClasses() throws Exception {
+        String key = "k".repeat(64);
+        ObjectNode keyed = expect();
+        ((ObjectNode) keyed.path("pins").path("forseti")).put("inputKey", key);
+        Path same = outputs((s, b) -> ((ObjectNode) b[0].path("pins").path("forseti")).put("inputKey", key));
+        assertEquals(List.of(), readWith(same, keyed), "the same key on every shard");
+        Path other = outputs((s, b) -> ((ObjectNode) b[0].path("pins").path("forseti")).put("inputKey", s.equals("hand-made") ? "o".repeat(64) : key));
+        List<String> p = readWith(other, keyed);
+        assertTrue(p.stream().anyMatch(x -> x.startsWith("shard hand-made: pins ")), p.toString());
+        Path unpacked = outputs((s, b) -> {
+            ObjectNode f = (ObjectNode) b[0].path("pins").path("forseti");
+            f.put("inputKey", key);
+            if (s.equals("hand-made")) f.put("artifactSha256", Shards.UNPACKED);
+        });
+        p = readWith(unpacked, keyed);
+        assertTrue(p.contains("shard hand-made: ran from unpacked classes under core-input key " + key), p.toString());
+        ObjectNode keyedUnpacked = keyed.deepCopy();
+        ((ObjectNode) keyedUnpacked.path("pins").path("forseti")).put("artifactSha256", Shards.UNPACKED);
+        p = readWith(same, keyedUnpacked);
+        assertTrue(p.contains("the aggregate run itself ran from unpacked classes under core-input key " + key), p.toString());
+        assertEquals(List.of(), read(outputs((s, b) -> {})).problems(), "without a key (local runs) nothing changes");
+    }
+
+    List<String> readWith(Path dir, ObjectNode expect) {
+        List<String> problems = new ArrayList<>();
+        Shards.read(ROOT, dir, plan(), expect, new ArrayList<>(), problems, Json.object());
+        return problems;
+    }
+
     @Test void anUnrecordedOrForeignAssertionIsAProblem() throws Exception {
         Read r = read(outputs((s, b) -> {
             if (s.equals("horizon-reopened")) ((ArrayNode) b[0].get("results")).removeAll();

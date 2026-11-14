@@ -28,6 +28,8 @@ final class Shards {
     private Shards() {}
 
     static final String PLAN = "gate/core-shards.json", SUMMARIES = "summaries.json";
+    /** What {@code pins.forseti.artifactSha256} reads when the gate runs from a classes directory instead of the packaged jar. */
+    static final String UNPACKED = "unpacked";
     /** Summary fields two shards that made the same scenario may differ on: timings and the evidence text that embeds them. */
     static final Set<String> NOT_COMPARED = Set.of("ms", "summary");
 
@@ -123,6 +125,10 @@ final class Shards {
             shuffledScope.addAll(s.shuffled());
             generationScope.addAll(s.generationRuns());
         }
+        // a keyed run (CI: FORSETI_INPUT_KEY set) is evidence only from the packaged jar, never from unpacked classes
+        boolean keyed = expect.path("pins").path("forseti").path("inputKey").isTextual();
+        if (keyed && UNPACKED.equals(expect.path("pins").path("forseti").path("artifactSha256").asText(null)))
+            problems.add("the aggregate run itself ran from unpacked classes under core-input key " + expect.path("pins").path("forseti").path("inputKey").asText());
         for (Shard s : plan.shards()) {
             if (control != null && !control.shards().contains(s.name())) continue;
             Path d = dir.resolve(s.name());
@@ -167,6 +173,8 @@ final class Shards {
             if (!plan.sha256().equals(report.path("shardPlanSha256").asText(null))) problems.add("shard " + s.name() + ": ran against another " + PLAN);
             for (String f : List.of("manifestSha256", "seed", "pins", "fixtureDigests"))
                 if (!same(expect.path(f), report.path(f))) problems.add("shard " + s.name() + ": " + f + " " + report.path(f) + ", the aggregate run's " + expect.path(f));
+            if (keyed && UNPACKED.equals(report.path("pins").path("forseti").path("artifactSha256").asText(null)))
+                problems.add("shard " + s.name() + ": ran from unpacked classes under core-input key " + expect.path("pins").path("forseti").path("inputKey").asText());
             if (!report.path("error").isNull()) problems.add("shard " + s.name() + ": " + report.path("error").asText());
             long exit = report.path("exit").asLong(-1);
             if (control == null ? exit != 0 : exit != 0 && exit != 1) problems.add("shard " + s.name() + ": exited " + report.path("exit"));
