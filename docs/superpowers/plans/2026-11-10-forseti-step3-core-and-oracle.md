@@ -2594,7 +2594,7 @@ java -jar cli/target/forseti.jar gate --engine core --negative-control no-such-c
 
 # 7. The generation lifecycle and injection 23 by hand, outside the gate
 java -jar cli/target/forseti.jar recordings build --scenario fixtures/scenarios/horizon-planned-late.json --registry fixtures/registry --out build/recordings/horizon-planned-late
-java -jar cli/target/forseti.jar recordings verify --scenario fixtures/scenarios/horizon-planned-late.json --out build/recordings/horizon-planned-late   # lock matches, exit 0
+java -jar cli/target/forseti.jar recordings verify --scenario fixtures/scenarios/horizon-planned-late.json --registry fixtures/registry --out build/recordings/horizon-planned-late   # lock matches, exit 0
 rm -rf build/state && java -jar cli/target/forseti.jar generation new --state build/state --mappings fixtures/registry/mappings --trusted-keys fixtures/trusted-keys.jsonl \
   --stream line2 --rule line2-attribution@1.0.0 --recording build/recordings/horizon-planned-late
 #   -> {"generation":1,"status":"registered","rulesDigest":"<64 hex>",...}; build/state/head-floors/line2.json exists; build/state/recovery-control.jsonl does not exist yet (the first run preparation writes the declaration)
@@ -2604,9 +2604,13 @@ python -I -m forseti_oracle.cli all --recording build/recordings/horizon-planned
   --release line2-rules@1.0.0 --rule line2-attribution@1.0.0 --definitions build/recordings/horizon-planned-late/manifest.json --out build/oracle/planned-late-g1
 python -I - <<'PY'
 import json
-cuts=json.load(open('build/runs/planned-late-g1/cuts.json'));last=cuts['cuts'][-1]['cutId']
-rows=json.load(open(f'build/oracle/planned-late-g1/cut-{last}/forseti.samples.json'))
 from collections import Counter
+rows={}
+for c in json.load(open('build/runs/planned-late-g1/cuts.json'))['cuts']:   # a snapshot at the first cut, deltas after it
+    t=json.load(open(f"build/oracle/planned-late-g1/cut-{c['cutId']}/forseti.samples.json"))
+    if t['mode']!='delta': rows={}
+    for k in t['deletes']: rows.pop(k,None)
+    rows.update(t['upserts'])
 print(Counter(f"{v['body']['state']}/{v['body']['reason']}" for v in rows.values() if v['body']['state']!='unattributed' or v['body']['reason']!='no-occupancy'))
 PY
 #   -> Counter({'attributed/None': <n>, 'replay-required/beyond-horizon': 1})
