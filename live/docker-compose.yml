@@ -1,0 +1,54 @@
+# The brokers of the step-5 full loop (docs/LIVE-LOOP.md). Both images are pinned by digest and locked in live/stack-lock.json;
+# scripts/run-full-loop-gate.sh refuses to start when this file or a running container names another image. The JVM processes of the
+# loop (the Bifrost sim, one Muninn per device, the bridge, the driver and the recorder) run on the host, all on localhost, so Muninn
+# and the driver reach the sim at exactly the endpoint URL it advertises (opc.tcp://localhost:48400).
+#
+# Host ports: FORSETI_MQTT_PORT (default 1883) and FORSETI_KAFKA_PORT (default 9092). Kafka listens on the same port inside the
+# container as on the host, so the address it advertises (localhost:<port>) is the one a host client connected to.
+#
+# Teardown: docker compose -f live/docker-compose.yml -p <project> down -v (no named volume; the Kafka log lives in the container).
+services:
+  hivemq:
+    # HiveMQ CE 2026.5 (the image's SBOM version)
+    image: hivemq/hivemq-ce@sha256:bac6d4d1d815bffe4bc9a7fca8d06ea12b32d34f84ef2f1851ff4548560ee67b
+    environment:
+      # HiveMQ CE 2026.x refuses every MQTT client without it (secure by default).
+      HIVEMQ_ALLOW_ALL_CLIENTS: "true"
+    ports:
+      - "${FORSETI_MQTT_PORT:-1883}:1883"
+    healthcheck:
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/1883"]
+      interval: 2s
+      timeout: 2s
+      retries: 60
+      start_period: 5s
+  kafka:
+    # Apache Kafka 4.2.2, single-node KRaft (broker and controller in one process)
+    image: apache/kafka@sha256:1213eb3943d551e5ed1fca7a4e109001cee35770b66a02a0c37a8964efe09b69
+    environment:
+      KAFKA_NODE_ID: "1"
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@localhost:9093
+      KAFKA_LISTENERS: PLAINTEXT://:${FORSETI_KAFKA_PORT:-9092},CONTROLLER://:9093
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://localhost:${FORSETI_KAFKA_PORT:-9092}
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      # The run creates its topics itself (forseti-loop topics: six partitions, LogAppendTime, 30 d); nothing is auto-created.
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
+      KAFKA_NUM_PARTITIONS: "6"
+      KAFKA_DEFAULT_REPLICATION_FACTOR: "1"
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: "1"
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: "1"
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: "1"
+      KAFKA_MIN_INSYNC_REPLICAS: "1"
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: "0"
+      KAFKA_LOG_DIRS: /tmp/kraft-combined-logs
+    ports:
+      - "${FORSETI_KAFKA_PORT:-9092}:${FORSETI_KAFKA_PORT:-9092}"
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:${FORSETI_KAFKA_PORT:-9092} > /dev/null 2>&1"]
+      interval: 5s
+      timeout: 20s
+      retries: 30
+      start_period: 10s

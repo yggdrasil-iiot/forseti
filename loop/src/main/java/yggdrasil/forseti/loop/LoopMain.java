@@ -31,7 +31,14 @@ import yggdrasil.forseti.core.Json;
  *                         --drive-log drive.jsonl --out build/run-1/recording [--name baseline] [--batch-ms 60000]
  *                         [--report <out>.capture-report.json] [--dead-letter <out>.dead-letter.jsonl]
  *                         [--client-id forseti-recorder] [--timeout-ms 60000]
+ *  forseti-loop deployment --registry ... --definitions ... --stream line2-dedicated --routing fixtures/live/routing/dedicated.json
+ *                         --pins-out pins.json
+ *  forseti-loop stack-check --lock live/stack-lock.json [--compose live/docker-compose.yml] [--jar name=file ...]
+ *                         [--image service=repoDigest[,repoDigest] ...]
  *  </pre>
+ *  {@code deployment} writes the bridge's pins and prints what the runner starts, one Muninn per routed device ({@link LiveDeployment});
+ *  {@code stack-check} compares the compose file, the given jars and the observed images with the stack lock ({@link StackLock}) and
+ *  exits 1 naming every difference.
  *  {@code record} runs after the drive, once the publishers have stopped and the bridge has drained: it reads the run's input topics
  *  at their end offsets and writes the recording, the capture report and the dead-letter side file (exit 1 when the capture is
  *  refused).
@@ -54,7 +61,7 @@ public final class LoopMain {
     }
 
     static int run(String[] args, PrintStream out) throws Exception {
-        if (args.length == 0) throw new Usage("a command is required: topics, preflight, drive or record");
+        if (args.length == 0) throw new Usage("a command is required: topics, preflight, drive, record, deployment or stack-check");
         Map<String, List<String>> a = options(Arrays.copyOfRange(args, 1, args.length));
         switch (args[0]) {
             case "topics" -> {
@@ -109,6 +116,20 @@ public final class LoopMain {
                         a.containsKey("dead-letter") ? Path.of(req(a, "dead-letter")) : CaptureRecorder.besides(out1, CaptureRecorder.DEAD_LETTER_SUFFIX), out);
                 }
             }
+            case "deployment" -> {
+                allowed(a, "registry", "definitions", "deployment", "stream", "routing", "pins-out");
+                Path definitions = Path.of(req(a, "definitions"));
+                LiveDeployment.Deployment d = LiveDeployment.of(Path.of(req(a, "registry")), definitions, deployment(a, definitions), req(a, "stream"),
+                    Path.of(req(a, "routing")));
+                Json.write(Path.of(req(a, "pins-out")).toAbsolutePath(), d.pins());
+                for (String l : LiveDeployment.lines(d)) out.println(l);
+                return 0;
+            }
+            case "stack-check" -> {
+                allowed(a, "lock", "compose", "jar", "image");
+                return stackCheck(StackLock.read(Json.read(Path.of(req(a, "lock")))), a.containsKey("compose") ? StackLock.read(Path.of(req(a, "compose"))) : null,
+                    pairs(a, "jar"), pairs(a, "image"), out);
+            }
             default -> throw new Usage("unknown command " + args[0]);
         }
     }
@@ -121,6 +142,39 @@ public final class LoopMain {
                 + ", manifest " + r.manifestSha256() + ", report " + report);
             return 0;
         } catch (CaptureRecorder.Refused e) { ps.println(e.getMessage()); return 1; }
+    }
+
+    /** The stack lock against the compose file (when given), the jars (when any is given) and the observed images (when any is given). */
+    static int stackCheck(StackLock.Lock lock, String compose, Map<String, String> jars, Map<String, String> images, PrintStream out) {
+        List<String> problems = new ArrayList<>();
+        if (compose != null) problems.addAll(StackLock.composeProblems(lock, compose));
+        if (!jars.isEmpty()) {
+            Map<String, Path> files = new TreeMap<>();
+            jars.forEach((k, v) -> files.put(k, Path.of(v)));
+            problems.addAll(StackLock.jarProblems(lock, files));
+        }
+        if (!images.isEmpty()) {
+            Map<String, List<String>> observed = new TreeMap<>();
+            images.forEach((k, v) -> observed.put(k, v.isEmpty() ? List.of() : List.of(v.split(","))));
+            problems.addAll(StackLock.imageProblems(lock, observed));
+        }
+        if (problems.isEmpty()) {
+            out.println("stack-check: clean (" + (compose != null ? "compose, " : "") + jars.size() + " jars, " + images.size() + " images)");
+            return 0;
+        }
+        for (String p : problems) out.println("problem: " + p);
+        return 1;
+    }
+
+    /** {@code --<key> name=value}, repeatable; a name given twice is a usage error. */
+    static Map<String, String> pairs(Map<String, List<String>> a, String key) {
+        Map<String, String> m = new TreeMap<>();
+        for (String v : a.getOrDefault(key, List.of())) {
+            int eq = v.indexOf('=');
+            if (eq <= 0) throw new Usage("--" + key + " takes name=value, not " + v);
+            if (m.put(v.substring(0, eq), v.substring(eq + 1)) != null) throw new Usage("--" + key + " names " + v.substring(0, eq) + " twice");
+        }
+        return m;
     }
 
     /** Creates the planned topics, then checks the broker's view of them with the preflight's topic rules. */
@@ -195,13 +249,15 @@ public final class LoopMain {
         try { return Json.read(p); } catch (RuntimeException e) { return null; }
     }
 
+    private static final Set<String> REPEATABLE = Set.of("edge", "jar", "image");
+
     static Map<String, List<String>> options(String[] args) {
         Map<String, List<String>> m = new TreeMap<>();
         for (int i = 0; i < args.length; i++) {
             if (!args[i].startsWith("--") || i + 1 >= args.length) throw new Usage("unexpected argument " + args[i]);
             String k = args[i].substring(2);
             m.computeIfAbsent(k, x -> new ArrayList<>()).add(args[++i]);
-            if (!k.equals("edge") && m.get(k).size() > 1) throw new Usage("--" + k + " given twice");
+            if (!REPEATABLE.contains(k) && m.get(k).size() > 1) throw new Usage("--" + k + " given twice");
         }
         return m;
     }

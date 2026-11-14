@@ -13,7 +13,7 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 
 /**
- * The bridge process: MQTT in, Kafka out, until SIGTERM. On the stop signal it stops taking frames, writes what is already queued,
+ * The bridge process: MQTT in, Kafka out, until SIGTERM or until the {@code --stop-file} exists. On the stop signal it stops taking frames, writes what is already queued,
  * releases what a hold stage still holds, waits for every Kafka acknowledgement and writes the run record; any failure on the way
  * exits 1 with the failure in the run record.
  *
@@ -21,8 +21,12 @@ import java.util.concurrent.TimeUnit;
  * forseti-bridge --mqtt tcp://host:1883 --kafka host:9092 [--client-id id] [--pins pins.json] [--routing routing.json]
  *   [--messages-topic ot.messages] [--sessions-topic ot.sessions] [--dead-letter-topic ot.dead-letter]
  *   [--hold-ms N [--hold-start-ms M]] [--source-offset-ms N] [--raw-log frames.jsonl] [--run-record run.json]
- *   [--queue 10000] [--buffer-bytes 33554432]
+ *   [--queue 10000] [--buffer-bytes 33554432] [--stop-file stop]
  * </pre>
+ * Once subscribed it prints {@code [BRIDGE] subscribed <filter> on <broker>}, and then {@code [BRIDGE] session <kind> <edge> <device>}
+ * for every session event it writes; a runner starts the publishers only after that line, so
+ * no birth precedes the subscription. {@code --stop-file} is the stop signal of a runner that cannot deliver SIGTERM to a JVM (on
+ * Windows a terminated process runs no shutdown hook): the bridge checks for the file between frames and stops as on SIGTERM.
  * {@code pins.json} is a JSON object from device to the pinned {@code definitionSha256}. With {@code --routing} (the routing manifest,
  * which preflight always passes) every routed device must have a pin, or the bridge exits 2 naming the devices; without it the run
  * record lists the devices that came up unpinned. Without {@code --hold-ms} and
@@ -39,7 +43,7 @@ public final class BridgeMain {
         }
         for (String k : a.keySet())
             if (!List.of("mqtt", "kafka", "client-id", "pins", "routing", "messages-topic", "sessions-topic", "dead-letter-topic", "hold-ms", "hold-start-ms",
-                "source-offset-ms", "raw-log", "run-record", "queue", "buffer-bytes").contains(k)) usage("unknown option --" + k);
+                "source-offset-ms", "raw-log", "run-record", "queue", "buffer-bytes", "stop-file").contains(k)) usage("unknown option --" + k);
         if (!a.containsKey("mqtt") || !a.containsKey("kafka")) usage("--mqtt and --kafka are required");
         if (a.containsKey("hold-start-ms") && !a.containsKey("hold-ms")) usage("--hold-start-ms needs --hold-ms");
         String clientId = a.getOrDefault("client-id", "forseti-bridge");
@@ -49,6 +53,8 @@ public final class BridgeMain {
         if (a.containsKey("source-offset-ms")) stages.add(new SourceOffsetStage(Long.parseLong(a.get("source-offset-ms"))));
         if (a.containsKey("hold-ms")) stages.add(new HoldStage(Long.parseLong(a.getOrDefault("hold-start-ms", "0")), Long.parseLong(a.get("hold-ms"))));
         Path runRecord = a.containsKey("run-record") ? Path.of(a.get("run-record")) : null;
+        Path stopFile = a.containsKey("stop-file") ? Path.of(a.get("stop-file")) : null;
+        if (stopFile != null && Files.exists(stopFile)) usage("the stop file " + stopFile + " exists before the start");
         Map<String, String> pins = pins(a.get("pins"));
         if (a.containsKey("routing")) {
             List<String> missing = unpinned(routingDevices(Path.of(a.get("routing"))), pins);
@@ -68,10 +74,13 @@ public final class BridgeMain {
         int exit = 0;
         try (KafkaSink sink = KafkaSink.connect(a.get("kafka"), clientId, Long.parseLong(a.getOrDefault("buffer-bytes", "33554432")));
              RawFrameLog log = a.containsKey("raw-log") ? new RawFrameLog(Path.of(a.get("raw-log"))) : null) {
-            Pipeline pipeline = new Pipeline(core, stages, sink, topics, run, log);
+            Pipeline pipeline = new Pipeline(core, stages, sink, topics, run, log, BridgeMain::printSession);
             try (MqttSource source = new MqttSource(a.get("mqtt"), clientId, queue, System::currentTimeMillis)) {
+                System.out.println("[BRIDGE] subscribed " + MqttSource.FILTER + " on " + a.get("mqtt"));
+                System.out.flush();
                 while (true) {
                     synchronized (stop) { if (stop[0]) break; }
+                    if (stopRequested(stopFile)) break;
                     Frame f = queue.poll(100);
                     long now = System.currentTimeMillis();
                     if (f == null) pipeline.tick(now); else pipeline.accept(f, now);
@@ -91,6 +100,17 @@ public final class BridgeMain {
         }
         if (exit != 0) Runtime.getRuntime().halt(exit);
     }
+
+    /** {@code [BRIDGE] session <kind> <edge> <device>}: a runner waits for the session-up of every device before it drives. */
+    static String sessionLine(Emitted.SessionEvent e) { return "[BRIDGE] session " + e.kind() + " " + e.edge() + " " + e.device(); }
+
+    private static void printSession(Emitted.SessionEvent e) {
+        System.out.println(sessionLine(e));
+        System.out.flush();
+    }
+
+    /** True once the stop file exists ({@code --stop-file}); never without one. */
+    static boolean stopRequested(Path stopFile) { return stopFile != null && Files.exists(stopFile); }
 
     /** The device paths of a routing manifest ({@code devices {path -> {station, rawPartition}}}, the file preflight checks). */
     static List<String> routingDevices(Path file) throws java.io.IOException {
