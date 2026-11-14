@@ -1,13 +1,26 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!-- The MQTT-to-Kafka bridge of step 5 (plan D1): one record per Sparkplug message, no business logic. It may carry the pinned Kafka,
      Tahu and Paho client lines and nothing else of a transport or engine (scripts/check-dependency-closure.sh); core and cli never
-     depend on this module. -->
+     depend on this module. forseti-core is a test dependency only: the bridge's own tests read every record it writes with the core's
+     InputParser, while the bridge itself shares no code path with the reader of its records. -->
 <project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
          xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
   <modelVersion>4.0.0</modelVersion>
   <parent><groupId>yggdrasil.forseti</groupId><artifactId>forseti-parent</artifactId><version>0.1.0-SNAPSHOT</version></parent>
   <artifactId>forseti-bridge</artifactId>
+  <properties>
+    <tahu.version>1.0.14</tahu.version>
+    <paho.version>1.2.5</paho.version>
+    <kafka.version>4.2.2</kafka.version>
+  </properties>
   <dependencies>
+    <!-- Declared first, so the managed Jackson line (2.17.2, with its own jackson-core) wins over Tahu's transitive 2.13.4 by
+         nearest-wins: databind 2.17 on core 2.13 fails at runtime. -->
+    <dependency><groupId>com.fasterxml.jackson.core</groupId><artifactId>jackson-databind</artifactId></dependency>
+    <dependency><groupId>org.eclipse.tahu</groupId><artifactId>tahu-core</artifactId><version>${tahu.version}</version></dependency>
+    <dependency><groupId>org.eclipse.paho</groupId><artifactId>org.eclipse.paho.client.mqttv3</artifactId><version>${paho.version}</version></dependency>
+    <dependency><groupId>org.apache.kafka</groupId><artifactId>kafka-clients</artifactId><version>${kafka.version}</version></dependency>
+    <dependency><groupId>yggdrasil.forseti</groupId><artifactId>forseti-core</artifactId><version>${project.version}</version><scope>test</scope></dependency>
     <dependency><groupId>org.junit.jupiter</groupId><artifactId>junit-jupiter</artifactId></dependency>
   </dependencies>
 </project>
