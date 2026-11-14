@@ -18,8 +18,10 @@ by the same procedure, under fresh keys whose public halves go to fixtures/live/
                      1.0.0, on streams line2-dedicated, line2-dedicated-plc, line2-shared, line2-shared-plc
   live/definitions:  Bifrost's published provenance pairs recipe/{station-model,tool-model}/1.0.0/{recipe-setpoints.yaml,
                      manifest.json}, copied byte for byte (a Muninn registry directory)
+  live/deployment.json: the definition each device runs (device path -> {templateRef, version}), see deployment();
+                     --live --deployment-only rewrites it and its lock entry alone
 fixtures/live/lock.json pins the Tyr and Bifrost commits and the sha256 of every file under upstream, definitions and
-registry. The routing manifests in fixtures/live/routing are derived from the published registry by forseti's own
+registry, and of deployment.json. The routing manifests in fixtures/live/routing are derived from the published registry by forseti's own
 placement code (cli live.Placement), not by this script.
 """
 from __future__ import annotations
@@ -85,6 +87,36 @@ def check_definition(pair: Path, ref: str) -> None:
         raise SystemExit(f"{pair}: Bifrost's published pair must be recipe-setpoints {ref} 1.0.0 over the yaml's bytes; found {found}")
 
 
+LEVEL_DEFINITION = {"WORKCELL_6": "station-model", "WORKUNIT_11": "tool-model"}
+
+
+def deployment(out: Path) -> dict:
+    """fixtures/live/deployment.json: the governed definition each live device runs, device path -> {templateRef, version}.
+
+    A Muninn device definition and a Tyr target's semanticDefinitionRef are independent identities joined only by the sha256 pin, so
+    the binding is explicit and not read from semantic ids: every station (ISA-95 WORKCELL_6) runs station-model 1.0.0 and every
+    nutrunner (WORKUNIT_11) tool-model 1.0.0, in both regimes and both placements. Muninn publishes the intersection of the instance's
+    members and the definition's. Each entry must name a pair published under fixtures/live/definitions whose manifest contentSha256
+    is the SHA-256 of its yaml; the device paths are those of every mapping set of the four live upstream bundles."""
+    binding = {}
+    for name in LIVE:
+        bundle = out / "upstream" / name
+        nodes = {n["equipmentInstanceId"]: n for n in load(bundle / "hierarchy" / "0.json")["nodes"]}
+        for f in sorted((bundle / "mappings").glob("*.json")):
+            ident = load(f)["equipmentInstanceId"]; parts = []; cur = ident
+            while cur is not None: parts.insert(0, cur); cur = nodes[cur]["parentEquipmentInstanceId"]
+            level = nodes[ident]["equipmentLevel"]
+            if level not in LEVEL_DEFINITION: raise SystemExit(f"{bundle}: device {ident} at level {level} has no governed definition")
+            entry = {"templateRef": LEVEL_DEFINITION[level], "version": "1.0.0"}
+            path = ":".join(parts)
+            if binding.setdefault(path, entry) != entry: raise SystemExit(f"device {path} is bound twice differently")
+    for path, e in binding.items():
+        pair = out / "definitions" / "recipe" / e["templateRef"] / e["version"]
+        if not (pair / "manifest.json").is_file(): raise SystemExit(f"{path}: {e} is not published under {out / 'definitions'}")
+        check_definition(pair, e["templateRef"])
+    return dict(sorted(binding.items()))
+
+
 class Gates:
     def __init__(self, jar: Path): self.jar = jar
     def __call__(self, *args: str) -> None:
@@ -99,10 +131,17 @@ def main() -> None:
     ap.add_argument("--tyr", type=Path, default=ROOT.parent / "tyr" / "fixtures" / "attribution-rule")
     ap.add_argument("--out", type=Path, default=ROOT / "fixtures")
     ap.add_argument("--live", action="store_true", help="write fixtures/live only (step 5); the step-3 fixtures stay untouched")
+    ap.add_argument("--deployment-only", action="store_true", help="with --live: rewrite fixtures/live/deployment.json and its lock entry only")
     a = ap.parse_args()
     gates = Gates(a.bifrost / "gates" / "target" / "bifrost-gates.jar")
     occupancy_sha = sha((ROOT / "schemas" / "occupancy-1.0.0.schema.json").read_bytes())
     incident_sha = sha((ROOT / "schemas" / "incident-1.0.0.schema.json").read_bytes())
+    if a.live and a.deployment_only:
+        # Only the binding: the committed upstream and definitions are read, deployment.json is (re)written and its digest set in
+        # lock.json; no key, release or other lock entry changes (no Bifrost jar is needed).
+        out = a.out / "live"; dump(out / "deployment.json", deployment(out))
+        lock = load(out / "lock.json"); lock["deployment"] = {"deployment.json": sha((out / "deployment.json").read_bytes())}; dump(out / "lock.json", lock)
+        print(f"wrote {out / 'deployment.json'}"); return
     if a.live:
         live(a, gates, occupancy_sha, incident_sha); return
     upstream = a.out / "upstream"
@@ -199,9 +238,11 @@ def live(a, gates: Gates, occupancy_sha: str, incident_sha: str) -> None:
             gates("mapping", "publish", str(reg), str(bundle), release, "1.0.0", "--approval", f"approval-{release}-1.0.0", *signers, "--expires-in", "P366D")
         shutil.copytree(reg, target, ignore=shutil.ignore_patterns(".lock"))
         (out / "trusted-keys.jsonl").write_text("\n".join(lines) + "\n", newline="\n")
+    dump(out / "deployment.json", deployment(out))
     dump(out / "lock.json", {"bifrost": git_head(a.bifrost), "tyr": git_head(a.tyr),
                              "occupancySchemaSha256": occupancy_sha, "incidentSchemaSha256": incident_sha,
-                             "upstream": inventory(upstream), "definitions": inventory(definitions), "registry": inventory(target)})
+                             "upstream": inventory(upstream), "definitions": inventory(definitions), "registry": inventory(target),
+                             "deployment": {"deployment.json": sha((out / "deployment.json").read_bytes())}})
     print(f"wrote {upstream} ({len(inventory(upstream))} files), {definitions} ({len(inventory(definitions))} files), {target} ({len(inventory(target))} files)")
 
 
