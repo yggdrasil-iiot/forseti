@@ -345,6 +345,8 @@ final class GroundTruth {
                     gaps.computeIfAbsent(dev, x -> new ArrayList<>()).add(new long[] {from, end});
                 }
                 case "session-ambiguous" -> {
+                    // no detectedEventTime (the bridge held no telemetry or birth for the edge): no prior valid observation, no interval
+                    if (!p.path("detectedEventTime").isIntegralNumber()) continue;
                     long det = p.get("detectedEventTime").longValue(), start = det;
                     for (Sample x : samplesByDevice.getOrDefault(dev, List.of())) if (x.batch() <= k && x.sourceTs() < det) start = x.sourceTs();
                     unknown.computeIfAbsent(dev, x -> new ArrayList<>()).add(new long[] {start, nextUp(ups.get(dev), det, open)});
@@ -644,9 +646,13 @@ final class GroundTruth {
         TreeMap<String, ObjectNode> out = new TreeMap<>();
         for (Delivery d : sessions) {
             ObjectNode v = d.value(), id = Json.object().put("edge", v.get("edge").asText()).put("device", v.get("device").asText());
-            Json.putSafe(id, "birthPublishTs", v.get("birthPublishTs").longValue());
+            // the birthless session-ambiguous death (plan D4): null birthPublishTs and possibly null atSeq, identified also by the
+            // death's rawPublishTs and payloadDigest; an event with a birth keeps the six fields
+            boolean birthless = v.get("birthPublishTs").isNull();
+            if (birthless) id.putNull("birthPublishTs"); else Json.putSafe(id, "birthPublishTs", v.get("birthPublishTs").longValue());
             Json.putSafe(id, "bdSeq", v.get("bdSeq").longValue()).put("kind", v.get("kind").asText());
-            Json.putSafe(id, "atSeq", v.get("atSeq").longValue());
+            if (v.get("atSeq").isNull()) id.putNull("atSeq"); else Json.putSafe(id, "atSeq", v.get("atSeq").longValue());
+            if (birthless) Json.putSafe(id, "rawPublishTs", v.get("payload").get("rawPublishTs").longValue()).put("payloadDigest", v.get("payload").get("payloadDigest").asText());
             // S1: a session event of a device outside the rule's catalog is rejected unknown-device, as its messages are
             entry(out, id, "ot.sessions").with("parts").set("event", catalog.contains(v.get("device").asText()) ? outcome("accepted", "accepted") : outcome("rejected", "unknown-device"));
         }

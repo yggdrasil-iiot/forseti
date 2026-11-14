@@ -30,12 +30,20 @@ public final class Ids {
         if (uaStatusCode == null) n.putNull("uaStatusCode"); else Json.putSafe(n, "uaStatusCode", uaStatusCode);
         return n;
     }
+    /** {@code (edge, device, birthPublishTs, bdSeq, kind, atSeq)}; the birthless {@code session-ambiguous} variant (plan D4) has a null
+     *  birthPublishTs, possibly a null atSeq, and adds the death's {@code rawPublishTs} and {@code payloadDigest} from its payload, so two
+     *  birthless deaths with equal counters stay two events. An event with a birth keeps the six fields, byte for byte as before. */
     public static ObjectNode sessionEventId(Inputs.SessionEvent s) {
         ObjectNode n = Json.object().put("edge", s.edge()).put("device", s.device());
-        Json.putSafe(n, "birthPublishTs", s.birthPublishTs()); Json.putSafe(n, "bdSeq", s.bdSeq()).put("kind", s.kind());
-        Json.putSafe(n, "atSeq", s.atSeq());
+        nullable(n, "birthPublishTs", s.birthPublishTs()); Json.putSafe(n, "bdSeq", s.bdSeq()).put("kind", s.kind());
+        nullable(n, "atSeq", s.atSeq());
+        if (s.birthless()) {
+            Json.putSafe(n, "rawPublishTs", s.payload().get("rawPublishTs").longValue());
+            n.put("payloadDigest", s.payload().get("payloadDigest").textValue());
+        }
         return n;
     }
+    private static void nullable(ObjectNode n, String field, Long v) { if (v == null) n.putNull(field); else Json.putSafe(n, field, v); }
     public static ObjectNode occupancyId(Inputs.OccupancyEvent o) { return Json.object().put("source", o.source()).put("eventId", o.eventId()); }
     public static ObjectNode incidentId(Inputs.IncidentEvent i) {
         return Json.putSafe(Json.object().put("source", i.source()).put("incidentId", i.incidentId()), "revision", i.revision());

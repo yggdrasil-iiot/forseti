@@ -15,7 +15,13 @@ public final class Inputs {
     public record MemberRejection(String metric, String check) {}
     public record ProcessMessage(String edge, String device, long birthPublishTs, long bdSeq, long seq, long publishTs, Long bridgeReceivedAt,
                                  String definitionSha256, List<Member> members, List<MemberRejection> rejectedMembers) {}
-    public record SessionEvent(String edge, String device, long birthPublishTs, long bdSeq, String kind, long atSeq, JsonNode payload) {}
+    /** A session event. {@code birthPublishTs} and {@code atSeq} are null only for the birthless {@code session-ambiguous} variant
+     *  (spec Session events, plan D4): the NDEATH of a connection whose NBIRTH the bridge never observed has no birth to name, and its
+     *  {@code atSeq} is the device's last observed {@code seq} or null; the bridge never invents either. Every other kind carries both. */
+    public record SessionEvent(String edge, String device, Long birthPublishTs, long bdSeq, String kind, Long atSeq, JsonNode payload) {
+        /** The birthless variant: its identity adds the death's {@code rawPublishTs} and {@code payloadDigest} ({@link Ids#sessionEventId}). */
+        public boolean birthless() { return birthPublishTs == null; }
+    }
     public record OccupancyEvent(String eventId, long eventTime, long recordTime, String unitId, String bizStep, String readPoint, Long visitSeq,
                                  String arrivalEventId, String source, JsonNode errorDeclaration) {   // visitSeq is Long: the schema admits any safe integer, 2147483648 included
         public boolean arriving() { return bizStep.equals("urn:epcglobal:cbv:bizstep:arriving"); }

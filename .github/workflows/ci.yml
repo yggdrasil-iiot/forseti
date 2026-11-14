@@ -317,7 +317,7 @@ jobs:
   # Every Java test and the oracle suite, on Linux and on Windows, split into parallel groups. NegativeControlsTest holds the slow
   # in-process control runs (one JVM-wide system property each, so they cannot share a JVM in parallel): three groups take its methods
   # by name; `recording-harness` and `gate-generation` take the other test classes of those cli packages; `rest` takes everything else
-  # (core, the remaining cli classes) and the oracle suite. test-split checks that together they ran every declared test method exactly
+  # (core, the remaining cli classes, bridge, loop) and the oracle suite. test-split checks that together they ran every declared test method exactly
   # once on each OS.
   tests:
     name: tests ${{ matrix.os }} ${{ matrix.group }}
@@ -369,7 +369,7 @@ jobs:
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with: {pattern: surefire-windows-*, path: build/surefire/windows}
       - name: Linux
-        run: python3 -I scripts/check-test-split.py build/surefire/linux core/src/test cli/src/test
+        run: python3 -I scripts/check-test-split.py build/surefire/linux core/src/test cli/src/test bridge/src/test loop/src/test
       - name: Windows
         if: always()
-        run: python3 -I scripts/check-test-split.py build/surefire/windows core/src/test cli/src/test
+        run: python3 -I scripts/check-test-split.py build/surefire/windows core/src/test cli/src/test bridge/src/test loop/src/test

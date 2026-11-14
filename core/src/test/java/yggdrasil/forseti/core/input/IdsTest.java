@@ -64,4 +64,27 @@ class IdsTest {
     }
 
     static java.util.List<String> fields(JsonNode n) { java.util.List<String> l = new java.util.ArrayList<>(); n.fieldNames().forEachRemaining(l::add); return l; }
+
+    static Inputs.SessionEvent session(String raw) { return (Inputs.SessionEvent) InputParser.parse(InputParser.SESSIONS, Json.read(utf8(raw))); }
+    static String birthless(long rawPublishTs, String payloadDigest) {
+        return "{\"edge\":\"e\",\"device\":\"d\",\"birthPublishTs\":null,\"bdSeq\":3,\"kind\":\"session-ambiguous\",\"atSeq\":null,"
+            + "\"payload\":{\"detectedEventTime\":null,\"rawPublishTs\":" + rawPublishTs + ",\"bdSeq\":3,\"payloadDigest\":\"" + payloadDigest + "\"}}";
+    }
+
+    @Test void aSessionEventWithABirthKeepsItsSixFieldIdentity() {
+        Inputs.SessionEvent s = session("{\"edge\":\"e\",\"device\":\"d\",\"birthPublishTs\":1,\"bdSeq\":0,\"kind\":\"session-ambiguous\",\"atSeq\":5,"
+            + "\"payload\":{\"detectedEventTime\":9,\"rawPublishTs\":8,\"bdSeq\":0,\"payloadDigest\":\"ab\"}}");
+        assertEquals("{\"atSeq\":5,\"bdSeq\":0,\"birthPublishTs\":1,\"device\":\"d\",\"edge\":\"e\",\"kind\":\"session-ambiguous\"}",
+            Canonical.utf8(Ids.bytes(Ids.sessionEventId(s))));
+    }
+
+    @Test void twoBirthlessDeathsWithEqualCountersStayDistinct() {
+        JsonNode a = Ids.sessionEventId(session(birthless(100, "aa"))), b = Ids.sessionEventId(session(birthless(101, "aa")));
+        JsonNode c = Ids.sessionEventId(session(birthless(100, "bb")));
+        assertEquals("{\"atSeq\":null,\"bdSeq\":3,\"birthPublishTs\":null,\"device\":\"d\",\"edge\":\"e\",\"kind\":\"session-ambiguous\","
+            + "\"payloadDigest\":\"aa\",\"rawPublishTs\":100}", Canonical.utf8(Ids.bytes(a)));
+        assertFalse(Arrays.equals(Ids.bytes(a), Ids.bytes(b)), "a different raw publish timestamp is a different death");
+        assertFalse(Arrays.equals(Ids.bytes(a), Ids.bytes(c)), "different raw NDEATH bytes are a different death");
+        assertArrayEquals(Ids.bytes(a), Ids.bytes(Ids.sessionEventId(session(birthless(100, "aa")))));
+    }
 }

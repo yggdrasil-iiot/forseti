@@ -31,7 +31,8 @@ public final class InputParser {
     public static final String INCIDENT_SCHEMA_ID = "urn:forseti:schema:incident:1.0.0";
 
     private static final long STATUS_CODE_MAX = 4294967295L;
-    private static final List<String> SESSION_KINDS = List.of("seq-gap", "session-down", "session-up", "stale-death", "session-ambiguous", "definition-changed");
+    private static final String SESSION_AMBIGUOUS = "session-ambiguous";
+    private static final List<String> SESSION_KINDS = List.of("seq-gap", "session-down", "session-up", "stale-death", SESSION_AMBIGUOUS, "definition-changed");
     private static final List<String> SESSION_PAYLOAD_INTEGERS = List.of("from", "to", "missing", "at", "detectedEventTime", "rawPublishTs", "bdSeq");
 
     private record Builtin(byte[] bytes, JsonNode node, JsonSchema schema) {}
@@ -105,6 +106,12 @@ public final class InputParser {
         try { return Json.safeLong(n, field, min, max); } catch (IllegalArgumentException e) { throw new Rejected(check); }
     }
     private static long integer(JsonNode o, String field) { return integer(o.get(field), field, field, 0, Json.MAX_SAFE); }
+    /** A field that is present: JSON null is null, anything else must be an integer; an absent field is refused like a non-integer. */
+    private static Long nullableInteger(JsonNode o, String field) {
+        JsonNode n = o.get(field);
+        if (n != null && n.isNull()) return null;
+        return integer(n, field, field, 0, Json.MAX_SAFE);
+    }
     /** A present, non-null integer field is checked; an absent or null one is left to the schema (or is optional). */
     private static Long optionalInteger(JsonNode o, String field, String check, long min, long max) {
         JsonNode n = o.get(field);
@@ -180,14 +187,25 @@ public final class InputParser {
 
     private static Inputs.SessionEvent session(JsonNode v) {
         String edge = text(v, "edge"), device = text(v, "device");
-        long birth = integer(v, "birthPublishTs"), bdSeq = integer(v, "bdSeq");
+        // birthPublishTs and atSeq may be null only for session-ambiguous (the birthless death of plan D4). The fields keep their contract
+        // order of checks: a null birthPublishTs on any other kind is refused as birthPublishTs before bdSeq and kind, as it always was.
+        boolean ambiguous = SESSION_AMBIGUOUS.equals(v.path("kind").textValue());
+        Long birth = ambiguous ? nullableInteger(v, "birthPublishTs") : Long.valueOf(integer(v, "birthPublishTs"));
+        long bdSeq = integer(v, "bdSeq");
         String kind = text(v, "kind");
         if (!SESSION_KINDS.contains(kind)) throw new Rejected("kind");
-        long atSeq = integer(v, "atSeq");
+        Long atSeq = nullableInteger(v, "atSeq");
+        if (atSeq == null && birth != null) throw new Rejected("atSeq");   // atSeq may be null only on the birthless variant
         JsonNode payload = v.get("payload");
         if (payload == null || payload.isNull()) payload = com.fasterxml.jackson.databind.node.NullNode.getInstance();
         else if (!payload.isObject()) throw new Rejected("payload");
         else for (String f : SESSION_PAYLOAD_INTEGERS) optionalInteger(payload, f, "payload." + f, 0, Json.MAX_SAFE);
+        if (birth == null) {
+            // The birthless identity is (edge, device, null, bdSeq, kind, atSeq, rawPublishTs, payloadDigest): without the death's own
+            // timestamp and raw digest two such deaths with equal counters would be one event, so both must be present.
+            if (!payload.isObject() || !payload.path("rawPublishTs").isIntegralNumber()) throw new Rejected("payload.rawPublishTs");
+            if (!payload.path("payloadDigest").isTextual()) throw new Rejected("payload.payloadDigest");
+        }
         return new Inputs.SessionEvent(edge, device, birth, bdSeq, kind, atSeq, payload);
     }
 }

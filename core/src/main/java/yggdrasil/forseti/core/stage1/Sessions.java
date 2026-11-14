@@ -19,7 +19,8 @@ final class Sessions {
 
     private Sessions() {}
 
-    static String sessionKey(String edge, String device, long birthPublishTs, long bdSeq) { return edge + "\u0000" + device + "\u0000" + birthPublishTs + "\u0000" + bdSeq; }
+    /** A birthless session event (null birthPublishTs, plan D4) keys as {@code null}, which no message's integer birth can equal. */
+    static String sessionKey(String edge, String device, Long birthPublishTs, long bdSeq) { return edge + "\u0000" + device + "\u0000" + birthPublishTs + "\u0000" + bdSeq; }
 
     static View view(Stage1State s, Long w) {
         long open = w == null ? Long.MAX_VALUE : w;
