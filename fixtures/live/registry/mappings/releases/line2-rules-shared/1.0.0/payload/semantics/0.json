@@ -1,0 +1,20 @@
+{
+  "kind": "semantic-definition",
+  "schemaVersion": "2.12.0",
+  "id": "station-model",
+  "version": "1.0.0",
+  "members": [
+    {
+      "memberId": "running",
+      "name": "Running",
+      "semanticId": "urn:bifrost:sem:Station/Running",
+      "description": "Station is working",
+      "valueType": "Boolean",
+      "unit": {
+        "status": "not-applicable"
+      },
+      "role": "status",
+      "range": null
+    }
+  ]
+}

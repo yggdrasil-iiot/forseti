@@ -1,0 +1,9 @@
+{
+  "kind" : "recipe-setpoints",
+  "ref" : "station-model",
+  "version" : "1.0.0",
+  "defRef" : "47091f220d1f102af2dc7be172fec9e9677a445d",
+  "contentSha256" : "4d40df048267814f409ff93e16cb838cb0e5be710fbde83a39001f96c39efbac",
+  "sourcePath" : "fixtures/line2/station-model-1.0.0.json",
+  "publishedAt" : 1794669399617
+}

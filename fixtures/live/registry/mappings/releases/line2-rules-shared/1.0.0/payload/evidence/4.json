@@ -1,0 +1,17 @@
+{
+  "kind": "evidence-artifact",
+  "schemaVersion": "1.0.0",
+  "id": "manual-nutrunner2-torque",
+  "version": "1.0.0",
+  "origin": "synthetic",
+  "file": {
+    "path": "data/manual-4.txt",
+    "sha256": "b977f35b2659f0423a0fe44ed9c88114fcbff08bce7263978f530dc2724c4763",
+    "mediaType": "text/plain"
+  },
+  "capturedAt": "2026-11-07T00:00:00Z",
+  "product": null,
+  "scope": [
+    "nutrunner2"
+  ]
+}

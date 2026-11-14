@@ -1,0 +1,2 @@
+Field label: station2-running
+Station2 running: nsu=urn:bifrost:opcua:sim;s=Line2/Station2.Running, Boolean

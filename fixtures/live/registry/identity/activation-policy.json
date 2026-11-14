@@ -1,0 +1,70 @@
+{
+  "version": "1.0.0",
+  "default": "deny",
+  "rules": [
+    {
+      "id": "publish-line2-dedicated",
+      "principal": "proposer",
+      "action": "publish",
+      "target": "mapping-publication",
+      "kind": "mapping-release",
+      "ref": "line2-dedicated"
+    },
+    {
+      "id": "approve-line2-dedicated",
+      "principal": "approver",
+      "action": "approve",
+      "target": "mapping-publication",
+      "kind": "mapping-release",
+      "ref": "line2-dedicated"
+    },
+    {
+      "id": "publish-line2-dedicated-plc",
+      "principal": "proposer",
+      "action": "publish",
+      "target": "mapping-publication",
+      "kind": "mapping-release",
+      "ref": "line2-dedicated-plc"
+    },
+    {
+      "id": "approve-line2-dedicated-plc",
+      "principal": "approver",
+      "action": "approve",
+      "target": "mapping-publication",
+      "kind": "mapping-release",
+      "ref": "line2-dedicated-plc"
+    },
+    {
+      "id": "publish-line2-shared",
+      "principal": "proposer",
+      "action": "publish",
+      "target": "mapping-publication",
+      "kind": "mapping-release",
+      "ref": "line2-shared"
+    },
+    {
+      "id": "approve-line2-shared",
+      "principal": "approver",
+      "action": "approve",
+      "target": "mapping-publication",
+      "kind": "mapping-release",
+      "ref": "line2-shared"
+    },
+    {
+      "id": "publish-line2-shared-plc",
+      "principal": "proposer",
+      "action": "publish",
+      "target": "mapping-publication",
+      "kind": "mapping-release",
+      "ref": "line2-shared-plc"
+    },
+    {
+      "id": "approve-line2-shared-plc",
+      "principal": "approver",
+      "action": "approve",
+      "target": "mapping-publication",
+      "kind": "mapping-release",
+      "ref": "line2-shared-plc"
+    }
+  ]
+}

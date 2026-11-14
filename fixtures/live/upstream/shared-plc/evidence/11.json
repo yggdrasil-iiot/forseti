@@ -1,0 +1,17 @@
+{
+  "kind": "evidence-artifact",
+  "schemaVersion": "1.0.0",
+  "id": "manual-nutrunner1-present",
+  "version": "1.0.0",
+  "origin": "synthetic",
+  "file": {
+    "path": "data/manual-11.txt",
+    "sha256": "82d34b4937635730d9f6522fea31cdb69b22223a7624594e166a0f60c4701b9d",
+    "mediaType": "text/plain"
+  },
+  "capturedAt": "2026-11-07T00:00:00Z",
+  "product": null,
+  "scope": [
+    "nutrunner1"
+  ]
+}
