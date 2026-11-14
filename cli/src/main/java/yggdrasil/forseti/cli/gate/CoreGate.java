@@ -438,7 +438,9 @@ public final class CoreGate {
 
     private static void strings(ArrayNode a, List<String> l) { l.forEach(a::add); }
 
-    /** {jcs {java, python}, python, jdk, forseti {artifactSha256}}; a value that cannot be found is null (the assertions then fail). */
+    /** {jcs {java, python}, python, jdk, forseti {artifactSha256, inputKey}}; a value that cannot be found is null (the assertions then fail).
+     *  {@code inputKey} is the core-input key of the checkout ({@code scripts/core-input-key.sh}), taken from {@code FORSETI_INPUT_KEY}
+     *  when set (CI sets it on every gate run) and left out otherwise, so the aggregate's {@code pins} comparison binds it across shards. */
     static ObjectNode pins(Context ctx) {
         ObjectNode p = Json.object(), jcs = p.putObject("jcs");
         jcs.put("java", JCS_JAVA + ":" + jcsJavaVersion());
@@ -451,7 +453,9 @@ public final class CoreGate {
         jcs.put("python", rfc);
         p.put("python", pyVersion);
         p.put("jdk", System.getProperty("java.vendor") + " " + System.getProperty("java.runtime.version"));
-        p.putObject("forseti").put("artifactSha256", artifactSha256());
+        ObjectNode forseti = p.putObject("forseti").put("artifactSha256", artifactSha256());
+        String key = System.getenv(INPUT_KEY_ENV);
+        if (key != null && !key.isBlank()) forseti.put("inputKey", key.strip());
         return p;
     }
 
@@ -462,12 +466,15 @@ public final class CoreGate {
         return "unknown";
     }
 
+    /** The environment variable that carries the core-input key into {@link #pins}. */
+    static final String INPUT_KEY_ENV = "FORSETI_INPUT_KEY";
+
     /** SHA-256 of the running jar, or {@code unpacked} when the classes are run from a directory (the unit tests). */
     static String artifactSha256() {
         try {
             Path p = Path.of(CoreGate.class.getProtectionDomain().getCodeSource().getLocation().toURI());
-            return Files.isRegularFile(p) ? Canonical.digestOf(Files.readAllBytes(p)) : "unpacked";
-        } catch (Exception e) { return "unpacked"; }
+            return Files.isRegularFile(p) ? Canonical.digestOf(Files.readAllBytes(p)) : Shards.UNPACKED;
+        } catch (Exception e) { return Shards.UNPACKED; }
     }
 
     /** Each fixture tree's digest: JCS SHA-256 of {relative path: raw-byte SHA-256} over its files, null when the tree is missing. */

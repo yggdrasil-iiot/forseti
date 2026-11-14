@@ -12,7 +12,7 @@ The gate loads the manifest, runs every registered assertion, and prints `assert
 
 `--shard <name> --out <dir> --state <dir>/state` runs one shard and writes `report.json` and `summaries.json`; `--aggregate <dir>` reads every shard's output and evaluates the ten cross-scenario assertions (the eight `J-*` aggregates, `C-1` and `C-2-REFERENCE`). The aggregate passes only when every shard ran against the same manifest, shard plan, fixtures, seed and pins, recorded exactly its own assertions, and compared every scenario at every cut its lock plans; it prints `assertions run 82 / expected 82`.
 
-CI runs each shard as its own job with a 60-minute timeout and the aggregate in the `core-gate` job; a nightly workflow runs the gate unsharded. Every gate run registers its generations through `forseti generation new`; with `--state` they are kept in `<out>/state`.
+CI runs each shard as its own job with a 60-minute timeout and the aggregate in the `core-gate` job; a nightly workflow runs the gate unsharded. Every gate run registers its generations through `forseti generation new`; with `--state` they are kept in `<out>/state`. In CI every gate run records the core-input key of its checkout in `pins.forseti.inputKey`; `scripts/core-input-key.sh` computes it from the git tree ids of the paths the verdict depends on, and CI passes it as `FORSETI_INPUT_KEY`. The `core-gate` job computes the key on its own checkout; the aggregate refuses a shard whose pins carry another key or that ran from unpacked classes instead of the packaged jar.
 
 | Shard | Assertions | Scenarios | Generation runs |
 |---|---|---|---|
