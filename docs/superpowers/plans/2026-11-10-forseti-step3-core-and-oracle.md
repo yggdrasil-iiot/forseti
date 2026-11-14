@@ -2547,7 +2547,7 @@ python -m pip install -e "oracle[dev]"
 python -m pytest -q oracle                                # all passed (about 119)
 
 # 3. The shared vector file on both sides, by hand
-python -I -c "import json;v=json.load(open('vectors/jcs-vectors.json'));print(len(v['vectors']),len(v['refusals']))"   # 9 8
+python -I -c "import json;v=json.load(open('vectors/jcs-vectors.json',encoding='utf-8'));print(len(v['vectors']),len(v['refusals']))"   # 9 8
 mvn -q -pl core -Dtest=CanonicalVectorsTest test          # Tests run: 4, Failures: 0
 
 # 4. Fixture provenance (Amendment 2026-11-11): Tyr's bytes published untouched, forseti's three variants derived
@@ -2580,7 +2580,7 @@ python -I -c "import json;r=json.load(open('build/gate/report.json'));print(r['e
 ls build/gate/diffs 2>/dev/null | wc -l                   # 0
 git ls-files fixtures/recordings | cut -d/ -f3 | sort -u | tr '\n' ' '   # smoke smoke-incident smoke-plc (no other recording is committed)
 ls build/recordings | wc -l                               # 25 (twenty hand-made and five horizon recordings, built by the gate)
-java -jar cli/target/forseti.jar recordings verify --scenario fixtures/scenarios/baseline.json --out build/recordings/baseline   # lock matches, exit 0
+java -jar cli/target/forseti.jar recordings verify --scenario fixtures/scenarios/baseline.json --registry fixtures/registry --out build/recordings/baseline   # lock matches, exit 0
 java -jar cli/target/forseti.jar recordings verify --scenario fixtures/scenarios/smoke.json --out fixtures/recordings/smoke      # lock matches, exit 0
 
 # 6. Every engine-independent negative control exits 1 for its intended assertion (theta non-transactional-output is steps 6-7)
@@ -2594,7 +2594,7 @@ java -jar cli/target/forseti.jar gate --engine core --negative-control no-such-c
 
 # 7. The generation lifecycle and injection 23 by hand, outside the gate
 java -jar cli/target/forseti.jar recordings build --scenario fixtures/scenarios/horizon-planned-late.json --registry fixtures/registry --out build/recordings/horizon-planned-late
-java -jar cli/target/forseti.jar recordings verify --scenario fixtures/scenarios/horizon-planned-late.json --out build/recordings/horizon-planned-late   # lock matches, exit 0
+java -jar cli/target/forseti.jar recordings verify --scenario fixtures/scenarios/horizon-planned-late.json --registry fixtures/registry --out build/recordings/horizon-planned-late   # lock matches, exit 0
 rm -rf build/state && java -jar cli/target/forseti.jar generation new --state build/state --mappings fixtures/registry/mappings --trusted-keys fixtures/trusted-keys.jsonl \
   --stream line2 --rule line2-attribution@1.0.0 --recording build/recordings/horizon-planned-late
 #   -> {"generation":1,"status":"registered","rulesDigest":"<64 hex>",...}; build/state/head-floors/line2.json exists; build/state/recovery-control.jsonl does not exist yet (the first run preparation writes the declaration)
@@ -2604,9 +2604,13 @@ python -I -m forseti_oracle.cli all --recording build/recordings/horizon-planned
   --release line2-rules@1.0.0 --rule line2-attribution@1.0.0 --definitions build/recordings/horizon-planned-late/manifest.json --out build/oracle/planned-late-g1
 python -I - <<'PY'
 import json
-cuts=json.load(open('build/runs/planned-late-g1/cuts.json'));last=cuts['cuts'][-1]['cutId']
-rows=json.load(open(f'build/oracle/planned-late-g1/cut-{last}/forseti.samples.json'))
 from collections import Counter
+rows={}
+for c in json.load(open('build/runs/planned-late-g1/cuts.json'))['cuts']:   # a snapshot at the first cut, deltas after it
+    t=json.load(open(f"build/oracle/planned-late-g1/cut-{c['cutId']}/forseti.samples.json"))
+    if t['mode']!='delta': rows={}
+    for k in t['deletes']: rows.pop(k,None)
+    rows.update(t['upserts'])
 print(Counter(f"{v['body']['state']}/{v['body']['reason']}" for v in rows.values() if v['body']['state']!='unattributed' or v['body']['reason']!='no-occupancy'))
 PY
 #   -> Counter({'attributed/None': <n>, 'replay-required/beyond-horizon': 1})
