@@ -1,0 +1,2 @@
+Field label: nutrunner1-torque
+Nutrunner1 torque: nsu=urn:bifrost:opcua:sim;s=Line2/Station1/Nutrunner1.Torque, Double, N.m

@@ -1,0 +1,169 @@
+{
+  "kind": "mapping-set",
+  "schemaVersion": "2.12.0",
+  "id": "station1-mapping",
+  "version": "1.0.0",
+  "equipmentInstanceId": "station1",
+  "targetInstanceRef": {
+    "id": "station1",
+    "version": "1.0.0"
+  },
+  "mappings": [
+    {
+      "mappingId": "station1-running",
+      "valueRef": {
+        "kind": "source",
+        "sourceRef": {
+          "id": "station1-running",
+          "version": "1.0.0"
+        }
+      },
+      "memberPath": [
+        {
+          "kind": "member",
+          "memberId": "running"
+        }
+      ],
+      "transform": [],
+      "outputUnit": {
+        "status": "not-applicable"
+      },
+      "invalidValuePolicy": "bad-quality",
+      "evidenceRefs": [
+        {
+          "artifactId": "manual-station1-running",
+          "locator": {
+            "kind": "text-line",
+            "line": 1
+          }
+        }
+      ],
+      "temporalPolicy": {
+        "timestampBasis": "source",
+        "maxAgeMs": 5000,
+        "maxSkewMs": 0,
+        "uncertainInput": "reject",
+        "missingInput": "reject",
+        "badInput": "propagate",
+        "assembly": "latest"
+      }
+    },
+    {
+      "mappingId": "station1-unit",
+      "valueRef": {
+        "kind": "source",
+        "sourceRef": {
+          "id": "station1-unit",
+          "version": "1.0.0"
+        }
+      },
+      "memberPath": [
+        {
+          "kind": "member",
+          "memberId": "unit"
+        }
+      ],
+      "transform": [],
+      "outputUnit": {
+        "status": "not-applicable"
+      },
+      "invalidValuePolicy": "bad-quality",
+      "evidenceRefs": [
+        {
+          "artifactId": "manual-station1-unit",
+          "locator": {
+            "kind": "text-line",
+            "line": 1
+          }
+        }
+      ],
+      "temporalPolicy": {
+        "timestampBasis": "source",
+        "maxAgeMs": 5000,
+        "maxSkewMs": 0,
+        "uncertainInput": "reject",
+        "missingInput": "reject",
+        "badInput": "propagate",
+        "assembly": "latest"
+      }
+    },
+    {
+      "mappingId": "station1-visit",
+      "valueRef": {
+        "kind": "source",
+        "sourceRef": {
+          "id": "station1-visit",
+          "version": "1.0.0"
+        }
+      },
+      "memberPath": [
+        {
+          "kind": "member",
+          "memberId": "visit"
+        }
+      ],
+      "transform": [],
+      "outputUnit": {
+        "status": "not-applicable"
+      },
+      "invalidValuePolicy": "bad-quality",
+      "evidenceRefs": [
+        {
+          "artifactId": "manual-station1-visit",
+          "locator": {
+            "kind": "text-line",
+            "line": 1
+          }
+        }
+      ],
+      "temporalPolicy": {
+        "timestampBasis": "source",
+        "maxAgeMs": 5000,
+        "maxSkewMs": 0,
+        "uncertainInput": "reject",
+        "missingInput": "reject",
+        "badInput": "propagate",
+        "assembly": "latest"
+      }
+    },
+    {
+      "mappingId": "station1-present",
+      "valueRef": {
+        "kind": "source",
+        "sourceRef": {
+          "id": "station1-present",
+          "version": "1.0.0"
+        }
+      },
+      "memberPath": [
+        {
+          "kind": "member",
+          "memberId": "present"
+        }
+      ],
+      "transform": [],
+      "outputUnit": {
+        "status": "not-applicable"
+      },
+      "invalidValuePolicy": "bad-quality",
+      "evidenceRefs": [
+        {
+          "artifactId": "manual-station1-present",
+          "locator": {
+            "kind": "text-line",
+            "line": 1
+          }
+        }
+      ],
+      "temporalPolicy": {
+        "timestampBasis": "source",
+        "maxAgeMs": 5000,
+        "maxSkewMs": 0,
+        "uncertainInput": "reject",
+        "missingInput": "reject",
+        "badInput": "propagate",
+        "assembly": "latest"
+      }
+    }
+  ]
+}
