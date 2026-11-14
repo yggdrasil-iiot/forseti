@@ -1,0 +1,18 @@
+{
+  "liveScenarioVersion": 1,
+  "name": "baseline",
+  "scanMs": 1000,
+  "seed": 20261109,
+  "occupancy": {"emit": true, "source": "mes-line2"},
+  "toolActivity": {"startAfterEnter": 5000, "endBeforeLeave": 1000, "torque": {"min": 10.0, "max": 45.0}},
+  "visits": [
+    {"visitId": "S1-V1", "unit": "UNIT0000000000001", "station": "line2:station1", "enter": 60000, "leave": 120000, "tools": ["nutrunner1"], "visitSeq": 1},
+    {"visitId": "S1-V2", "unit": "UNIT0000000000002", "station": "line2:station1", "enter": 240000, "leave": 300000, "tools": ["nutrunner2"], "visitSeq": 2},
+    {"visitId": "S1-V3", "unit": "UNIT0000000000003", "station": "line2:station1", "enter": 420000, "leave": 480000, "tools": ["nutrunner1", "nutrunner2"], "visitSeq": 3},
+    {"visitId": "S1-V4", "unit": "UNIT0000000000004", "station": "line2:station1", "enter": 600000, "leave": 660000, "tools": [], "visitSeq": 4},
+    {"visitId": "S2-V1", "unit": "UNIT0000000000001", "station": "line2:station2", "enter": 150000, "leave": 210000, "tools": [], "visitSeq": 1},
+    {"visitId": "S2-V2", "unit": "UNIT0000000000002", "station": "line2:station2", "enter": 330000, "leave": 390000, "tools": [], "visitSeq": 2},
+    {"visitId": "S3-V1", "unit": "UNIT0000000000001", "station": "line2:station3", "enter": 240000, "leave": 300000, "tools": [], "visitSeq": 1},
+    {"visitId": "S3-V2", "unit": "UNIT0000000000002", "station": "line2:station3", "enter": 420000, "leave": 480000, "tools": [], "visitSeq": 2}
+  ]
+}

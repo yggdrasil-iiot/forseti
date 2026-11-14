@@ -470,5 +470,8 @@
     "mappings/releases/line2-rules-shared-plc/1.0.0/payload/targets/3.json": "34af9ca072292953f98a0c92bc05f71ec6b19a5db88706ad374000310452860b",
     "mappings/releases/line2-rules-shared-plc/1.0.0/payload/targets/4.json": "b7a4b6880e5792ca4a7d7b0ebedc918e5aee43572e56fb4b3176572e41324c53",
     "mappings/releases/line2-rules-shared-plc/1.0.0/release.json": "ec161cfc67a6693aaa18d4cc0b7eabbdd91ae3c9dbabf667c48d39ce3b4e83d3"
+  },
+  "deployment": {
+    "deployment.json": "5f911f50a4bf4897e2b5d14520a9defb2db2b230f3db90a340b4ddab40d02f10"
   }
 }

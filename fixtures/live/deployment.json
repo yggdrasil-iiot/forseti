@@ -1,0 +1,42 @@
+{
+  "site-019:line2:station1": {
+    "templateRef": "station-model",
+    "version": "1.0.0"
+  },
+  "site-019:line2:station1:nutrunner1": {
+    "templateRef": "tool-model",
+    "version": "1.0.0"
+  },
+  "site-019:line2:station1:nutrunner2": {
+    "templateRef": "tool-model",
+    "version": "1.0.0"
+  },
+  "site-019:line2:station2": {
+    "templateRef": "station-model",
+    "version": "1.0.0"
+  },
+  "site-019:line2:station3": {
+    "templateRef": "station-model",
+    "version": "1.0.0"
+  },
+  "site-071:line2:station1": {
+    "templateRef": "station-model",
+    "version": "1.0.0"
+  },
+  "site-071:line2:station1:nutrunner1": {
+    "templateRef": "tool-model",
+    "version": "1.0.0"
+  },
+  "site-071:line2:station1:nutrunner2": {
+    "templateRef": "tool-model",
+    "version": "1.0.0"
+  },
+  "site-071:line2:station2": {
+    "templateRef": "station-model",
+    "version": "1.0.0"
+  },
+  "site-071:line2:station3": {
+    "templateRef": "station-model",
+    "version": "1.0.0"
+  }
+}
