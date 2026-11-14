@@ -26,7 +26,8 @@ ARRIVING = "urn:epcglobal:cbv:bizstep:arriving"
 
 SAFE_MAX = 2**53 - 1
 STATUS_CODE_MAX = 2**32 - 1
-SESSION_KINDS = ("seq-gap", "session-down", "session-up", "stale-death", "session-ambiguous", "definition-changed")
+SESSION_AMBIGUOUS = "session-ambiguous"
+SESSION_KINDS = ("seq-gap", "session-down", "session-up", "stale-death", SESSION_AMBIGUOUS, "definition-changed")
 SESSION_PAYLOAD_INTEGERS = ("from", "to", "missing", "at", "detectedEventTime", "rawPublishTs", "bdSeq")
 
 SCHEMA_DIR = Path(__file__).resolve().parents[3] / "schemas"
@@ -174,13 +175,19 @@ class Message:
 
 @dataclass(frozen=True)
 class Session:
+    """``birthPublishTs`` and ``atSeq`` are None only for the birthless ``session-ambiguous`` variant (plan D4): the NDEATH of a connection
+    whose NBIRTH the bridge never observed has no birth to name and its ``atSeq`` is the last observed ``seq`` or None."""
     edge: str
     device: str
-    birthPublishTs: int
+    birthPublishTs: int | None
     bdSeq: int
     kind: str
-    atSeq: int
+    atSeq: int | None
     payload: dict | None
+
+    @property
+    def birthless(self) -> bool:
+        return self.birthPublishTs is None
 
 
 def _validate(topic: str, value: dict) -> None:
@@ -253,20 +260,40 @@ def _message(v: dict) -> Message:
     return Message(edge, device, birth, bd_seq, seq, publish, received, definition, tuple(members), tuple(rejected))
 
 
+def _nullable_int(obj: dict, field: str):
+    """A present field: JSON null is None, anything else must be an integer; an absent field is refused like a non-integer."""
+    if field in obj and obj[field] is None:
+        return None
+    return safe_int(obj.get(field), field)
+
+
 def _session(v: dict) -> Session:
     edge, device = _text(v, "edge"), _text(v, "device")
-    birth = safe_int(v.get("birthPublishTs"), "birthPublishTs")
+    # birthPublishTs and atSeq may be null only for session-ambiguous (plan D4); a null birthPublishTs on any other kind is refused as
+    # birthPublishTs before bdSeq and kind, the order of checks the core keeps
+    ambiguous = v.get("kind") == SESSION_AMBIGUOUS
+    birth = _nullable_int(v, "birthPublishTs") if ambiguous else safe_int(v.get("birthPublishTs"), "birthPublishTs")
     bd_seq = safe_int(v.get("bdSeq"), "bdSeq")
     kind = _text(v, "kind")
     if kind not in SESSION_KINDS:
         raise SchemaInvalid("kind")
-    at_seq = safe_int(v.get("atSeq"), "atSeq")
+    at_seq = _nullable_int(v, "atSeq")
+    if at_seq is None and birth is not None:  # atSeq may be None only on the birthless variant
+        raise SchemaInvalid("atSeq")
     payload = v.get("payload")
     if payload is not None:
         if not isinstance(payload, dict):
             raise SchemaInvalid("payload")
         for f in SESSION_PAYLOAD_INTEGERS:
             _optional_int(payload, f, "payload." + f)
+    if birth is None:
+        # the birthless identity adds the death's rawPublishTs and payloadDigest; without them two such deaths with equal counters
+        # would be one event
+        raw = payload.get("rawPublishTs") if isinstance(payload, dict) else None
+        if not isinstance(raw, int) or isinstance(raw, bool):
+            raise SchemaInvalid("payload.rawPublishTs")
+        if not isinstance(payload.get("payloadDigest"), str):
+            raise SchemaInvalid("payload.payloadDigest")
     return Session(edge, device, birth, bd_seq, kind, at_seq, payload)
 
 
@@ -297,7 +324,13 @@ def measurement_id(device: str, metric: str, source_ts: int, value, ua_status_co
 
 
 def session_event_id(s: Session) -> dict:
-    return {"edge": s.edge, "device": s.device, "birthPublishTs": s.birthPublishTs, "bdSeq": s.bdSeq, "kind": s.kind, "atSeq": s.atSeq}
+    """(edge, device, birthPublishTs, bdSeq, kind, atSeq); the birthless session-ambiguous variant (plan D4) adds the death's
+    rawPublishTs and payloadDigest so two such deaths with equal counters stay distinct."""
+    i = {"edge": s.edge, "device": s.device, "birthPublishTs": s.birthPublishTs, "bdSeq": s.bdSeq, "kind": s.kind, "atSeq": s.atSeq}
+    if s.birthless:
+        i["rawPublishTs"] = s.payload["rawPublishTs"]
+        i["payloadDigest"] = s.payload["payloadDigest"]
+    return i
 
 
 def occupancy_id(o: Occupancy) -> dict:

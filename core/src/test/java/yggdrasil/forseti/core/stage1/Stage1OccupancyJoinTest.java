@@ -570,4 +570,40 @@ class Stage1OccupancyJoinTest {
         assertTrue(a.outputs.stream().anyMatch(o -> o instanceof Row));
         assertEquals(8, a.progress().size(), "a business and a ledger progress per cut");
     }
+
+    /** The birthless session-ambiguous death of plan D4: no birth, no atSeq, no detectedEventTime (no telemetry or birth for the edge). */
+    static ObjectNode birthlessDeath(String device, long rawPublishTs, String payloadDigest) {
+        ObjectNode n = Json.object().put("edge", EDGE).put("device", device).putNull("birthPublishTs").put("bdSeq", 0).put("kind", "session-ambiguous");
+        n.putNull("atSeq");
+        ObjectNode p = n.putObject("payload").putNull("detectedEventTime");
+        Json.putSafe(p, "rawPublishTs", rawPublishTs).put("bdSeq", 0).put("payloadDigest", payloadDigest);
+        return n;
+    }
+
+    @Test void aBirthlessDeathWithoutEventTimeOpensNoUnknownIntervalAndChangesNothing() {
+        Driver control = baseline();
+        control.cut();
+        Driver d = baseline();
+        Inputs.InputRecord a = d.input(SES, birthlessDeath(NR1, T + 30_000, "aa".repeat(32)));
+        Inputs.InputRecord b = d.input(SES, birthlessDeath(NR1, T + 30_000, "bb".repeat(32)));   // equal counters, other raw bytes
+        d.cut();
+        assertEquals(Disposition.Reason.ACCEPTED, d.disposition(a, "event").body().reason());
+        assertEquals(Disposition.Reason.ACCEPTED, d.disposition(b, "event").body().reason(), "two deaths, not an identity conflict");
+        assertEquals(Canonical.digest(control.workRecord("occ-1")), Canonical.digest(d.workRecord("occ-1")));
+        assertEquals(control.workRecordRows("occ-1").size(), d.workRecordRows("occ-1").size());
+        assertNotEquals("unknown", evidence(d.workRecord("occ-1"), NR1).get("coverage").get("status").asText());
+        assertFalse(reasons(d.workRecord("occ-1")).contains("session-ambiguous"));
+    }
+
+    @Test void aNullTimeEventSortsFirstInItsCutAndNeverAdvancesEventTime() {
+        Driver d = Driver.station1();
+        Inputs.InputRecord occ = d.input(OCC, arrival("occ-1", T, U1, S1));
+        Inputs.InputRecord death = d.input(SES, birthlessDeath(NR1, T + 30_000, "aa".repeat(32)));
+        assertNull(Events.eventTime(death));
+        assertTrue(Events.CONTRACT_ORDER.compare(death, occ) < 0);
+        assertTrue(Events.CONTRACT_ORDER.compare(occ, death) > 0);
+        List<Inputs.InputRecord> in = new ArrayList<>(List.of(occ, death));
+        in.sort(Events.CONTRACT_ORDER);
+        assertSame(death, in.get(0));
+    }
 }

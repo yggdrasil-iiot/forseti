@@ -6,7 +6,7 @@
   <artifactId>forseti-parent</artifactId>
   <version>0.1.0-SNAPSHOT</version>
   <packaging>pom</packaging>
-  <modules><module>core</module><module>cli</module></modules>
+  <modules><module>core</module><module>cli</module><module>bridge</module><module>loop</module></modules>
   <properties>
     <maven.compiler.release>17</maven.compiler.release>
     <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>

@@ -114,4 +114,44 @@ class InputParserTest {
         assertEquals("7141c3115d90812f16b22049c66bfaa64942ebacf854b343fb99b3dce168fb34", InputParser.schemaSha256("urn:forseti:schema:incident:1.0.0"));
         assertEquals(List.of("tool-check-failed", "gauge-drift"), InputParser.incidentKinds());
     }
+
+    /** The NDEATH of a connection whose NBIRTH the bridge never observed (plan D4): no birth, the last observed seq or none. */
+    static final String BIRTHLESS = "{\"edge\":\"edge1\",\"device\":\"synthetic-site:line2:station1:nutrunner1\",\"birthPublishTs\":null,"
+        + "\"bdSeq\":3,\"kind\":\"session-ambiguous\",\"atSeq\":null,\"payload\":{\"detectedEventTime\":null,\"rawPublishTs\":1794183000500,"
+        + "\"bdSeq\":3,\"payloadDigest\":\"" + "cd".repeat(32) + "\"}}";
+
+    @Test void theBirthlessSessionAmbiguousVariantParses() {
+        Inputs.SessionEvent s = (Inputs.SessionEvent) InputParser.parse(InputParser.SESSIONS, json(BIRTHLESS));
+        assertTrue(s.birthless());
+        assertNull(s.birthPublishTs());
+        assertNull(s.atSeq());
+        assertEquals(3, s.bdSeq());
+        Inputs.SessionEvent last = (Inputs.SessionEvent) InputParser.parse(InputParser.SESSIONS, json(with(BIRTHLESS, "atSeq", "17")));
+        assertEquals(Long.valueOf(17), last.atSeq());   // the device's last observed seq, when the bridge saw one
+        String born = with(with(BIRTHLESS, "birthPublishTs", "1794182400000"), "atSeq", "17");
+        assertFalse(((Inputs.SessionEvent) InputParser.parse(InputParser.SESSIONS, json(born))).birthless());
+        // atSeq may be null only on the birthless variant: a session-ambiguous event with a birth keeps an integer atSeq
+        assertEquals("atSeq", invalid(InputParser.SESSIONS, with(born, "atSeq", "null")));
+        // a non-integer rawPublishTs on the birthless variant is refused, as on the oracle side
+        assertEquals("payload.rawPublishTs", invalid(InputParser.SESSIONS, BIRTHLESS.replace("\"rawPublishTs\":1794183000500", "\"rawPublishTs\":\"x\"")));
+    }
+
+    @Test void aNullBirthOrAtSeqOnAnyOtherKindIsRefused() {
+        for (String kind : List.of("seq-gap", "session-down", "session-up", "stale-death", "definition-changed")) {
+            String base = with(SESSION, "kind", "\"" + kind + "\"");
+            assertEquals("birthPublishTs", invalid(InputParser.SESSIONS, with(base, "birthPublishTs", "null")), kind);
+            assertEquals("atSeq", invalid(InputParser.SESSIONS, with(base, "atSeq", "null")), kind);
+            // checked before bdSeq and kind, as for an integer field: the order of refs.check of existing inputs is kept
+            assertEquals("birthPublishTs", invalid(InputParser.SESSIONS, with(with(base, "birthPublishTs", "null"), "bdSeq", "-1")), kind);
+        }
+        assertEquals("birthPublishTs", invalid(InputParser.SESSIONS, BIRTHLESS.replace("\"birthPublishTs\":null,", "")));   // absent is not null
+        assertEquals("atSeq", invalid(InputParser.SESSIONS, BIRTHLESS.replace("\"atSeq\":null,", "")));
+        assertEquals("birthPublishTs", invalid(InputParser.SESSIONS, with(BIRTHLESS, "birthPublishTs", "\"x\"")));
+    }
+
+    @Test void aBirthlessDeathWithoutItsRawPublishTsOrPayloadDigestIsRefused() {
+        assertEquals("payload.rawPublishTs", invalid(InputParser.SESSIONS, BIRTHLESS.replace("\"rawPublishTs\":1794183000500,", "")));
+        assertEquals("payload.payloadDigest", invalid(InputParser.SESSIONS, BIRTHLESS.replace(",\"payloadDigest\":\"" + "cd".repeat(32) + "\"", "")));
+        assertEquals("payload.rawPublishTs", invalid(InputParser.SESSIONS, BIRTHLESS.replaceFirst("\"payload\":\\{.*\\}\\}$", "\"payload\":null}")));
+    }
 }

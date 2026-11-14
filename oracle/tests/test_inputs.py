@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 from forseti_oracle import inputs
+from forseti_oracle.canon import canonical_bytes
 from forseti_oracle.inputs import INCIDENTS, MESSAGES, OCCUPANCY, SESSIONS, SchemaInvalid
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -170,3 +171,64 @@ def test_overflowing_member_values_are_signed_infinities():
 def test_is_bad_reads_the_severity_bits():
     assert inputs.is_bad(0x80000000) and inputs.is_bad(0x80350000) and not inputs.is_bad(0x40000000) and not inputs.is_bad(0)
     assert not inputs.is_bad(None) and inputs.is_uncertain(0x40920000) and not inputs.is_uncertain(None)
+
+
+# --- the birthless session-ambiguous variant (plan D4) -------------------------------------------------------------------
+
+BIRTHLESS = ('{"edge":"edge1","device":"synthetic-site:line2:station1:nutrunner1","birthPublishTs":null,'
+             '"bdSeq":3,"kind":"session-ambiguous","atSeq":null,"payload":{"detectedEventTime":null,"rawPublishTs":1794183000500,'
+             '"bdSeq":3,"payloadDigest":"' + "cd" * 32 + '"}}')
+
+
+def test_the_birthless_session_ambiguous_variant_parses():
+    s = parse(SESSIONS, BIRTHLESS)
+    assert s.birthless and s.birthPublishTs is None and s.atSeq is None and s.bdSeq == 3
+    assert parse(SESSIONS, with_(BIRTHLESS, "atSeq", "17")).atSeq == 17
+    born = with_(with_(BIRTHLESS, "birthPublishTs", "1794182400000"), "atSeq", "17")
+    assert not parse(SESSIONS, born).birthless
+    # atSeq may be None only on the birthless variant: a session-ambiguous event with a birth keeps an integer atSeq
+    assert invalid(SESSIONS, with_(born, "atSeq", "null")) == "atSeq"
+    # a non-integer rawPublishTs on the birthless variant is refused, as on the core side
+    assert invalid(SESSIONS, BIRTHLESS.replace('"rawPublishTs":1794183000500', '"rawPublishTs":"x"')) == "payload.rawPublishTs"
+    assert invalid(SESSIONS, BIRTHLESS.replace('"rawPublishTs":1794183000500', '"rawPublishTs":true')) == "payload.rawPublishTs"
+
+
+@pytest.mark.parametrize("kind", ["seq-gap", "session-down", "session-up", "stale-death", "definition-changed"])
+def test_a_null_birth_or_at_seq_on_any_other_kind_is_refused(kind):
+    base = with_(SESSION, "kind", '"' + kind + '"')
+    assert invalid(SESSIONS, with_(base, "birthPublishTs", "null")) == "birthPublishTs"
+    assert invalid(SESSIONS, with_(base, "atSeq", "null")) == "atSeq"
+    assert invalid(SESSIONS, with_(with_(base, "birthPublishTs", "null"), "bdSeq", "-1")) == "birthPublishTs"
+
+
+def test_an_absent_birth_or_at_seq_is_not_null():
+    assert invalid(SESSIONS, BIRTHLESS.replace('"birthPublishTs":null,', "")) == "birthPublishTs"
+    assert invalid(SESSIONS, BIRTHLESS.replace('"atSeq":null,', "")) == "atSeq"
+    assert invalid(SESSIONS, with_(BIRTHLESS, "birthPublishTs", '"x"')) == "birthPublishTs"
+
+
+def test_a_birthless_death_without_its_raw_publish_ts_or_payload_digest_is_refused():
+    assert invalid(SESSIONS, BIRTHLESS.replace('"rawPublishTs":1794183000500,', "")) == "payload.rawPublishTs"
+    assert invalid(SESSIONS, BIRTHLESS.replace(',"payloadDigest":"' + "cd" * 32 + '"', "")) == "payload.payloadDigest"
+    assert invalid(SESSIONS, re.sub(r'"payload":\{.*\}\}$', '"payload":null}', BIRTHLESS)) == "payload.rawPublishTs"
+
+
+def _birthless(raw_publish_ts, payload_digest):
+    return ('{"edge":"e","device":"d","birthPublishTs":null,"bdSeq":3,"kind":"session-ambiguous","atSeq":null,'
+            '"payload":{"detectedEventTime":null,"rawPublishTs":' + str(raw_publish_ts) + ',"bdSeq":3,"payloadDigest":"' + payload_digest + '"}}')
+
+
+def test_a_session_event_with_a_birth_keeps_its_six_field_identity():
+    s = parse(SESSIONS, '{"edge":"e","device":"d","birthPublishTs":1,"bdSeq":0,"kind":"session-ambiguous","atSeq":5,'
+                        '"payload":{"detectedEventTime":9,"rawPublishTs":8,"bdSeq":0,"payloadDigest":"ab"}}')
+    assert canonical_bytes(inputs.session_event_id(s)) == \
+        b'{"atSeq":5,"bdSeq":0,"birthPublishTs":1,"device":"d","edge":"e","kind":"session-ambiguous"}'
+
+
+def test_two_birthless_deaths_with_equal_counters_stay_distinct():
+    a = canonical_bytes(inputs.session_event_id(parse(SESSIONS, _birthless(100, "aa"))))
+    assert a == (b'{"atSeq":null,"bdSeq":3,"birthPublishTs":null,"device":"d","edge":"e","kind":"session-ambiguous",'
+                 b'"payloadDigest":"aa","rawPublishTs":100}')
+    assert a != canonical_bytes(inputs.session_event_id(parse(SESSIONS, _birthless(101, "aa"))))
+    assert a != canonical_bytes(inputs.session_event_id(parse(SESSIONS, _birthless(100, "bb"))))
+    assert a == canonical_bytes(inputs.session_event_id(parse(SESSIONS, _birthless(100, "aa"))))

@@ -662,3 +662,31 @@ def test_a_visit_without_any_observation_takes_its_coverage_from_the_required_me
     assert w["equipmentEvidence"] == []
     assert w["coverage"] == {"expectedPeriodMs": 1000, "observedPeriods": 0, "missingPeriods": 60, "badSlots": 0, "sessionGaps": 0}
     assert w["insufficiencyReasons"] == ["missing-periods", "no-observed-periods", "unknown-activity"]
+
+
+def _birthless_death(device, raw_publish_ts, payload_digest):
+    """The birthless session-ambiguous death of plan D4: no birth, no atSeq, no detectedEventTime (no telemetry or birth for the edge)."""
+    return {"edge": "edge-line2", "device": device, "birthPublishTs": None, "bdSeq": 0, "kind": "session-ambiguous", "atSeq": None,
+            "payload": {"detectedEventTime": None, "rawPublishTs": raw_publish_ts, "bdSeq": 0, "payloadDigest": payload_digest}}
+
+
+def test_a_birthless_death_without_event_time_opens_no_unknown_interval_and_changes_nothing():
+    a = baseline()
+    d = baseline(settle=False)
+    x = d.input(SESSIONS, _birthless_death(NR1, T + 30_000, "aa" * 32))
+    y = d.input(SESSIONS, _birthless_death(NR1, T + 30_000, "bb" * 32))   # equal counters, other raw bytes
+    d.cut(T + 60_000 + L)
+    assert d.dispositions(x) == [("event", "accepted", "accepted")]
+    assert d.dispositions(y) == [("event", "accepted", "accepted")]   # two deaths, not an identity conflict
+    w = d.work("occ-1")
+    assert digest(w) == digest(a.work("occ-1"))
+    assert "session-ambiguous" not in w["insufficiencyReasons"] and evidence(w, NR1)["coverage"]["status"] != "unknown"
+
+
+def test_a_null_time_event_sorts_first_in_its_cut():
+    d = Driver()
+    occ = d.input(OCCUPANCY, arrival("occ-1", T, U1))
+    death = d.input(SESSIONS, _birthless_death(NR1, T + 30_000, "aa" * 32))
+    assert stage1.event_time(death) is None
+    assert stage1.contract_key(death) < stage1.contract_key(occ)
+    assert sorted([occ, death], key=stage1.contract_key)[0] is death
