@@ -1,0 +1,9 @@
+{
+  "kind" : "recipe-setpoints",
+  "ref" : "tool-model",
+  "version" : "1.0.0",
+  "defRef" : "47091f220d1f102af2dc7be172fec9e9677a445d",
+  "contentSha256" : "276bf45c3f834818d359442395c40f2932af7436c81a4b72d20a8ff218c9a4dc",
+  "sourcePath" : "fixtures/line2/tool-model-1.0.0.json",
+  "publishedAt" : 1794669400496
+}

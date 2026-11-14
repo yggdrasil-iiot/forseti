@@ -1,0 +1,8 @@
+equipmentInstanceId,label,equipmentLevel,parent
+site-071,Placement site 071 (dedicated),SITE_1,
+line2,Line 2,PRODUCTIONLINE_5,site-071
+station1,Station 1,WORKCELL_6,line2
+station2,Station 2,WORKCELL_6,line2
+nutrunner1,Nutrunner 1,WORKUNIT_11,station1
+nutrunner2,Nutrunner 2,WORKUNIT_11,station1
+station3,Station 3,WORKCELL_6,line2
