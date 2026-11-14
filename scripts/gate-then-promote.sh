@@ -5,6 +5,7 @@
 #   scripts/gate-then-promote.sh --from-shards <dir> <out> <python>  aggregate over <dir>; each shard's store is <dir>/<shard>/state
 #
 # It registers nothing by hand. Any outcome other than the stated one exits 1.
+# FORSETI_GATE_JAVA_OPTS (for example -Xmx6g) goes to the gate's own JVM only; the harness children take their heap from the gate.
 set -euo pipefail
 
 SHARDS=""
@@ -18,6 +19,7 @@ fi
 cd "$(dirname "$0")/.."
 JAR=cli/target/forseti.jar
 F="java -jar $JAR"
+G="java ${FORSETI_GATE_JAVA_OPTS:-} -jar $JAR"
 fail() { echo "gate-then-promote: $*" >&2; exit 1; }
 sha() { "$PY" -I -c 'import hashlib,sys;print(hashlib.sha256(open(sys.argv[1],"rb").read()).hexdigest())' "$1"; }
 
@@ -26,9 +28,9 @@ N=$("$PY" -I -c 'import json;print(len(json.load(open("gate/core-assertions.json
 mkdir -p "$OUT"
 set +e
 if [ -n "$SHARDS" ]; then
-  $F gate --engine core --aggregate "$SHARDS" --out "$OUT" --python "$PY" | tee "$OUT/gate.log"
+  $G gate --engine core --aggregate "$SHARDS" --out "$OUT" --python "$PY" | tee "$OUT/gate.log"
 else
-  $F gate --engine core --state "$OUT/state" --out "$OUT" --python "$PY" | tee "$OUT/gate.log"
+  $G gate --engine core --state "$OUT/state" --out "$OUT" --python "$PY" | tee "$OUT/gate.log"
 fi
 rc=${PIPESTATUS[0]}
 set -e
