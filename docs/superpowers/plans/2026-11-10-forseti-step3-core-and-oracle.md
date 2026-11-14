@@ -2547,7 +2547,7 @@ python -m pip install -e "oracle[dev]"
 python -m pytest -q oracle                                # all passed (about 119)
 
 # 3. The shared vector file on both sides, by hand
-python -I -c "import json;v=json.load(open('vectors/jcs-vectors.json'));print(len(v['vectors']),len(v['refusals']))"   # 9 8
+python -I -c "import json;v=json.load(open('vectors/jcs-vectors.json',encoding='utf-8'));print(len(v['vectors']),len(v['refusals']))"   # 9 8
 mvn -q -pl core -Dtest=CanonicalVectorsTest test          # Tests run: 4, Failures: 0
 
 # 4. Fixture provenance (Amendment 2026-11-11): Tyr's bytes published untouched, forseti's three variants derived
@@ -2580,7 +2580,7 @@ python -I -c "import json;r=json.load(open('build/gate/report.json'));print(r['e
 ls build/gate/diffs 2>/dev/null | wc -l                   # 0
 git ls-files fixtures/recordings | cut -d/ -f3 | sort -u | tr '\n' ' '   # smoke smoke-incident smoke-plc (no other recording is committed)
 ls build/recordings | wc -l                               # 25 (twenty hand-made and five horizon recordings, built by the gate)
-java -jar cli/target/forseti.jar recordings verify --scenario fixtures/scenarios/baseline.json --out build/recordings/baseline   # lock matches, exit 0
+java -jar cli/target/forseti.jar recordings verify --scenario fixtures/scenarios/baseline.json --registry fixtures/registry --out build/recordings/baseline   # lock matches, exit 0
 java -jar cli/target/forseti.jar recordings verify --scenario fixtures/scenarios/smoke.json --out fixtures/recordings/smoke      # lock matches, exit 0
 
 # 6. Every engine-independent negative control exits 1 for its intended assertion (theta non-transactional-output is steps 6-7)
