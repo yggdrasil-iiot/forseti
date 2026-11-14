@@ -316,8 +316,9 @@ jobs:
         run: mvn -B -ntp -pl core -am -Dtest=BifrostSeamTest -Dsurefire.failIfNoSpecifiedTests=false test
   # Every Java test and the oracle suite, on Linux and on Windows, split into parallel groups. NegativeControlsTest holds the slow
   # in-process control runs (one JVM-wide system property each, so they cannot share a JVM in parallel): three groups take its methods
-  # by name, `rest` takes every other test class and the oracle suite. test-split checks that together they ran every declared test
-  # method exactly once on each OS.
+  # by name; `recording-harness` and `gate-generation` take the other test classes of those cli packages; `rest` takes everything else
+  # (core, the remaining cli classes) and the oracle suite. test-split checks that together they ran every declared test method exactly
+  # once on each OS.
   tests:
     name: tests ${{ matrix.os }} ${{ matrix.group }}
     runs-on: ${{ matrix.runner }}
@@ -325,14 +326,16 @@ jobs:
       fail-fast: false
       matrix:
         os: [linux, windows]
-        group: [controls-a, controls-b, controls-c, rest]
+        group: [controls-a, controls-b, controls-c, recording-harness, gate-generation, rest]
         include:
           - {os: linux, runner: ubuntu-latest, python: '3.13.18'}
           - {os: windows, runner: windows-latest, python: '3.13'}   # no 3.13.18 build for Windows; the gate pins come from the ubuntu jobs
           - {group: controls-a, tests: 'NegativeControlsTest#stationGranularityFailsI16+lenientOracleFailsI2'}
           - {group: controls-b, tests: 'NegativeControlsTest#processingTimeFailsI1+firstWinsFailsI4+dropLateFailsDispositionCoverageEvenThoughTheRemainingBodiesMatch+noCascadeFailsBasisCurrentOverItsShard+anAggregateIdTheControlDidNotBreakDoesNotHold+aCrashedRunNeverCountsAsTheIntendedFailure+theCommittedControlsAreTheEightOnTheShardsThatOwnOrFeedTheirIntendedIds+aControlWithoutAnOwningShardOrWithAShardThatOwnsNoneOfItsIdsIsRefused+anUnlistedNameOrAShardTheControlDoesNotRunOnIsAUsageError'}
           - {group: controls-c, tests: 'NegativeControlsTest#ignoreSessionGapFailsI8+noCascadeFailsI18AndLeavesAStaleBasis+wrongRulesPinFailsThePinsCrossCheck'}
-          - {group: rest, tests: '!NegativeControlsTest'}
+          - {group: recording-harness, tests: '**/cli/recording/**,**/cli/harness/**'}
+          - {group: gate-generation, tests: '**/cli/gate/**,**/cli/generation/**,!NegativeControlsTest'}
+          - {group: rest, tests: '!**/cli/recording/**,!**/cli/harness/**,!**/cli/gate/**,!**/cli/generation/**'}
     defaults:
       run: {shell: bash}
     steps:
