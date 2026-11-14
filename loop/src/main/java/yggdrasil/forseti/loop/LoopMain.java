@@ -26,7 +26,15 @@ import yggdrasil.forseti.core.Json;
  *                         --routing fixtures/live/routing/dedicated.json --scenario fixtures/live-scenarios/baseline.json
  *                         --opcua opc.tcp://localhost:48400 [--driver-client-id forseti-driver] [--log drive.jsonl]
  *                         [--poll-ms 10] [--timeout-ms 10000]
+ *  forseti-loop record    --kafka host:9092 [--prefix run-1.] --registry ... --definitions ... --stream line2-dedicated
+ *                         --routing fixtures/live/routing/dedicated.json --scenario fixtures/live-scenarios/baseline.json
+ *                         --drive-log drive.jsonl --out build/run-1/recording [--name baseline] [--batch-ms 60000]
+ *                         [--report <out>.capture-report.json] [--dead-letter <out>.dead-letter.jsonl]
+ *                         [--client-id forseti-recorder] [--timeout-ms 60000]
  *  </pre>
+ *  {@code record} runs after the drive, once the publishers have stopped and the bridge has drained: it reads the run's input topics
+ *  at their end offsets and writes the recording, the capture report and the dead-letter side file (exit 1 when the capture is
+ *  refused).
  *  {@code topics} creates the run's five topics and checks them as preflight does; {@code preflight} prints every problem and exits 1
  *  if there is one, 0 when clean; {@code drive} runs a live scenario and writes its drive log. A usage error exits 2. An edge's device
  *  is a full path or a path below the site ({@code line2:station1}); {@code --period-ms} is Muninn's {@code --session} period
@@ -46,7 +54,7 @@ public final class LoopMain {
     }
 
     static int run(String[] args, PrintStream out) throws Exception {
-        if (args.length == 0) throw new Usage("a command is required: topics, preflight or drive");
+        if (args.length == 0) throw new Usage("a command is required: topics, preflight, drive or record");
         Map<String, List<String>> a = options(Arrays.copyOfRange(args, 1, args.length));
         switch (args[0]) {
             case "topics" -> {
@@ -89,8 +97,30 @@ public final class LoopMain {
                     return 0;
                 }
             }
+            case "record" -> {
+                allowed(a, "kafka", "prefix", "registry", "definitions", "deployment", "stream", "routing", "scenario", "drive-log", "out", "name", "batch-ms",
+                    "report", "dead-letter", "client-id", "timeout-ms");
+                Path definitions = Path.of(req(a, "definitions")), out1 = Path.of(req(a, "out"));
+                CaptureRecorder.Inputs in = LiveCapture.inputs(Path.of(req(a, "registry")), definitions, deployment(a, definitions), req(a, "stream"),
+                    Path.of(req(a, "routing")), Path.of(req(a, "scenario")), Path.of(req(a, "drive-log")), a.containsKey("name") ? req(a, "name") : null,
+                    number(a, "batch-ms", CaptureRecorder.DEFAULT_BATCH_MS));
+                try (KafkaCaptureSource src = new KafkaCaptureSource(KafkaCaptureSource.kafka(req(a, "kafka"), opt(a, "client-id", "forseti-recorder")), number(a, "timeout-ms", 60_000))) {
+                    return record(src, opt(a, "prefix", ""), in, out1, a.containsKey("report") ? Path.of(req(a, "report")) : CaptureRecorder.besides(out1, CaptureRecorder.REPORT_SUFFIX),
+                        a.containsKey("dead-letter") ? Path.of(req(a, "dead-letter")) : CaptureRecorder.besides(out1, CaptureRecorder.DEAD_LETTER_SUFFIX), out);
+                }
+            }
             default -> throw new Usage("unknown command " + args[0]);
         }
+    }
+
+    /** Records a run's input topics ({@link CaptureRecorder}); a refused capture prints its reason and exits 1. */
+    static int record(CaptureRecorder.Source src, String prefix, CaptureRecorder.Inputs in, Path out, Path report, Path deadLetter, PrintStream ps) {
+        try {
+            CaptureRecorder.Result r = CaptureRecorder.record(src, prefix, in, out, report, deadLetter);
+            ps.println("recorded " + in.name() + ": cuts " + r.manifest().path("batches").size() + ", deadlines " + r.manifest().path("deadlines").size()
+                + ", manifest " + r.manifestSha256() + ", report " + report);
+            return 0;
+        } catch (CaptureRecorder.Refused e) { ps.println(e.getMessage()); return 1; }
     }
 
     /** Creates the planned topics, then checks the broker's view of them with the preflight's topic rules. */
