@@ -27,11 +27,32 @@ jobs:
       - name: Build the jar
         working-directory: forseti
         run: mvn -B -ntp install -DskipTests
+      # The gate's own JVM gets an explicit 6g heap (the runner default is a quarter of its RAM); the harness children keep the heaps the
+      # gate gives them on their command lines. The step records the gate JVM's GC log and the summed resident memory of every java and
+      # python process every 2 s, and prints the peaks.
       - name: Core gate, every assertion in one run
         working-directory: forseti
-        env: {JAVA_TOOL_OPTIONS: -Dforseti.gate.horizonXmx=6g}
-        run: bash scripts/gate-then-promote.sh build/gate "$(command -v python)"
+        env:
+          JAVA_TOOL_OPTIONS: -Dforseti.gate.horizonXmx=6g
+          FORSETI_GATE_JAVA_OPTS: -Xmx6g -Xlog:gc:file=build/memory/gate-gc.log:uptime
+        run: |
+          mkdir -p build/memory
+          (while sleep 2; do echo "$(date +%s) $(ps -e -o rss=,comm= | awk '$2 ~ /^(java|python)/ {s += $1} END {print s + 0}')"; done) > build/memory/rss-kib.txt &
+          sampler=$!
+          set +e
+          bash scripts/gate-then-promote.sh build/gate "$(command -v python)"
+          rc=$?
+          set -e
+          kill "$sampler"
+          echo "peak summed RSS of java and python: $(awk '$2 > m {m = $2} END {printf "%.2f GiB", m / 1048576}' build/memory/rss-kib.txt)"
+          echo "peak gate heap after GC: $(sed -nE 's/.*->([0-9]+)M\(.*/\1/p' build/memory/gate-gc.log | sort -n | tail -1) MiB"
+          exit "$rc"
       - name: Gate report
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
-        with: {name: nightly-core-gate, path: forseti/build/gate/, if-no-files-found: error}
+        with:
+          name: nightly-core-gate
+          path: |
+            forseti/build/gate/
+            forseti/build/memory/
+          if-no-files-found: error

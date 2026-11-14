@@ -29,13 +29,13 @@ forseti has no write path to the plant. Applications of the yggdrasil family cou
 mvn -B -ntp install
 python -m pip install -e "oracle[dev]"
 python -m pytest -q oracle
-java -Dforseti.gate.horizonXmx=6g -jar cli/target/forseti.jar gate --engine core --out build/gate --state build/gate/state --python "$(command -v python)"
+java -Xmx6g -Dforseti.gate.horizonXmx=6g -jar cli/target/forseti.jar gate --engine core --out build/gate --state build/gate/state --python "$(command -v python)"
 ```
 
 The last line is `assertions run 82 / expected 82` and the exit code is 0 only when every assertion ran and held. The gate builds every recording it does not find committed, verifies each against its committed lock, runs the reference harness, and compares the harness journals with the oracle at every completed cut of every scenario. One shard of the plan runs with `--shard <name>`; `--aggregate <dir>` evaluates the cross-scenario assertions over the shard reports. The lifecycle through the CLI:
 
 ```bash
-bash scripts/gate-then-promote.sh build/gate-e2e "$(command -v python)"
+FORSETI_GATE_JAVA_OPTS=-Xmx6g bash scripts/gate-then-promote.sh build/gate-e2e "$(command -v python)"
 ```
 
 It runs the gate, shows that promotion refuses an unaccepted core scope, promotes the base generation of `horizon-planned-late` and then its event-time replay generation, which retires the base, and checks that the base journal bytes are unchanged.

@@ -86,7 +86,7 @@ jobs:
         with: {name: forseti-jar, path: forseti/cli/target}
       - name: Core gate shard
         working-directory: forseti
-        run: java -Dforseti.gate.horizonXmx=6g -jar cli/target/forseti.jar gate --engine core --shard "${{ matrix.shard }}" --out "build/shards/${{ matrix.shard }}" --state "build/shards/${{ matrix.shard }}/state" --python "$(command -v python)"
+        run: java -Xmx4g -Dforseti.gate.horizonXmx=6g -jar cli/target/forseti.jar gate --engine core --shard "${{ matrix.shard }}" --out "build/shards/${{ matrix.shard }}" --state "build/shards/${{ matrix.shard }}/state" --python "$(command -v python)"
       - name: Shard report
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
@@ -122,7 +122,7 @@ jobs:
         env: {CONTROL: "${{ matrix.run.control }}", SHARD: "${{ matrix.run.shard }}"}
         run: |
           set +e
-          java -Dforseti.gate.horizonXmx=6g -jar cli/target/forseti.jar gate --engine core --negative-control "$CONTROL" --shard "$SHARD" \
+          java -Xmx4g -Dforseti.gate.horizonXmx=6g -jar cli/target/forseti.jar gate --engine core --negative-control "$CONTROL" --shard "$SHARD" \
             --out "build/controls/$CONTROL/$SHARD" --python "$(command -v python)"
           rc=$?
           set -e
