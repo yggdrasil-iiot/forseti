@@ -16,7 +16,7 @@
 
 ## Setup
 
-- JDK 17.0.21, Maven 3.9, Docker with compose v2, Python 3.13 with the oracle installed (`pip install -e "oracle[dev]"`).
+- JDK 17.0.21, Maven 3.9.16 (the locked jar bytes depend on the Maven version, because the upstream POMs leave some plugin versions to its defaults; `build-live-jars.sh` also needs LF checkouts and sets UTC and an LF line separator through `live/mvn-repro.args`), Docker with compose v2, Python 3.13 with the oracle installed (`pip install -e "oracle[dev]"`).
 - Host ports 1883, 9092, 9093 (inside the Kafka container only) and 48400 free.
 - `mvn -B -ntp install -DskipTests` (cli, bridge and loop jars).
 - Upstream jars, from checkouts at the locked commits (clean trees):

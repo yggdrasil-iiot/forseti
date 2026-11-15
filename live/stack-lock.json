@@ -18,14 +18,14 @@
       "commit": "a405cb60ff032f5d870b35106fe2dbbca78c1552",
       "module": "sim",
       "path": "sim/target/bifrost-sim.jar",
-      "sha256": "11218825a15d7b4484ee478a04291dd9a60c9f5c0e54ef42f0dbf2102d9304d1"
+      "sha256": "e80aa5e361f6d6085038869d51e5b77321a4109e6aa8d920155224c2a969522f"
     },
     "muninn": {
       "repository": "yggdrasil-iiot/muninn",
       "commit": "ef2e6865396b5ab12fa150c75fd75594406be2e2",
       "module": ".",
       "path": "target/muninn.jar",
-      "sha256": "a60bcba846565eece122cb6a6187137fcc3b8a578921e508b28bdfa0cd1976fd"
+      "sha256": "ce8d92ed2534e592a57282915e51f3b081901ec3c459fe17018fb271ef986e03"
     }
   }
 }

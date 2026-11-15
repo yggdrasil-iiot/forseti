@@ -43,6 +43,17 @@ jobs:
         with: {repository: yggdrasil-iiot/muninn, ref: "${{ steps.lock.outputs.muninn }}", path: muninn}
       - uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3 # v4
         with: {java-version: '17.0.21', distribution: temurin, cache: maven, cache-dependency-path: forseti/pom.xml}
+      # The upstream POMs leave the compiler, resources and jar plugin versions to Maven's defaults, so the locked jar bytes depend
+      # on the Maven version: pin the one the lock was taken with, checked against the Apache SHA-512.
+      - name: Maven 3.9.16
+        run: |
+          v=3.9.16; f=apache-maven-$v-bin.tar.gz; u=https://archive.apache.org/dist/maven/maven-3/$v/binaries
+          curl -fsSL --retry 3 -o "$RUNNER_TEMP/$f" "$u/$f"
+          echo "$(curl -fsSL --retry 3 "$u/$f.sha512" | cut -c1-128)  $RUNNER_TEMP/$f" | sha512sum -c -
+          tar -xzf "$RUNNER_TEMP/$f" -C "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/apache-maven-$v/bin" >> "$GITHUB_PATH"
+      - name: Maven version
+        run: mvn -v
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with: {python-version: '3.13.18'}
       - name: Install the oracle
@@ -62,4 +73,9 @@ jobs:
       - name: Run directory
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
-        with: {name: live-loop-run, path: forseti/build/full-loop/, if-no-files-found: error}
+        with:
+          name: live-loop-run
+          path: |
+            forseti/build/full-loop/
+            forseti/build/live-jars/
+          if-no-files-found: error

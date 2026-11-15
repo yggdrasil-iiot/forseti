@@ -2,13 +2,15 @@
 # Builds the two upstream jars of the full loop from the commits live/stack-lock.json locks, and checks them against the lock:
 #   scripts/build-live-jars.sh <bifrost checkout> <muninn checkout> [<out dir, default build/live-jars>]
 # Each checkout must be at its locked commit with a clean tree (the script refuses otherwise; it never switches branches). The build is
-# reproducible: project.build.outputTimestamp is the commit's own time, so the same commit and JDK give the same jar bytes on every
+# reproducible: project.build.outputTimestamp is the commit's own time, so the same commit, JDK, Maven version (3.9.16), LF checkout and live/mvn-repro.args give the same jar bytes on every
 # host, and the lock can pin the jar's SHA-256. Extra Maven arguments (e.g. -Dmaven.repo.local=...) come from MVN_ARGS.
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 [ $# -ge 2 ] || { echo "usage: $0 <bifrost checkout> <muninn checkout> [<out dir>]" >&2; exit 2; }
 BIFROST="$1"; MUNINN="$2"; OUT="${3:-$ROOT/build/live-jars}"
 LOCK="$ROOT/live/stack-lock.json"
+ARGS="$ROOT/live/mvn-repro.args"
+command -v cygpath > /dev/null && ARGS="$(cygpath -w "$ARGS")"
 mkdir -p "$OUT"
 
 field() {   # field <jar name> <field>: one string field of a locked jar
@@ -22,11 +24,16 @@ build() {   # build <jar name> <checkout>
   head="$(git -C "$dir" rev-parse HEAD)"
   [ "$head" = "$commit" ] || { echo "build-live-jars: $dir is at $head, the lock names $commit for $name" >&2; exit 1; }
   git -C "$dir" diff --quiet HEAD || { echo "build-live-jars: $dir has local changes" >&2; exit 1; }
+  # A CRLF working copy of an LF file (core.autocrlf on Windows) changes text resources inside the jar.
+  if git -C "$dir" ls-files --eol | grep -q '^i/lf .*w/crlf'; then
+    echo "build-live-jars: $dir has CRLF working copies of LF files; check it out with: git -c core.autocrlf=false clone ..." >&2; exit 1
+  fi
   ts="$(git -C "$dir" log -1 --format=%ct)"
   local pl=()
   [ "$module" = "." ] || pl=(-pl "$module" -am)
+  # live/mvn-repro.args sets user.timezone=UTC (zip entry times) and an LF line.separator (pom.properties) for the Maven JVM.
   # shellcheck disable=SC2086
-  (cd "$dir" && mvn -B -ntp -q ${MVN_ARGS:-} -Dproject.build.outputTimestamp="$ts" -DskipTests "${pl[@]}" clean package)
+  (cd "$dir" && MAVEN_OPTS="@$ARGS" mvn -B -ntp -q ${MVN_ARGS:-} -Dproject.build.outputTimestamp="$ts" -DskipTests "${pl[@]}" clean package)
   cp "$dir/$path" "$OUT/$name.jar"
   echo "$name $(sha256sum "$OUT/$name.jar" | cut -c1-64) (from $commit)"
 }
