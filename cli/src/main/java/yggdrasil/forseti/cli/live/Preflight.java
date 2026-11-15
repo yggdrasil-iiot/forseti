@@ -18,9 +18,12 @@ import yggdrasil.forseti.core.input.InputParser;
  *  per device, plan "Goal").</li>
  *  <li>Topics exist with six partitions, {@code LogAppendTime} and 30 d retention ({@link LiveTopics#problems}): the routing manifest
  *  and the recorder assume each.</li>
- *  <li>{@code PERIOD_MS} (Muninn's {@code --session} period) = the rule's {@code coverage.expectedPeriodMs} = the sim's
- *  {@code bifrost.sim.scanMs} = 1000: coverage counts missing periods against {@code expectedPeriodMs}, and the sim's scan is what a
- *  period samples.</li>
+ *  <li>The acquisition cadence fits inside the rule's period: {@code M + S + JITTER_MARGIN_MS <= coverage.expectedPeriodMs}, with
+ *  {@code M} Muninn's {@code --session} period and {@code S} the sim's {@code bifrost.sim.scanMs} ({@link #periodProblem}). Muninn
+ *  polls free-running and publishes the last scan it read, which is at most {@code S} old, so two consecutive distinct source
+ *  timestamps it delivers lie less than {@code M + S} plus jitter apart; under the bound every slot of {@code expectedPeriodMs} holds
+ *  an observation wherever a visit's {@code enter} falls, and coverage counts only real absences. The source timestamps stay the
+ *  sim's real acquisition times: none is moved onto a grid.</li>
  *  <li>The routing manifest meets the placement rules of its fixture ({@link Placement#problems}) and is byte-for-byte the routing
  *  recomputed from the registry: a hand-edited partition number would be visible.</li>
  *  <li>Every routed device's live members and their {@code Sim/<member>.Value} and {@code .StatusCode} controls exist in the sim,
@@ -31,7 +34,10 @@ import yggdrasil.forseti.core.input.InputParser;
  *  validate every record against.</li>
  *  </ul> */
 public final class Preflight {
-    public static final long PERIOD_MS = 1000;
+    /** The declared jitter margin of {@link #periodProblem}. In the live captures at a 1000 ms scan, consecutive distinct source
+     *  timestamps of a device lay 928 to 1072 ms apart (at most 72 ms off the scan period, typically 16 ms); 100 ms covers the largest
+     *  deviation seen with room for a slower host. */
+    public static final long JITTER_MARGIN_MS = 100;
 
     private Preflight() {}
 
@@ -45,7 +51,7 @@ public final class Preflight {
      *  {@code presentNodes} are the sim node identifiers (in the stream's namespace) the shell found. */
     public record Facts(LiveEquipment.LiveStream stream, String placementKind, JsonNode routing, JsonNode recomputed, String recomputeError,
                         String bridgeClientId, String driverClientId, List<Edge> edges,
-                        long periodMs, long scanMs,
+                        long muninnPeriodMs, long scanMs,
                         List<LiveTopics.Spec> topics, Map<String, LiveTopics.Observed> observedTopics,
                         Set<String> presentNodes, Map<String, String> pins) {}
 
@@ -69,6 +75,16 @@ public final class Preflight {
             for (LiveEquipment.Member m : e.members()) { s.add(e.live(m.name())); s.add(e.valueControl(m.name())); s.add(e.statusControl(m.name())); }
         }
         return s;
+    }
+
+    /** Null when Muninn's period {@code muninnPeriodMs} (M) and the sim's scan {@code scanMs} (S) are positive and
+     *  {@code M + S + JITTER_MARGIN_MS <= expectedPeriodMs}; otherwise the problem. The live values are 500, 250 and 1000. */
+    public static String periodProblem(long muninnPeriodMs, long scanMs, long expectedPeriodMs) {
+        if (muninnPeriodMs <= 0 || scanMs <= 0) return "Muninn period " + muninnPeriodMs + " ms and sim scan " + scanMs + " ms must be positive";
+        if (muninnPeriodMs + scanMs + JITTER_MARGIN_MS > expectedPeriodMs)
+            return "Muninn period " + muninnPeriodMs + " ms + sim scan " + scanMs + " ms + jitter margin " + JITTER_MARGIN_MS + " ms exceeds the rule's expectedPeriodMs "
+                + expectedPeriodMs;
+        return null;
     }
 
     public static List<String> problems(Facts f) {
@@ -99,9 +115,8 @@ public final class Preflight {
         p.addAll(LiveTopics.problems(f.topics(), f.observedTopics()));
 
         // Periods.
-        long rule = f.stream().expectedPeriodMs();
-        if (f.periodMs() != PERIOD_MS || rule != PERIOD_MS || f.scanMs() != PERIOD_MS)
-            p.add("PERIOD_MS " + f.periodMs() + ", rule expectedPeriodMs " + rule + " and sim scanMs " + f.scanMs() + " must all be " + PERIOD_MS);
+        String periods = periodProblem(f.muninnPeriodMs(), f.scanMs(), f.stream().expectedPeriodMs());
+        if (periods != null) p.add(periods);
 
         // Routing.
         if (f.routing() == null) p.add("routing manifest is not JSON");

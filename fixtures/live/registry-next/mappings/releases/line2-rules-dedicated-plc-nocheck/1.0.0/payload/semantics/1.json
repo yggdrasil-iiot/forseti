@@ -1,0 +1,36 @@
+{
+  "kind": "semantic-definition",
+  "schemaVersion": "2.12.0",
+  "id": "tool-model",
+  "version": "1.0.0",
+  "members": [
+    {
+      "memberId": "torque",
+      "name": "Torque",
+      "semanticId": "urn:bifrost:sem:Tool/Torque",
+      "description": "Tightening torque",
+      "valueType": "Double",
+      "unit": {
+        "status": "known",
+        "code": "N.m"
+      },
+      "role": "measurement",
+      "range": {
+        "low": "0",
+        "high": "100"
+      }
+    },
+    {
+      "memberId": "running",
+      "name": "Running",
+      "semanticId": "urn:bifrost:sem:Tool/Running",
+      "description": "Tool is working",
+      "valueType": "Boolean",
+      "unit": {
+        "status": "not-applicable"
+      },
+      "role": "status",
+      "range": null
+    }
+  ]
+}

@@ -85,7 +85,7 @@ class DrivePlanTest {
         assertEquals(List.of(new DrivePlan.Arrival(sc.visit("S1-V1"))), enter.events());
 
         DrivePlan.Snapshot run = snapshotOf(stepAt(steps, 65000), T1);
-        double torque = Telemetry.torque(20261109, T1, 65, new BigDecimal("10.0"), new BigDecimal("45.0")).doubleValue();
+        double torque = Telemetry.torque(20261109, T1, 65000 / sc.scanMs(), new BigDecimal("10.0"), new BigDecimal("45.0")).doubleValue();
         assertEquals(List.of(torque, true, "UNIT0000000000001", "S1-V1", true), new ArrayList<>(run.values().values()));
         assertNull(snapshotOf(stepAt(steps, 65000), T2), "an unchanged tool is not written");
         assertTrue(snapshotOf(stepAt(steps, 119000), T1).values().get("Running").equals(true), "the last measurement 1 s before leave");
@@ -145,7 +145,7 @@ class DrivePlanTest {
         Map<String, java.util.function.Consumer<ObjectNode>> cases = new LinkedHashMap<>();
         cases.put("overlap", n -> ((ObjectNode) n.withArray("visits").get(1)).put("enter", 100000));
         cases.put("is not a tool of", n -> ((ArrayNode) n.withArray("visits").get(4).get("tools")).add("nutrunner1"));
-        cases.put("multiple of scanMs", n -> ((ObjectNode) n.withArray("visits").get(0)).put("leave", 120500));
+        cases.put("multiple of scanMs", n -> ((ObjectNode) n.withArray("visits").get(0)).put("leave", 120100));
         cases.put("identity pattern", n -> ((ObjectNode) n.withArray("visits").get(0)).put("unit", "u1"));
         cases.put("field extra", n -> n.put("extra", 1));
         cases.put("has no device", n -> ((ObjectNode) n.withArray("visits").get(0)).put("station", "line3:station1"));
@@ -181,5 +181,27 @@ class DrivePlanTest {
         assertEquals("S1-V1", snapshotOf(enter, S1).values().get("VisitId"));
         assertEquals(true, snapshotOf(enter, S1).values().get("VisitPresent"));
         assertEquals("S1-V1", snapshotOf(enter, T2).values().get("VisitId"));
+    }
+
+    /** Injection 3 (spec 649): the committed bad-status scenario is the baseline with nutrunner1's Torque Bad over 30 s of S1-V1 (half
+     *  the visit, past {@code maxBadShare} 0.1); every other member stays Good and the visits are the baseline's. */
+    @Test
+    void theBadStatusScenarioIsTheBaselineWithHalfOfS1V1sTorqueBad() {
+        LiveEquipment.LiveStream s = LiveEquipmentTest.dedicated();
+        LiveScenario bad = LiveScenario.read(Json.read(BASELINE.resolveSibling("bad-status.json")), s), base = baseline(s);
+        assertEquals(base.visits(), bad.visits());
+        assertEquals(List.of(new LiveScenario.BadStatus(T1, "Torque", 2147483648L, 70000, 100000)), bad.badStatus());
+        LiveScenario.Visit v1 = bad.visit("S1-V1");
+        assertTrue(v1.enter() <= 70000 && 100000 <= v1.leave() && (100000 - 70000) * 10 > v1.leave() - v1.enter(), "Bad inside S1-V1, over 10 % of it");
+        LiveEquipment.Equipment t1 = s.device(T1);
+        for (long t = 0; t <= 660000; t += 1000) {
+            DrivePlan.Snapshot snap = DrivePlan.stateAt(bad, t1, t);
+            assertEquals(t >= 70000 && t < 100000 ? 2147483648L : 0L, snap.statuses().get("Torque"), "Torque at " + t);
+            assertEquals(0L, snap.statuses().get("Running"), "Running at " + t);
+            assertEquals(DrivePlan.stateAt(base, t1, t).values(), snap.values(), "values at " + t);
+        }
+        List<DrivePlan.Step> steps = DrivePlan.plan(bad, s);
+        assertEquals(2147483648L, snapshotOf(stepAt(steps, 70000), T1).statuses().get("Torque"));
+        assertEquals(0L, snapshotOf(stepAt(steps, 100000), T1).statuses().get("Torque"));
     }
 }

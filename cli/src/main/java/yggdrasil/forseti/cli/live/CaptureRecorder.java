@@ -46,7 +46,8 @@ import yggdrasil.forseti.core.input.InputParser;
  *  {@code ot.messages} partition has a record (spec 406); {@code start} itself is not a boundary. The boundaries are
  *  {@code start + k * batchMs} for k = 1, 2, ... below the last record, each moved back to the latest append time at or before it,
  *  and the last record. Every deadline {@code d} of station s adds the bracket of the builder's rule on the watermark of the harness
- *  ({@code W1 = max routed sourceTs - O - 1}, {@link ReplayRecording#NO_TELEMETRY} while s has received none,
+ *  ({@code W1 = max routed sourceTs - O - 1} over the devices that carry a member of the rule, {@link ReplayRecording#NO_TELEMETRY}
+ *  while s has received none,
  *  {@link ReplayRecording#timing}): {@code cutB} at the first append time where {@code W1(s) >= d}, {@code cutA} at the append time
  *  before it, so {@code W1_A(s) < d <= W1_B(s)} on consecutive cuts. A {@code cutA} at which s has no routed telemetry, or that lies
  *  before {@code start}, is refused.
@@ -92,6 +93,9 @@ public final class CaptureRecorder {
     }
 
     private record Rec(String topic, int partition, Raw raw, ReplayRecording.Timing timing) {}
+
+    /** The device of a timed {@code ot.messages} record (its timing has a station, so it parsed as a process message). */
+    private static String device(Rec r) { return Json.read(r.raw().value()).path("device").asText(); }
 
     public static Result record(Source src, String prefix, Inputs in, Path out, Path reportFile, Path deadLetterFile) {
         RoutingManifest routing = RoutingManifest.read(Json.read(in.routing()));
@@ -204,8 +208,9 @@ public final class CaptureRecorder {
         for (int i = 0; i < order.size(); i++) at.put(order.get(i), i);
         Map<String, long[]> w1At = new TreeMap<>();
         for (String s : stations) { long[] a = new long[order.size()]; Arrays.fill(a, ReplayRecording.NO_TELEMETRY); w1At.put(s, a); }
+        // as the harness: a message advances W1 only when its device carries a member of the rule
         for (int p : routing.subscribed(InputParser.MESSAGES)) for (Rec r : parts.get(InputParser.MESSAGES + "/" + p))
-            if (r.timing().station() != null) {
+            if (r.timing().station() != null && temporal.memberEquipment().contains(device(r))) {
                 long[] a = w1At.get(r.timing().station());
                 int i = at.get(r.raw().timestamp());
                 a[i] = Math.max(a[i], r.timing().maxTs() - temporal.outOfOrdernessMs() - 1);

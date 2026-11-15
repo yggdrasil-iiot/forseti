@@ -22,16 +22,16 @@ import yggdrasil.forseti.core.Json;
  *  puts every device on its own raw partition; {@code shared} puts exactly two stations on one partition no other device uses.
  *
  *  <p>{@code main(registry, outDir)} writes {@code dedicated.json} (stream {@code line2-dedicated}) and {@code shared.json} (stream
- *  {@code line2-shared}) in the routing format of {@code fixtures/recordings/smoke/routing.json}; each plc twin stream must place
+ *  {@code line2-shared}) in the routing format of {@code fixtures/recordings/smoke/routing.json}; each plc twin stream (and its nocheck twin) must place
  *  identically, and every routing must meet its rules, or nothing is written. */
 public final class Placement {
     public static final int PARTITIONS = 6;
     public static final List<String> RAW_TOPICS = List.of("ot.messages", "ot.sessions");
-    /** Fixture name -> {stream, its plc twin}. */
+    /** Fixture name -> {stream, its plc twin, the plc twin with crossCheck none}. */
     public static final Map<String, List<String>> FIXTURES = new LinkedHashMap<>();
     static {
-        FIXTURES.put("dedicated", List.of("line2-dedicated", "line2-dedicated-plc"));
-        FIXTURES.put("shared", List.of("line2-shared", "line2-shared-plc"));
+        FIXTURES.put("dedicated", List.of("line2-dedicated", "line2-dedicated-plc", "line2-dedicated-plc-nocheck"));
+        FIXTURES.put("shared", List.of("line2-shared", "line2-shared-plc", "line2-shared-plc-nocheck"));
     }
 
     /** The station the plan starves in both fixtures ("Placement configuration": the same station is starved in both): in

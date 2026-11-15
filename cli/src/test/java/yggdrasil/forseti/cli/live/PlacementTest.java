@@ -209,11 +209,13 @@ class PlacementTest {
         assertEquals(Json.text(step3, "occupancySchemaSha256"), Json.text(lock, "occupancySchemaSha256"));
         assertEquals(Json.text(step3, "incidentSchemaSha256"), Json.text(lock, "incidentSchemaSha256"));
         assertEquals(sha(Files.readAllBytes(Path.of("..", "schemas", "occupancy-1.0.0.schema.json"))), Json.text(lock, "occupancySchemaSha256"));
-        for (String[] f : new String[][] {{"upstream", "216"}, {"definitions", "4"}, {"registry", "242"}}) {
+        for (String[] f : new String[][] {{"upstream", "216"}, {"definitions", "4"}, {"registry", "382"}, {"registryNext", "476"}}) {
             Map<String, String> want = pinned(lock, f[0]);
             assertEquals(Integer.parseInt(f[1]), want.size(), f[0] + " entries");
-            assertEquals(want, inventory(LIVE.resolve(f[0])), f[0] + " bytes vs lock.json");
+            assertEquals(want, inventory(LIVE.resolve(f[0].equals("registryNext") ? "registry-next" : f[0])), f[0] + " bytes vs lock.json");
         }
+        assertEquals(Map.of("path", "trusted-keys.jsonl", "sha256", sha(Files.readAllBytes(LIVE.resolve("trusted-keys.jsonl")))), pinned(lock, "trustedKeys"),
+            "trusted keys vs lock.json");
     }
 
     @Test void theDefinitionsAreBifrostsPublishedPairs() throws Exception {

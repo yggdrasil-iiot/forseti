@@ -19,7 +19,7 @@ import yggdrasil.forseti.core.Json;
  *  forseti-loop topics    --kafka host:9092 [--prefix run-1.] [--client-id forseti-loop-admin]
  *  forseti-loop preflight --kafka host:9092 [--prefix run-1.] --registry fixtures/live/registry --definitions fixtures/live/definitions
  *                         --stream line2-dedicated --routing fixtures/live/routing/dedicated.json --pins pins.json
- *                         --period-ms 1000 --scan-ms 1000 --opcua opc.tcp://localhost:48400
+ *                         --muninn-period-ms 500 --scan-ms 250 --opcua opc.tcp://localhost:48400
  *                         --edge edge-s1=line2:station1 ... (one per routed device)
  *                         [--bridge-client-id forseti-bridge] [--driver-client-id forseti-driver]
  *  forseti-loop drive     --kafka host:9092 [--prefix run-1.] --registry ... --definitions ... --stream line2-dedicated
@@ -30,7 +30,7 @@ import yggdrasil.forseti.core.Json;
  *                         --routing fixtures/live/routing/dedicated.json --scenario fixtures/live-scenarios/baseline.json
  *                         --drive-log drive.jsonl --out build/run-1/recording [--name baseline] [--batch-ms 60000]
  *                         [--report <out>.capture-report.json] [--dead-letter <out>.dead-letter.jsonl]
- *                         [--client-id forseti-recorder] [--timeout-ms 60000]
+ *                         [--client-id forseti-recorder] [--timeout-ms 60000] [--injection kind=spec ...]
  *  forseti-loop deployment --registry ... --definitions ... --stream line2-dedicated --routing fixtures/live/routing/dedicated.json
  *                         --pins-out pins.json
  *  forseti-loop stack-check --lock live/stack-lock.json [--compose live/docker-compose.yml] [--jar name=file ...]
@@ -41,11 +41,12 @@ import yggdrasil.forseti.core.Json;
  *  exits 1 naming every difference.
  *  {@code record} runs after the drive, once the publishers have stopped and the bridge has drained: it reads the run's input topics
  *  at their end offsets and writes the recording, the capture report and the dead-letter side file (exit 1 when the capture is
- *  refused).
+ *  refused); each {@code --injection} is one of the run's injection options ({@link LiveInjections}), declared in the manifest.
  *  {@code topics} creates the run's five topics and checks them as preflight does; {@code preflight} prints every problem and exits 1
  *  if there is one, 0 when clean; {@code drive} runs a live scenario and writes its drive log. A usage error exits 2. An edge's device
- *  is a full path or a path below the site ({@code line2:station1}); {@code --period-ms} is Muninn's {@code --session} period
- *  ({@code PERIOD_MS}) and {@code --scan-ms} the sim's {@code bifrost.sim.scanMs}, both as the run starts them. {@code preflight} and
+ *  is a full path or a path below the site ({@code line2:station1}); {@code --muninn-period-ms} is Muninn's {@code --session} period
+ *  and {@code --scan-ms} the sim's {@code bifrost.sim.scanMs}, both as the run starts them (the scenario's {@code muninnPeriodMs} and
+ *  {@code scanMs}), checked against the rule's {@code expectedPeriodMs} ({@link Preflight#periodProblem}). {@code preflight} and
  *  {@code drive} also take {@code [--deployment fixtures/live/deployment.json]}, the device -> definition binding, by default the file
  *  next to {@code --definitions}. */
 public final class LoopMain {
@@ -70,7 +71,7 @@ public final class LoopMain {
                 try (TopicAdmin admin = new KafkaTopicAdmin(req(a, "kafka"), opt(a, "client-id", "forseti-loop-admin"))) { return topics(admin, plan, out); }
             }
             case "preflight" -> {
-                allowed(a, "kafka", "prefix", "registry", "definitions", "deployment", "stream", "routing", "pins", "period-ms", "scan-ms", "opcua", "edge",
+                allowed(a, "kafka", "prefix", "registry", "definitions", "deployment", "stream", "routing", "pins", "muninn-period-ms", "scan-ms", "opcua", "edge",
                     "bridge-client-id", "driver-client-id");
                 Config c = config(a);
                 try (TopicAdmin admin = new KafkaTopicAdmin(req(a, "kafka"), c.driverClientId + "-preflight");
@@ -84,8 +85,8 @@ public final class LoopMain {
                 Path registry = Path.of(req(a, "registry")), definitions = Path.of(req(a, "definitions"));
                 LiveEquipment.LiveStream stream = LiveEquipment.read(registry, definitions, deployment(a, definitions), req(a, "stream"));
                 LiveScenario scenario = LiveScenario.read(Json.read(Path.of(req(a, "scenario"))), stream);
-                if (scenario.scanMs() != stream.expectedPeriodMs())
-                    throw new Usage("scenario scanMs " + scenario.scanMs() + " is not the rule's expectedPeriodMs " + stream.expectedPeriodMs());
+                String periods = Preflight.periodProblem(scenario.muninnPeriodMs(), scenario.scanMs(), stream.expectedPeriodMs());
+                if (periods != null) throw new Usage("scenario " + scenario.name() + ": " + periods);
                 RoutingManifest routing = RoutingManifest.read(Json.read(Path.of(req(a, "routing"))));
                 List<DrivePlan.Step> steps = DrivePlan.plan(scenario, stream);
                 String clientId = opt(a, "driver-client-id", "forseti-driver");
@@ -106,11 +107,11 @@ public final class LoopMain {
             }
             case "record" -> {
                 allowed(a, "kafka", "prefix", "registry", "definitions", "deployment", "stream", "routing", "scenario", "drive-log", "out", "name", "batch-ms",
-                    "report", "dead-letter", "client-id", "timeout-ms");
+                    "report", "dead-letter", "client-id", "timeout-ms", "injection");
                 Path definitions = Path.of(req(a, "definitions")), out1 = Path.of(req(a, "out"));
                 CaptureRecorder.Inputs in = LiveCapture.inputs(Path.of(req(a, "registry")), definitions, deployment(a, definitions), req(a, "stream"),
                     Path.of(req(a, "routing")), Path.of(req(a, "scenario")), Path.of(req(a, "drive-log")), a.containsKey("name") ? req(a, "name") : null,
-                    number(a, "batch-ms", CaptureRecorder.DEFAULT_BATCH_MS));
+                    number(a, "batch-ms", CaptureRecorder.DEFAULT_BATCH_MS), a.getOrDefault("injection", List.of()));
                 try (KafkaCaptureSource src = new KafkaCaptureSource(KafkaCaptureSource.kafka(req(a, "kafka"), opt(a, "client-id", "forseti-recorder")), number(a, "timeout-ms", 60_000))) {
                     return record(src, opt(a, "prefix", ""), in, out1, a.containsKey("report") ? Path.of(req(a, "report")) : CaptureRecorder.besides(out1, CaptureRecorder.REPORT_SUFFIX),
                         a.containsKey("dead-letter") ? Path.of(req(a, "dead-letter")) : CaptureRecorder.besides(out1, CaptureRecorder.DEAD_LETTER_SUFFIX), out);
@@ -192,7 +193,7 @@ public final class LoopMain {
     }
 
     /** The configuration of a preflight. */
-    record Config(Path registry, Path definitions, Path deployment, String stream, Path routing, Path pins, long periodMs, long scanMs, String prefix,
+    record Config(Path registry, Path definitions, Path deployment, String stream, Path routing, Path pins, long muninnPeriodMs, long scanMs, String prefix,
                   String bridgeClientId, String driverClientId, List<String[]> edges) {}
 
     static Config config(Map<String, List<String>> a) {
@@ -203,7 +204,7 @@ public final class LoopMain {
             edges.add(new String[] {e.substring(0, eq), e.substring(eq + 1)});
         }
         return new Config(Path.of(req(a, "registry")), Path.of(req(a, "definitions")), deployment(a, Path.of(req(a, "definitions"))), req(a, "stream"), Path.of(req(a, "routing")), Path.of(req(a, "pins")),
-            number(a, "period-ms", -1), number(a, "scan-ms", -1), opt(a, "prefix", ""), opt(a, "bridge-client-id", "forseti-bridge"),
+            number(a, "muninn-period-ms", -1), number(a, "scan-ms", -1), opt(a, "prefix", ""), opt(a, "bridge-client-id", "forseti-bridge"),
             opt(a, "driver-client-id", "forseti-driver"), edges);
     }
 
@@ -232,7 +233,7 @@ public final class LoopMain {
         JsonNode p = readOrNull(c.pins());
         if (p != null && p.isObject()) p.fields().forEachRemaining(e -> pins.put(e.getKey(), e.getValue().asText()));
         return new Preflight.Facts(stream, kind, routing, recomputed, recomputeError, c.bridgeClientId(), c.driverClientId(), edges,
-            c.periodMs(), c.scanMs(), plan, observed, present, pins);
+            c.muninnPeriodMs(), c.scanMs(), plan, observed, present, pins);
     }
 
     private static String siteOf(LiveEquipment.LiveStream s) {
@@ -249,7 +250,7 @@ public final class LoopMain {
         try { return Json.read(p); } catch (RuntimeException e) { return null; }
     }
 
-    private static final Set<String> REPEATABLE = Set.of("edge", "jar", "image");
+    private static final Set<String> REPEATABLE = Set.of("edge", "jar", "image", "injection");
 
     static Map<String, List<String>> options(String[] args) {
         Map<String, List<String>> m = new TreeMap<>();

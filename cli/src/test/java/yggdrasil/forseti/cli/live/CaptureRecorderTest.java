@@ -428,4 +428,22 @@ class CaptureRecorderTest {
         assertEquals("birthless", d.path("headers").path("forseti-reason").asText());
         assertEquals(1, Json.read(CaptureRecorder.besides(out, CaptureRecorder.REPORT_SUFFIX)).path("counts").path("ot.dead-letter").asLong());
     }
+
+    /** The recorder plans its deadline brackets on the harness's W1, which only the telemetry of equipment carrying a rule member
+     *  advances: the live plc-stamped rule names station1 and nutrunner1 but not nutrunner2, which is routed all the same (a live
+     *  capture once placed a settlement bracket on a nutrunner2 sample that moved no W1, and its ground truth did not hold). */
+    @Test
+    void theW1TheRecorderPlansOnCountsOnlyEquipmentThatCarriesARuleMember() {
+        Path live = FIXTURES.resolve("live").resolve("registry");
+        String site = "site-071:line2:";
+        for (String placement : List.of("dedicated", "shared")) {
+            ObjectNode oj = Json.object().put("stream", "line2-" + placement).put("releaseId", "line2-rules-" + placement).put("version", "1.0.0")
+                .put("attributionRuleId", "line2-attribution").put("attributionRuleVersion", "1.0.0");
+            ObjectNode plc = oj.deepCopy().put("stream", "line2-" + placement + "-plc").put("releaseId", "line2-rules-" + placement + "-plc");
+            String s = placement.equals("dedicated") ? site : "site-019:line2:";
+            assertEquals(Set.of(s + "station1", s + "station1:nutrunner1", s + "station1:nutrunner2", s + "station2", s + "station3"),
+                CaptureTruth.temporal(live, oj).memberEquipment(), placement);
+            assertEquals(Set.of(s + "station1", s + "station1:nutrunner1"), CaptureTruth.temporal(live, plc).memberEquipment(), placement + " plc");
+        }
+    }
 }

@@ -14,7 +14,8 @@ import yggdrasil.forseti.core.Json;
  *  {
  *    "liveScenarioVersion": 1,
  *    "name": "baseline",
- *    "scanMs": 1000,                       // must equal the sim's bifrost.sim.scanMs; every time below is a multiple of it
+ *    "scanMs": 250,                        // the sim's bifrost.sim.scanMs (S); every time below is a multiple of it
+ *    "muninnPeriodMs": 500,                // Muninn's --session period (M); M + S + Preflight.JITTER_MARGIN_MS <= expectedPeriodMs
  *    "seed": 20261109,                     // Telemetry.torque seed
  *    "occupancy": {"emit": true, "source": "mes-line2"},
  *    "toolActivity": {"startAfterEnter": 5000, "endBeforeLeave": 1000, "torque": {"min": 10.0, "max": 45.0}},
@@ -41,7 +42,7 @@ import yggdrasil.forseti.core.Json;
  *  revision's times are the sim source timestamps the drive observes: {@code detectedAt} at revision 1's {@code at},
  *  {@code revisionEventTime} at each revision's own {@code at}; {@code suspectFrom} and {@code suspectTo} name a visit's enter or leave,
  *  {@code "detected"} (the detection time) or, for {@code suspectTo}, null (open). Unknown fields are refused. */
-public record LiveScenario(String name, long scanMs, long seed, boolean emitOccupancy, String occupancySource, ToolActivity toolActivity,
+public record LiveScenario(String name, long scanMs, long muninnPeriodMs, long seed, boolean emitOccupancy, String occupancySource, ToolActivity toolActivity,
                            List<Visit> visits, List<BadStatus> badStatus, List<Correction> corrections, List<Incident> incidents) {
 
     public record ToolActivity(long startAfterEnter, long endBeforeLeave, BigDecimal min, BigDecimal max) {}
@@ -60,7 +61,7 @@ public record LiveScenario(String name, long scanMs, long seed, boolean emitOccu
     public record Revision(long revision, long at, String status, Anchor suspectFrom, Anchor suspectTo) {}
     public record Incident(String incidentId, String equipment, String station, String kind, String evidenceRef, String source, List<Revision> revisions) {}
 
-    private static final Set<String> TOP = Set.of("liveScenarioVersion", "name", "scanMs", "seed", "occupancy", "toolActivity", "visits", "badStatus", "corrections", "incidents");
+    private static final Set<String> TOP = Set.of("liveScenarioVersion", "name", "scanMs", "muninnPeriodMs", "seed", "occupancy", "toolActivity", "visits", "badStatus", "corrections", "incidents");
 
     /** Reads and resolves a scenario against the stream it drives; refuses anything the drive could not carry out exactly. */
     public static LiveScenario read(JsonNode s, LiveEquipment.LiveStream stream) {
@@ -68,6 +69,7 @@ public record LiveScenario(String name, long scanMs, long seed, boolean emitOccu
         if (Json.safeLong(s.get("liveScenarioVersion"), "liveScenarioVersion", 1, 1) != 1) throw refuse("liveScenarioVersion");
         String name = Json.text(s, "name");
         long scanMs = Json.safeLong(s.get("scanMs"), "scanMs", 1, 86_400_000);
+        long muninnPeriodMs = Json.safeLong(s.get("muninnPeriodMs"), "muninnPeriodMs", 1, 86_400_000);
         long seed = Json.safeLong(s.get("seed"), "seed", Json.NON_NEGATIVE);
         JsonNode occ = s.path("occupancy");
         fields(occ, Set.of("emit", "source"), "occupancy");
@@ -168,7 +170,7 @@ public record LiveScenario(String name, long scanMs, long seed, boolean emitOccu
             if (revs.isEmpty()) throw refuse("incident " + id + " has no revisions");
             incidents.add(new Incident(id, eq, stream.device(eq).station(), kind, Json.text(i, "evidenceRef"), Json.text(i, "source"), List.copyOf(revs)));
         }
-        return new LiveScenario(name, scanMs, seed, occ.path("emit").booleanValue(), occSource, tool, List.copyOf(visits), List.copyOf(bad),
+        return new LiveScenario(name, scanMs, muninnPeriodMs, seed, occ.path("emit").booleanValue(), occSource, tool, List.copyOf(visits), List.copyOf(bad),
             List.copyOf(corrections), List.copyOf(incidents));
     }
 

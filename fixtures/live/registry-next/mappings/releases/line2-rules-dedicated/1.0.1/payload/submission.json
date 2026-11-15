@@ -1,0 +1,80 @@
+{
+  "kind": "mapping-submission",
+  "schemaVersion": "2.9.0",
+  "id": "attribution-dedicated-fixture",
+  "streamId": "line2-dedicated",
+  "version": "1.0.1",
+  "workspaceSha256": "a5da5a845ec35d997b0b69baa04a1c4caa5b0a20e769146a2eaa646b0c6a996f",
+  "proposalSha256": "a5da5a845ec35d997b0b69baa04a1c4caa5b0a20e769146a2eaa646b0c6a996f",
+  "baseRelease": {
+    "id": "line2-rules-dedicated",
+    "sha256": "ceac77f9fc45d6e2647f4cf0ca98928b4af427af8b59c03d1687882f04bcc607",
+    "version": "1.0.0"
+  },
+  "proposedBy": "proposer",
+  "execution": "excluded",
+  "context": {
+    "equipment": [
+      {
+        "id": "site-071",
+        "label": "Placement site 071 (dedicated)"
+      },
+      {
+        "id": "line2",
+        "label": "Line 2"
+      },
+      {
+        "id": "station1",
+        "label": "Station 1"
+      },
+      {
+        "id": "station2",
+        "label": "Station 2"
+      },
+      {
+        "id": "nutrunner1",
+        "label": "Nutrunner 1"
+      },
+      {
+        "id": "nutrunner2",
+        "label": "Nutrunner 2"
+      },
+      {
+        "id": "station3",
+        "label": "Station 3"
+      }
+    ],
+    "connections": [
+      {
+        "id": "sim-opcua-station1",
+        "label": "Bifrost OPC-UA sim",
+        "equipmentInstanceId": "station1",
+        "accessProfileRef": "s7-1500-opcua-v1"
+      },
+      {
+        "id": "sim-opcua-station2",
+        "label": "Bifrost OPC-UA sim",
+        "equipmentInstanceId": "station2",
+        "accessProfileRef": "s7-1500-opcua-v1"
+      },
+      {
+        "id": "sim-opcua-nutrunner1",
+        "label": "Bifrost OPC-UA sim",
+        "equipmentInstanceId": "nutrunner1",
+        "accessProfileRef": "s7-1500-opcua-v1"
+      },
+      {
+        "id": "sim-opcua-nutrunner2",
+        "label": "Bifrost OPC-UA sim",
+        "equipmentInstanceId": "nutrunner2",
+        "accessProfileRef": "s7-1500-opcua-v1"
+      },
+      {
+        "id": "sim-opcua-station3",
+        "label": "Bifrost OPC-UA sim",
+        "equipmentInstanceId": "station3",
+        "accessProfileRef": "s7-1500-opcua-v1"
+      }
+    ]
+  }
+}

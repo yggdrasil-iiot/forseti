@@ -62,7 +62,7 @@ class LiveDeploymentTest {
         assertEquals(0, code);
         List<String> lines = b.toString(StandardCharsets.UTF_8).lines().toList();
         assertEquals("tail-ms\t751000", lines.get(0));
-        assertEquals("period-ms\t1000", lines.get(1));
+        assertEquals("rule-period-ms\t1000", lines.get(1));
         assertEquals(7, lines.size());
         assertEquals("edge\tline2-station1\tsite-071:line2:station1\tstation-model\t1.0.0\turn:bifrost:opcua:sim\tLine2/Station1\tstation1", lines.get(2));
         JsonNode p = Json.read(pins);
