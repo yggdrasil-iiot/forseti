@@ -1,0 +1,334 @@
+{
+  "indexVersion": 1,
+  "w1Form": "min-over-partitions",
+  "placements": {
+    "shared": {
+      "site": "site-019",
+      "stream": "line2-shared",
+      "release": "line2-rules-shared",
+      "plcStream": "line2-shared-plc",
+      "plcRelease": "line2-rules-shared-plc"
+    },
+    "dedicated": {
+      "site": "site-071",
+      "stream": "line2-dedicated",
+      "release": "line2-rules-dedicated",
+      "plcStream": "line2-dedicated-plc",
+      "plcRelease": "line2-rules-dedicated-plc"
+    }
+  },
+  "registry": "fixtures/live/registry",
+  "trustedKeys": "fixtures/live/trusted-keys.jsonl",
+  "scenarios": [
+    {
+      "name": "baseline",
+      "placement": "shared",
+      "file": "scenarios/shared/baseline.json",
+      "lock": "scenarios/shared/baseline.lock.json",
+      "source": "fixtures/scenarios/baseline.json",
+      "kind": "semantic",
+      "synthetic": false
+    },
+    {
+      "name": "held-back-10min",
+      "placement": "shared",
+      "file": "scenarios/shared/held-back-10min.json",
+      "lock": "scenarios/shared/held-back-10min.lock.json",
+      "source": "fixtures/scenarios/held-back-10min.json",
+      "kind": "semantic",
+      "synthetic": false
+    },
+    {
+      "name": "redelivery",
+      "placement": "shared",
+      "file": "scenarios/shared/redelivery.json",
+      "lock": "scenarios/shared/redelivery.lock.json",
+      "source": "fixtures/scenarios/redelivery.json",
+      "kind": "semantic",
+      "synthetic": false
+    },
+    {
+      "name": "overlap",
+      "placement": "shared",
+      "file": "scenarios/shared/overlap.json",
+      "lock": "scenarios/shared/overlap.lock.json",
+      "source": "fixtures/scenarios/overlap.json",
+      "kind": "semantic",
+      "synthetic": false
+    },
+    {
+      "name": "bad-quality",
+      "placement": "shared",
+      "file": "scenarios/shared/bad-quality.json",
+      "lock": "scenarios/shared/bad-quality.lock.json",
+      "source": "fixtures/scenarios/bad-quality.json",
+      "kind": "semantic",
+      "synthetic": false
+    },
+    {
+      "name": "clock-plus-30",
+      "placement": "shared",
+      "file": "scenarios/shared/clock-plus-30.json",
+      "lock": "scenarios/shared/clock-plus-30.lock.json",
+      "source": "fixtures/scenarios/clock-plus-30.json",
+      "kind": "semantic",
+      "synthetic": false
+    },
+    {
+      "name": "clock-plus-90",
+      "placement": "shared",
+      "file": "scenarios/shared/clock-plus-90.json",
+      "lock": "scenarios/shared/clock-plus-90.lock.json",
+      "source": "fixtures/scenarios/clock-plus-90.json",
+      "kind": "semantic",
+      "synthetic": false
+    },
+    {
+      "name": "corrections",
+      "placement": "shared",
+      "file": "scenarios/shared/corrections.json",
+      "lock": "scenarios/shared/corrections.lock.json",
+      "source": "fixtures/scenarios/corrections.json",
+      "kind": "semantic",
+      "synthetic": false
+    },
+    {
+      "name": "corrections-10b-before",
+      "placement": "shared",
+      "file": "scenarios/shared/corrections-10b-before.json",
+      "lock": "scenarios/shared/corrections-10b-before.lock.json",
+      "source": "fixtures/scenarios/corrections-10b-before.json",
+      "kind": "semantic",
+      "synthetic": false
+    },
+    {
+      "name": "corrections-10b-after",
+      "placement": "shared",
+      "file": "scenarios/shared/corrections-10b-after.json",
+      "lock": "scenarios/shared/corrections-10b-after.lock.json",
+      "source": "fixtures/scenarios/corrections-10b-after.json",
+      "kind": "semantic",
+      "synthetic": false
+    },
+    {
+      "name": "corrections-10c",
+      "placement": "shared",
+      "file": "scenarios/shared/corrections-10c.json",
+      "lock": "scenarios/shared/corrections-10c.lock.json",
+      "source": "fixtures/scenarios/corrections-10c.json",
+      "kind": "semantic",
+      "synthetic": false
+    },
+    {
+      "name": "session",
+      "placement": "shared",
+      "file": "scenarios/shared/session.json",
+      "lock": "scenarios/shared/session.lock.json",
+      "source": "fixtures/scenarios/session.json",
+      "kind": "semantic",
+      "synthetic": false
+    },
+    {
+      "name": "quiet-occupancy",
+      "placement": "shared",
+      "file": "scenarios/shared/quiet-occupancy.json",
+      "lock": "scenarios/shared/quiet-occupancy.lock.json",
+      "source": "fixtures/scenarios/quiet-occupancy.json",
+      "kind": "semantic",
+      "synthetic": false
+    },
+    {
+      "name": "quiet-occupancy-control",
+      "placement": "shared",
+      "file": "scenarios/shared/quiet-occupancy-control.json",
+      "lock": "scenarios/shared/quiet-occupancy-control.lock.json",
+      "source": "fixtures/scenarios/quiet-occupancy-control.json",
+      "kind": "semantic",
+      "synthetic": false
+    },
+    {
+      "name": "plc-stamped",
+      "placement": "shared",
+      "file": "scenarios/shared/plc-stamped.json",
+      "lock": "scenarios/shared/plc-stamped.lock.json",
+      "source": "fixtures/scenarios/plc-stamped.json",
+      "kind": "semantic",
+      "synthetic": false
+    },
+    {
+      "name": "stage2",
+      "placement": "shared",
+      "file": "scenarios/shared/stage2.json",
+      "lock": "scenarios/shared/stage2.lock.json",
+      "source": "fixtures/scenarios/stage2.json",
+      "kind": "semantic",
+      "synthetic": false
+    },
+    {
+      "name": "stage2-early",
+      "placement": "shared",
+      "file": "scenarios/shared/stage2-early.json",
+      "lock": "scenarios/shared/stage2-early.lock.json",
+      "source": "fixtures/scenarios/stage2-early.json",
+      "kind": "semantic",
+      "synthetic": false
+    },
+    {
+      "name": "cascade",
+      "placement": "shared",
+      "file": "scenarios/shared/cascade.json",
+      "lock": "scenarios/shared/cascade.lock.json",
+      "source": "fixtures/scenarios/cascade.json",
+      "kind": "semantic",
+      "synthetic": false
+    },
+    {
+      "name": "horizon-no-departure",
+      "placement": "shared",
+      "file": "scenarios/shared/horizon-no-departure.json",
+      "lock": "scenarios/shared/horizon-no-departure.lock.json",
+      "source": "fixtures/scenarios/horizon-no-departure.json",
+      "kind": "semantic",
+      "synthetic": true
+    },
+    {
+      "name": "horizon-reopened",
+      "placement": "shared",
+      "file": "scenarios/shared/horizon-reopened.json",
+      "lock": "scenarios/shared/horizon-reopened.lock.json",
+      "source": "fixtures/scenarios/horizon-reopened.json",
+      "kind": "semantic",
+      "synthetic": true
+    },
+    {
+      "name": "horizon-correction-beyond",
+      "placement": "shared",
+      "file": "scenarios/shared/horizon-correction-beyond.json",
+      "lock": "scenarios/shared/horizon-correction-beyond.lock.json",
+      "source": "fixtures/scenarios/horizon-correction-beyond.json",
+      "kind": "semantic",
+      "synthetic": true
+    },
+    {
+      "name": "horizon-planned-late",
+      "placement": "shared",
+      "file": "scenarios/shared/horizon-planned-late.json",
+      "lock": "scenarios/shared/horizon-planned-late.lock.json",
+      "source": "fixtures/scenarios/horizon-planned-late.json",
+      "kind": "semantic",
+      "synthetic": true
+    },
+    {
+      "name": "plc-horizon-no-end",
+      "placement": "shared",
+      "file": "scenarios/shared/plc-horizon-no-end.json",
+      "lock": "scenarios/shared/plc-horizon-no-end.lock.json",
+      "source": "fixtures/scenarios/plc-horizon-no-end.json",
+      "kind": "semantic",
+      "synthetic": true
+    },
+    {
+      "name": "smoke",
+      "placement": "shared",
+      "file": "scenarios/shared/smoke.json",
+      "lock": "scenarios/shared/smoke.lock.json",
+      "source": "fixtures/scenarios/smoke.json",
+      "kind": "semantic",
+      "synthetic": false
+    },
+    {
+      "name": "smoke-plc",
+      "placement": "shared",
+      "file": "scenarios/shared/smoke-plc.json",
+      "lock": "scenarios/shared/smoke-plc.lock.json",
+      "source": "fixtures/scenarios/smoke-plc.json",
+      "kind": "semantic",
+      "synthetic": false
+    },
+    {
+      "name": "smoke-incident",
+      "placement": "shared",
+      "file": "scenarios/shared/smoke-incident.json",
+      "lock": "scenarios/shared/smoke-incident.lock.json",
+      "source": "fixtures/scenarios/smoke-incident.json",
+      "kind": "semantic",
+      "synthetic": false
+    },
+    {
+      "name": "starved-station3",
+      "placement": "shared",
+      "file": "scenarios/shared/starved-station3.json",
+      "lock": "scenarios/shared/starved-station3.lock.json",
+      "source": "fixtures/scenarios/baseline.json",
+      "kind": "injection-24",
+      "synthetic": false
+    },
+    {
+      "name": "baseline-batch-x2",
+      "placement": "shared",
+      "file": "scenarios/shared/baseline-batch-x2.json",
+      "lock": "scenarios/shared/baseline-batch-x2.lock.json",
+      "source": "fixtures/scenarios/baseline.json",
+      "kind": "speed-change",
+      "synthetic": false
+    },
+    {
+      "name": "baseline-batch-half",
+      "placement": "shared",
+      "file": "scenarios/shared/baseline-batch-half.json",
+      "lock": "scenarios/shared/baseline-batch-half.lock.json",
+      "source": "fixtures/scenarios/baseline.json",
+      "kind": "speed-change",
+      "synthetic": false
+    },
+    {
+      "name": "baseline",
+      "placement": "dedicated",
+      "file": "scenarios/dedicated/baseline.json",
+      "lock": "scenarios/dedicated/baseline.lock.json",
+      "source": "fixtures/scenarios/baseline.json",
+      "kind": "semantic",
+      "synthetic": false
+    },
+    {
+      "name": "smoke",
+      "placement": "dedicated",
+      "file": "scenarios/dedicated/smoke.json",
+      "lock": "scenarios/dedicated/smoke.lock.json",
+      "source": "fixtures/scenarios/smoke.json",
+      "kind": "semantic",
+      "synthetic": false
+    },
+    {
+      "name": "starved-station3",
+      "placement": "dedicated",
+      "file": "scenarios/dedicated/starved-station3.json",
+      "lock": "scenarios/dedicated/starved-station3.lock.json",
+      "source": "fixtures/scenarios/baseline.json",
+      "kind": "injection-24",
+      "synthetic": false
+    },
+    {
+      "name": "baseline-batch-x2",
+      "placement": "dedicated",
+      "file": "scenarios/dedicated/baseline-batch-x2.json",
+      "lock": "scenarios/dedicated/baseline-batch-x2.lock.json",
+      "source": "fixtures/scenarios/baseline.json",
+      "kind": "speed-change",
+      "synthetic": false
+    },
+    {
+      "name": "baseline-batch-half",
+      "placement": "dedicated",
+      "file": "scenarios/dedicated/baseline-batch-half.json",
+      "lock": "scenarios/dedicated/baseline-batch-half.lock.json",
+      "source": "fixtures/scenarios/baseline.json",
+      "kind": "speed-change",
+      "synthetic": false
+    }
+  ],
+  "notRebuilt": {
+    "plc-nocheck": "its rule is the plc-stamped rule with crossCheck none (line2-rules-plc-nocheck 1.0.0); no release of that rule is published for the governed placements",
+    "plc-held-back": "its rule is the plc-stamped rule with crossCheck none (line2-rules-plc-nocheck 1.0.0); no release of that rule is published for the governed placements"
+  }
+}

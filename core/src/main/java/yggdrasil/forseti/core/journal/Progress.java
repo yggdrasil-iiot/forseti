@@ -17,12 +17,12 @@ public sealed interface Progress extends JournalFold.Entry permits Progress.Stag
 
     record Origin(String topic, int partition) {}
     record BarrierRef(long cutId, Origin origin, long throughOffset) {
-        ObjectNode toJson() {
+        public ObjectNode toJson() {
             ObjectNode n = Json.putSafe(Json.object(), "cutId", cutId);
             n.putObject("origin").put("topic", origin.topic()).put("partition", origin.partition());
             return Json.putSafe(n, "throughOffset", throughOffset);
         }
-        static BarrierRef fromJson(JsonNode n) {
+        public static BarrierRef fromJson(JsonNode n) {
             JsonNode o = JournalFold.required(n, "origin");
             return new BarrierRef(Json.safeLong(n.get("cutId"), "barrierRefs.cutId", Json.NON_NEGATIVE),
                 new Origin(Json.text(o, "topic"), JournalFold.partition(o.get("partition"), "barrierRefs.origin.partition")),

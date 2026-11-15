@@ -21,7 +21,15 @@ import yggdrasil.forseti.core.canon.Canonical;
  *  registry and its {@code expected.json} keeps the minimal scope (the scenario's facts), so the committed smoke recordings stay byte for
  *  byte what they are. Every other scenario reads its rule from the registry's release payload ({@code --registry}) and gets the full
  *  ground truth. Times in a scenario are milliseconds from {@code T0}; everything written is epoch milliseconds. Nothing reads a clock,
- *  a random source, the environment or a platform path, so a rebuild writes the same bytes on every OS. */
+ *  a random source, the environment or a platform path, so a rebuild writes the same bytes on every OS.
+ *
+ *  <p>{@code w1Form} (spec 622; absent: {@code per-station}) is the W1 form the brackets are planned and verified with: the step-3
+ *  harness's per-station form or Flink's {@code min-over-partitions} ({@link W1Form}); the manifest and the lock name it when the scenario
+ *  does, so a step-3 recording stays byte for byte what it is. Every scenario with a registry rule carries a tail of at least
+ *  {@code allowedLatenessMs + outOfOrdernessMs + expectedPeriodMs} on every device and every subscribed raw partition (spec 628). The
+ *  {@code starve-station} overlay is injection 24 (spec 681): the station's telemetry is withheld and delivered as a late burst on
+ *  resume, the batches written meanwhile declare it {@code starved} in {@code idleInputs}, and the deadlines the starvation keeps from
+ *  being bracketed are listed in {@code manifest.starvation.heldDeadlines} instead of {@code deadlines}. */
 public final class ScenarioBuilder {
     public static final String GENERATOR = "forseti recordings build 0.1.0";
     public static final int PARTITIONS = 6;
@@ -83,6 +91,10 @@ public final class ScenarioBuilder {
         String edge = Json.text(s, "edge");
         if (s.has("synthetic") && !s.get("synthetic").isBoolean()) throw refuse("synthetic is a boolean");
         boolean synthetic = s.path("synthetic").asBoolean(false);
+        // The W1 form the brackets are planned with (spec 622): per-station (the step-3 harness, absent) or min-over-partitions (Flink).
+        if (s.has("w1Form") && !s.get("w1Form").isTextual()) throw refuse("w1Form is a string");
+        W1Form w1Form;
+        try { w1Form = W1Form.of(s.has("w1Form") ? s.get("w1Form").textValue() : null); } catch (IllegalArgumentException e) { throw refuse(e.getMessage()); }
 
         // The rule's parameters: inline (Task 8 smoke form, minimal ground truth) or from the registry (full ground truth).
         boolean full = !s.has("temporal");
@@ -139,6 +151,10 @@ public final class ScenarioBuilder {
             for (Overlays.Redeliver r : ov.redelivers) if ("ot.messages".equals(r.topic())) throw refuse("redeliver of a message in a synthetic scenario");
         }
         if (!ov.plannedLate.isEmpty() && (!synthetic || !mode.equals("occupancy-join"))) throw refuse("planned-late-samples needs a synthetic occupancy-join scenario");
+        Overlays.Starve starve = ov.starves.isEmpty() ? null : ov.starves.get(0);
+        if (starve != null && (synthetic || !full)) throw refuse("starve-station needs a hand-made scenario that reads its rule from the registry");
+        if (full && tailMs < rule.lateness() + rule.ooo() + rule.period())   // spec 628
+            throw refuse("tailMs " + tailMs + " is shorter than allowedLatenessMs + outOfOrdernessMs + expectedPeriodMs = " + (rule.lateness() + rule.ooo() + rule.period()));
         List<Visit> visits = new ArrayList<>();
         int vi = 0;
         List<JsonNode> visitNodes = new ArrayList<>();
@@ -332,10 +348,23 @@ public final class ScenarioBuilder {
             long until = Json.safeLong(s.path("denseBatches").get("until"), "denseBatches.until", Json.NON_NEGATIVE);
             for (long b = from + dense; b <= Math.min(until, end); b += dense) bounds.add(b);
         }
+        if (starve != null) {   // the batch written last before the starvation (its scans all on time) and the batch carrying the late burst
+            if (starve.from() - scanMs > from && starve.from() - scanMs <= end) bounds.add(starve.from() - scanMs);
+            if (starve.resumeAt() <= end) bounds.add(starve.resumeAt());
+        }
+        // min-over-partitions: the largest sourceTs on a raw partition is its scan time plus the largest shift of a device on it, and W1
+        // follows the partition whose largest shift is the smallest
+        long minPartitionShift = Long.MAX_VALUE;
+        for (int p : routing.subscribed("ot.messages")) {
+            long ps = Long.MIN_VALUE;
+            for (String dev : devices.keySet()) if (routing.rawPartitionOf(dev) == p) ps = Math.max(ps, ov.shiftOf(dev));
+            minPartitionShift = Math.min(minPartitionShift, ps);
+        }
         Map<Due, long[]> bracket = new LinkedHashMap<>();
         for (Due d : dues) {
             long shift = Long.MIN_VALUE;
-            for (String dev : devices.keySet()) if (stationOf.get(dev).equals(d.station())) shift = Math.max(shift, ov.shiftOf(dev));
+            if (w1Form == W1Form.MIN_OVER_PARTITIONS) shift = minPartitionShift;
+            else for (String dev : devices.keySet()) if (stationOf.get(dev).equals(d.station())) shift = Math.max(shift, ov.shiftOf(dev));
             long limit = d.at() + oooMs - (shift == Long.MIN_VALUE ? 0 : shift);
             if (limit < from) throw refuse("deadline " + d.ref() + " before the telemetry starts");
             long a = from + Math.floorDiv(Math.min(limit, end) - from, scanMs) * scanMs;
@@ -378,6 +407,7 @@ public final class ScenarioBuilder {
         Map<String, Integer> duplicates = new TreeMap<>();
         Map<String, Long> seqTime = new HashMap<>();
         Map<String, Long> maxTs = new TreeMap<>();
+        long starvedFrozenAt = Long.MIN_VALUE;
         long samples = 0;
         for (long i = 0; i < scans; i++) {
             long t = from + i * scanMs;
@@ -474,6 +504,7 @@ public final class ScenarioBuilder {
                 if (syn != null) syn.message(routing.rawPartitionOf(dev), dev, batch, v, routed.contains(dev) ? stationOf.get(dev) : null);
                 else items.add(new Item("ot.messages", routing.rawPartitionOf(dev), dev, batch, v));
                 maxTs.merge(dev, sourceTs, Math::max);
+                if (starve != null && starve.devices().contains(dev) && t < starve.from()) starvedFrozenAt = Math.max(starvedFrozenAt, sourceTs);
                 for (Object[] f : memberFacts)
                     gtSamples.add(new GroundTruth.Sample(edge, ss.birth, ss.bdSeq, sq, t0 + t + publishDelay, dev, (String) f[0], (Long) f[1], (Long) f[2], (JsonNode) f[3], batch, !mixed,
                         lastStamp == null ? "" : lastStamp.visitId(), lastStamp == null ? "" : lastStamp.unit(), stamp != null));
@@ -547,15 +578,47 @@ public final class ScenarioBuilder {
         if (!firstPartitions.equals(new TreeSet<>(routing.subscribed("ot.messages"))))
             throw refuse("the first batch carries no telemetry on some subscribed raw partition (spec 406): " + firstPartitions);
 
-        // W1 per station after every batch (the reference harness's formula): largest delivered sourceTs routed to it - O - 1.
+        // The largest delivered sourceTs of every subscribed raw partition through every batch (every message, routed or not).
+        Map<Integer, long[]> partitionMax = new TreeMap<>();
+        for (int p : routing.subscribed("ot.messages")) {
+            long[] a = new long[boundaries.size()];
+            if (syn != null) for (int k = 0; k < a.length; k++) a[k] = syn.maxSourceTsThrough(p, k);
+            else {
+                Arrays.fill(a, Long.MIN_VALUE);
+                for (Item it : items) if (it.topic().equals("ot.messages") && it.partition() == p)
+                    for (JsonNode m : it.value().path("members")) a[it.batch()] = Math.max(a[it.batch()], m.get("sourceTs").longValue());
+                for (int k = 1; k < a.length; k++) a[k] = Math.max(a[k], a[k - 1]);
+            }
+            partitionMax.put(p, a);
+            // the tail on every subscribed partition (spec 628), as on every device above
+            if (a[a.length - 1] - (t0 + lastBusiness) < tailMs) throw refuse("the tail of raw partition " + p + " is shorter than tailMs " + tailMs);
+        }
+
+        // W1 per station after every batch, in the scenario's form. per-station (the reference harness's formula): largest delivered
+        // sourceTs routed to it - O - 1; min-over-partitions (Flink): the smallest of the partitions' largest delivered sourceTs - O - 1,
+        // the same at every station.
         Map<String, long[]> w1 = new TreeMap<>();
         for (String st : stations) { long[] a = new long[boundaries.size()]; Arrays.fill(a, Long.MIN_VALUE); w1.put(st, a); }
-        if (syn != null) syn.contributeW1(w1);
-        for (Item it : items) if (it.topic().equals("ot.messages") && routed.contains(it.key())) {
-            long[] a = w1.get(stationOf.get(it.key()));
-            for (JsonNode m : it.value().path("members")) a[it.batch()] = Math.max(a[it.batch()], m.get("sourceTs").longValue() - oooMs - 1);
+        if (w1Form == W1Form.PER_STATION) {
+            if (syn != null) syn.contributeW1(w1);
+            for (Item it : items) if (it.topic().equals("ot.messages") && routed.contains(it.key())) {
+                long[] a = w1.get(stationOf.get(it.key()));
+                for (JsonNode m : it.value().path("members")) a[it.batch()] = Math.max(a[it.batch()], m.get("sourceTs").longValue() - oooMs - 1);
+            }
+            for (long[] a : w1.values()) for (int k = 1; k < a.length; k++) a[k] = Math.max(a[k], a[k - 1]);
+        } else for (int k = 0; k < boundaries.size(); k++) {
+            long m = Long.MAX_VALUE;
+            for (long[] a : partitionMax.values()) m = Math.min(m, a[k]);
+            long w = m == Long.MIN_VALUE ? Long.MIN_VALUE : m - oooMs - 1;
+            for (long[] a : w1.values()) a[k] = w;
         }
-        for (long[] a : w1.values()) for (int k = 1; k < a.length; k++) a[k] = Math.max(a[k], a[k - 1]);
+        // A starved station completes no cut while it is starved (its barriers are incomplete): its W1 stays at its last completed cut
+        // until the cut carrying the late burst.
+        if (starve != null) {
+            long[] a = w1.get(starve.station());
+            for (int k = 0; k < boundaries.size(); k++)
+                if (starved(starve, boundaries.get(k))) a[k] = k == 0 ? Long.MIN_VALUE : a[k - 1];
+        }
 
         // Batches and deadlines.
         ArrayNode batches = Json.JSON.createArrayNode();
@@ -574,9 +637,16 @@ public final class ScenarioBuilder {
                     Json.putSafe(tp, Integer.toString(p), last);
                 }
             }
-            b.putArray("idleInputs");
+            ArrayNode idle = b.putArray("idleInputs");
+            if (starve != null && starved(starve, boundaries.get(k)))
+                for (int p : starvedPartitions(starve, routing)) {
+                    ObjectNode x = idle.addObject().put("station", starve.station()).put("topic", "ot.messages").put("partition", p);
+                    Json.putSafe(x, "frozenAt", starvedFrozenAt);
+                    x.put("kind", "starved").put("evidenceRef", STARVE_EVIDENCE);
+                }
         }
         ArrayNode deadlines = Json.JSON.createArrayNode();
+        ArrayNode heldDeadlines = Json.JSON.createArrayNode();
         List<GroundTruth.Deadline> gtDeadlines = new ArrayList<>();
         long settleTarget = Long.MIN_VALUE;
         for (Map.Entry<Due, long[]> e : bracket.entrySet()) {
@@ -584,6 +654,14 @@ public final class ScenarioBuilder {
             int a = boundaries.indexOf(e.getValue()[0]), b = boundaries.indexOf(e.getValue()[1]);
             long at = t0 + d.at();
             long w1a = w1.get(d.station())[a], w1b = w1.get(d.station())[b];
+            if ((!(w1a < at && at <= w1b) || b != a + 1) && starve != null && e.getValue()[0] >= starve.from() - scanMs && e.getValue()[0] < starve.resumeAt()) {
+                // injection 24: a deadline the starvation keeps W1 from bracketing (the starved station's own; with the min-over-partitions
+                // form on a raw partition the starved station does not share, every station's) is held, never bracketed
+                ObjectNode o = heldDeadlines.addObject().put("kind", d.kind()).put("ref", d.ref()).put("station", d.station());
+                Json.putSafe(o, "at", at);
+                settleTarget = Math.max(settleTarget, at);
+                continue;
+            }
             if (!(w1a < at && at <= w1b) || b != a + 1)
                 throw refuse("the overlays leave deadline " + d.kind() + " " + d.ref() + " (" + at + ") without bracketing cuts: W1 " + w1a + ", " + w1b);
             ObjectNode o = deadlines.addObject();
@@ -674,6 +752,9 @@ public final class ScenarioBuilder {
         Json.putSafe(manifest, "settleTargetW", settleTarget);
         Json.putSafe(manifest, "tailMs", tailMs);
         if (s.has("subscribed")) manifest.set("subscribe", s.get("subscribed").deepCopy());
+        if (s.has("w1Form")) manifest.put("w1Form", w1Form.wire);
+        ObjectNode starvation = starve == null ? null : starvation(starve, routing, t0, starvedFrozenAt, heldDeadlines);
+        if (starvation != null) manifest.set("starvation", starvation);
         TreeMap<String, String> fileDigests = new TreeMap<>();
         files.forEach((f, b) -> fileDigests.put(f, Canonical.digestOf(b)));
         if (syn != null) fileDigests.putAll(syn.close());
@@ -707,11 +788,43 @@ public final class ScenarioBuilder {
             for (Overlays.HoldBack h : ov.holdBacks) { ObjectNode o = hb.addObject(); Json.putSafe(o, "from", h.from()); Json.putSafe(o, "to", h.to()); Json.putSafe(o, "delayMs", h.delayMs()); }
         }
         if (s.has("subscribed")) lock.set("subscribe", s.get("subscribed").deepCopy());
+        if (s.has("w1Form")) lock.put("w1Form", w1Form.wire);
+        if (starvation != null) lock.set("starvation", starvation.deepCopy());
         ObjectNode lf = lock.putObject("files");
         TreeMap<String, String> all = new TreeMap<>(fileDigests);
         all.put(Recording.MANIFEST, Canonical.digestOf(manifestBytes));
         all.forEach(lf::put);
         return new Built(messages, samples, sessions, occCount, incidents, boundaries.size(), lock);
+    }
+
+    /** The {@code evidenceRef} of injection 24's {@code idleInputs}. */
+    static final String STARVE_EVIDENCE = "injection-24";
+
+    /** Whether the batch ending at scan {@code boundary} is written while the station's telemetry is withheld (it withholds the scans
+     *  of the station from {@code from} on; the batch before ends at the scan before {@code from}). */
+    static boolean starved(Overlays.Starve starve, long boundary) { return boundary >= starve.from() && boundary < starve.resumeAt(); }
+
+    /** The raw telemetry partitions that carry a device of the starved station. */
+    static TreeSet<Integer> starvedPartitions(Overlays.Starve starve, RoutingManifest routing) {
+        TreeSet<Integer> ps = new TreeSet<>();
+        for (String d : starve.devices()) ps.add(routing.rawPartitionOf(d));
+        return ps;
+    }
+
+    /** {@code manifest.starvation}: the starved station, its devices and raw partitions, the window, the station's last delivered
+     *  {@code sourceTs} before it ({@code frozenAt}) and the deadlines the starvation keeps from being bracketed. */
+    private static ObjectNode starvation(Overlays.Starve starve, RoutingManifest routing, long t0, long frozenAt, ArrayNode held) {
+        ObjectNode n = Json.object().put("station", starve.station());
+        ArrayNode ds = n.putArray("devices");
+        starve.devices().forEach(ds::add);
+        ArrayNode ps = n.putArray("partitions");
+        starvedPartitions(starve, routing).forEach(ps::add);
+        Json.putSafe(n, "from", t0 + starve.from());
+        Json.putSafe(n, "resumeAt", t0 + starve.resumeAt());
+        Json.putSafe(n, "frozenAt", frozenAt);
+        n.put("evidenceRef", STARVE_EVIDENCE);
+        n.set("heldDeadlines", held);
+        return n;
     }
 
     /** Whether the run consumes {@code topic/partition}: every partition unless the scenario's {@code subscribed} names the topic. */

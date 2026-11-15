@@ -481,8 +481,8 @@ public final class Stage1 {
         for (VisitClaim v : VisitClaim.derive(s, controls.firstWins())) s.admissionVisits.put(v.source + "\u0000" + v.arrivalEventId, new Stage1State.Admitted(v.leave, v.onlineExpiresAt(H, L)));
         Progress.InitEvidence init = s.pendingInit;
         s.pendingInit = null;
-        out.add(new Progress.Stage1(s.generation, s.station, cc.cutId(), 0, w, admissionBefore, refs, 0, null, List.of(), init));
-        out.add(new Progress.Ledger(s.generation, 1, s.partition, s.station, cc.cutId(), 0, refs, List.of(), 0, null, init));
+        out.add(new Progress.Stage1(s.generation, s.station, cc.cutId(), 0, w, admissionBefore, refs, cc.restartEpoch(), cc.recoveryRef(), cc.mergedCutIds(), init));
+        out.add(new Progress.Ledger(s.generation, 1, s.partition, s.station, cc.cutId(), 0, refs, cc.mergedCutIds(), cc.restartEpoch(), cc.recoveryRef(), init));
         s.admissionW = w;
         s.progressCount++;
     }
