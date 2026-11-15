@@ -214,9 +214,12 @@ def _run(a, out, err, acks) -> int:
     subscribed = dict(a.subscribe) if a.subscribe else None
     every = cuts.deliveries(rec, history, subscribed=subscribed)
     by_index = {c.index: c for c in history.cuts}
+    completed = cuts.completed_cuts(history, rs.stations)
 
     def admission(index, station):
-        return by_index[index].per_station[station].admission_w
+        # the admissionW of the progress that closed the delivery's cut at that station: its own, or that of the later cut that merged it
+        closing = completed.closing(station, index)
+        return None if closing is None else by_index[closing].per_station[station].admission_w
 
     o = Path(a.out)
     o.mkdir(parents=True, exist_ok=True)
@@ -225,8 +228,12 @@ def _run(a, out, err, acks) -> int:
     rows_last = 0
     try:
         for c in evaluated:
-            ds = [d for d in every if d.cut <= c.index]
-            w1 = {s: v.w1 for s, v in c.per_station.items()}
+            # a station the cut log does not list at this cut (a starved station, or one whose cut was merged into a later progress) is
+            # frozen at the last cut it completed: the inputs routed to it after that cut and its later W1 are not yet applied
+            frozen = completed.frozen(c.index)
+            ds = [d for d in every if d.cut <= c.index and not completed.held(d, frozen, rs.stations)]
+            listed = {s: completed.last(s, c.index) for s in rs.stations}
+            w1 = {s: by_index[i].per_station[s].w1 for s, i in listed.items() if i is not None}
             r1 = s1.evaluate([d for d in ds if d.topic != "quality.incidents"], admission, w1)
             tables = {}
             if a.command in ("stage1", "all"):
@@ -234,7 +241,8 @@ def _run(a, out, err, acks) -> int:
                 tables[stage1.SAMPLES] = r1.samples
                 tables["dispositions-stage1"] = stage1.dispositions_by_identity(r1.dispositions)
             if a.command in ("stage2", "all"):
-                w2 = {s: (v.w2 if v.w2 is not None else v.w1) for s, v in c.per_station.items()}
+                w2 = {s: (by_index[i].per_station[s].w2 if by_index[i].per_station[s].w2 is not None else by_index[i].per_station[s].w1)
+                      for s, i in listed.items() if i is not None}
                 assessments, sets, d2 = s2.evaluate(r1.work_records, r1.samples, ds, w2)
                 tables[stage2.AFFECTED] = assessments
                 tables[stage2.AFFECTED_SETS] = sets

@@ -12,6 +12,8 @@ import yggdrasil.forseti.cli.generation.FileGenerationStore;
 import yggdrasil.forseti.cli.recording.Recording;
 import yggdrasil.forseti.cli.recording.ReplayRecording;
 import yggdrasil.forseti.cli.recording.RoutingManifest;
+import yggdrasil.forseti.cli.recording.W1Form;
+import yggdrasil.forseti.core.cut.CutAssembler;
 import yggdrasil.forseti.core.Json;
 import yggdrasil.forseti.core.NegativeControls;
 import yggdrasil.forseti.core.canon.Canonical;
@@ -48,7 +50,13 @@ import yggdrasil.forseti.core.stage2.Stage2;
  *  {@code (throughOffsets[k-1], throughOffsets[k]]} of every subscribed stage-1 partition, closes the cut at every station and the reject
  *  collector, then runs stage 2 of the cut at every station on what stage 1 wrote to its partition (rows, deletes, the two progress
  *  records) and the incidents of {@code (throughOffsets[k-1], throughOffsets[k]]} routed to it, closes the stage-2 reject collector, and
- *  writes the journals, the cut log and the run record. */
+ *  writes the journals, the cut log and the run record.
+ *
+ *  <p>Every progress writer (each {@link StationTask}, both reject collectors) runs the core's {@code CutAssembler}: the harness plays the
+ *  router, delivering each writer's routed inputs and then the barriers of its required set (a station the batch's {@code idleInputs}
+ *  declare {@code starved} receives none; the reject collectors receive every one), and a writer closes a cut when its assembler says so,
+ *  merging the cuts it skipped. {@code w1Form} is the W1 the stations report: {@link W1Form#PER_STATION} (step 3) or
+ *  {@link W1Form#MIN_OVER_PARTITIONS} (Flink's, through a {@link PartitionClock}); {@code cuts.json} names it when it is not the default. */
 public final class ReferenceEngine {
     private ReferenceEngine() {}
 
@@ -74,8 +82,10 @@ public final class ReferenceEngine {
      *  materialize the recording's retained input in event-time order into {@code <out>/replay-recording/} and run on that, compared with
      *  {@code replayLock} first when given. A replay with {@code shuffle} is refused. */
     public record Options(Path recording, Path registry, Path state, long generation, Path out, long seed, boolean shuffle,
-                          Map<String, List<Integer>> subscribe, String artifactSha256, String command, String replay, Path replayLock, String negativeControl) {
+                          Map<String, List<Integer>> subscribe, String artifactSha256, String command, String replay, Path replayLock, String negativeControl,
+                          W1Form w1Form) {
         public Options {
+            if (w1Form == null) w1Form = W1Form.PER_STATION;
             if (negativeControl != null && !Controls.harness(negativeControl))
                 throw new IllegalArgumentException("--negative-control " + negativeControl + ": not a control the harness applies (" + Controls.NAMES + "; "
                     + Controls.LENIENT_ORACLE + " is the oracle's)");
@@ -87,11 +97,15 @@ public final class ReferenceEngine {
         }
         public Options(Path recording, Path registry, Path state, long generation, Path out, long seed, boolean shuffle,
                        Map<String, List<Integer>> subscribe, String artifactSha256, String command) {
-            this(recording, registry, state, generation, out, seed, shuffle, subscribe, artifactSha256, command, null, null, null);
+            this(recording, registry, state, generation, out, seed, shuffle, subscribe, artifactSha256, command, null, null, null, null);
+        }
+        public Options(Path recording, Path registry, Path state, long generation, Path out, long seed, boolean shuffle,
+                       Map<String, List<Integer>> subscribe, String artifactSha256, String command, String replay, Path replayLock, String negativeControl) {
+            this(recording, registry, state, generation, out, seed, shuffle, subscribe, artifactSha256, command, replay, replayLock, negativeControl, null);
         }
         public Options(Path recording, Path registry, Path state, long generation, Path out, long seed, boolean shuffle,
                        Map<String, List<Integer>> subscribe, String artifactSha256, String command, String replay, Path replayLock) {
-            this(recording, registry, state, generation, out, seed, shuffle, subscribe, artifactSha256, command, replay, replayLock, null);
+            this(recording, registry, state, generation, out, seed, shuffle, subscribe, artifactSha256, command, replay, replayLock, null, null);
         }
     }
 
@@ -197,9 +211,11 @@ public final class ReferenceEngine {
         Pins stamped = controls.wrongRulesPin() ? wrongRulesPin(pins, mappings, head) : pins;
         Stage1 stage1 = new Stage1(rules, controls, causeKind);
         Routing router = new Routing(rules);
+        PartitionClock clock = o.w1Form() == W1Form.MIN_OVER_PARTITIONS ? new PartitionClock(subscribed.get(InputParser.MESSAGES)) : null;
         Map<String, StationTask> tasks = new LinkedHashMap<>();
-        for (String s : stations) tasks.put(s, new StationTask(stage1, g.generation(), s, routing.partitionOf(s), oo, stamped, initEvidence(o.state(), g.generation())));
-        RejectCollector rejects = new RejectCollector(g.generation(), initEvidence(o.state(), g.generation()));
+        for (String s : stations) tasks.put(s, new StationTask(stage1, g.generation(), s, routing.partitionOf(s), oo, stamped, initEvidence(o.state(), g.generation()),
+            stationRequired(s, routing, subscribed), o.w1Form(), clock));
+        RejectCollector rejects = new RejectCollector(g.generation(), initEvidence(o.state(), g.generation()), required(subscribed, null));
         // stage 2: one writer per station sharing one progress tracker, the stage-2 reject collector (partition 6, no initEvidence)
         Stage2 stage2 = new Stage2(rules, controls, causeKind);
         ProgressTracker tracker = new ProgressTracker();
@@ -207,10 +223,12 @@ public final class ReferenceEngine {
         rec.evidenceRange().forEach((d, r) -> evidenceRanges.put(d, new SetCoverage.EvidenceRange(r.from(), r.to())));
         Map<String, Stage2Task> tasks2 = new LinkedHashMap<>();
         for (String s : stations) tasks2.put(s, new Stage2Task(stage2, tracker, g.generation(), s, routing.partitionOf(s), stamped, evidenceRanges));
-        RejectCollector rejects2 = new RejectCollector(g.generation(), 2, null);
         List<Integer> incidentPartitions = routing.subscribed(InputParser.INCIDENTS);
         if (!incidentPartitions.equals(List.of(0, 1, 2, 3, 4, 5)))
             throw new IllegalArgumentException("malformed recording: " + InputParser.INCIDENTS + " partitions " + incidentPartitions + " are not the six of spec 487");
+        List<Progress.Origin> incidentOrigins = new ArrayList<>();
+        for (int p : incidentPartitions) incidentOrigins.add(new Progress.Origin(InputParser.INCIDENTS, p));
+        RejectCollector rejects2 = new RejectCollector(g.generation(), 2, null, incidentOrigins);
         Map<String, List<Integer>> subscribedAll = new LinkedHashMap<>(subscribed);
         subscribedAll.put(InputParser.INCIDENTS, List.copyOf(incidentPartitions));
         // T1: an incident whose (source, incidentId) passed the door before goes to the station of its first routed revision, so that a
@@ -225,7 +243,7 @@ public final class ReferenceEngine {
 
         // (3) the batches
         try { Files.createDirectories(o.out()); } catch (IOException e) { throw new UncheckedIOException(e); }
-        CutLog cutLog = new CutLog(g.generation(), routing.routingDigest());
+        CutLog cutLog = new CutLog(g.generation(), routing.routingDigest(), o.w1Form() == W1Form.PER_STATION ? null : o.w1Form().wire);
         Random random = new Random(o.seed());
         Map<String, Long> previous = new HashMap<>();
         Map<String, Map<Integer, CutLog.Range>> consumed = new TreeMap<>();
@@ -242,7 +260,9 @@ public final class ReferenceEngine {
                         Recording.Reader reader = readers.computeIfAbsent(k, x -> rec.reader(t, p));
                         for (long off = from; off <= through; off++) {
                             Recording.Line l = nextLine(reader, k, off);
-                            delivered.add(InputParser.read(new Inputs.Origin(t, p, off), l.record().key(), valueOf(l.bytes())));
+                            InputParser.Read read = InputParser.read(new Inputs.Origin(t, p, off), l.record().key(), valueOf(l.bytes()));
+                            if (clock != null && t.equals(InputParser.MESSAGES)) clock.delivered(read.record(), !read.rejected());
+                            delivered.add(read);
                         }
                         tr.put(p, new CutLog.Range(from, through + 1));
                         consumed.computeIfAbsent(t, x -> new TreeMap<>()).merge(p, new CutLog.Range(from, through + 1),
@@ -286,19 +306,35 @@ public final class ReferenceEngine {
                     tasks2.get(station).addIncident(r);
                 }
 
+                // the router's barrier fan-out: every required barrier of a station, except to a station the cut's idleInputs declare
+                // starved; the reject collectors receive every barrier
+                List<CutAssembler.Idle> idle = idleInputs(b);
+                Set<String> starved = new TreeSet<>();
+                for (CutAssembler.Idle x : idle) if (x.kind().equals(CutAssembler.STARVED)) starved.add(x.station());
+                for (String s : starved) if (!tasks.containsKey(s)) throw new IllegalArgumentException("malformed recording: cut " + cutId + " declares an undeclared station " + s + " starved");
                 Map<String, CutLog.StationCut> perStation = new LinkedHashMap<>();
                 for (StationTask task : tasks.values()) {
-                    StationTask.CutOutputs co = task.cut(cutId, stationBarriers(cutId, b, task, routing, subscribed));
-                    write(journals, co.outputs(), task.partition);
+                    if (!starved.contains(task.station)) for (Progress.Origin x : stationRequired(task.station, routing, subscribed)) task.barrier(barrier(cutId, b, x, idle));
                     Stage2Task t2 = tasks2.get(task.station);
-                    Stage2Task.CutOutputs c2 = t2.cut(cutId, co.outputs(), incidents);
+                    t2.incidentBarriers(cutId, incidents);
+                    Optional<StationTask.CutOutputs> closed = task.close();
+                    if (closed.isEmpty()) {
+                        if (!starved.contains(task.station)) throw new IllegalStateException("station " + task.station + ": cut " + cutId + " did not close");
+                        continue;
+                    }
+                    StationTask.CutOutputs co = closed.get();
+                    if (co.cutId() != cutId) throw new IllegalStateException("station " + task.station + ": closed cut " + co.cutId() + " at batch " + cutId);
+                    write(journals, co.outputs(), task.partition);
+                    Stage2Task.CutOutputs c2 = t2.cut(cutId, co.outputs());
                     write2(journals, c2.outputs(), t2.partition);
-                    perStation.put(task.station, new CutLog.StationCut(co.w1(), co.admissionW(), c2.w2(), task.onlineVisits()));
+                    perStation.put(task.station, new CutLog.StationCut(co.w1(), co.admissionW(), c2.w2(), co.mergedCutIds(), task.onlineVisits()));
                 }
-                for (Object x : rejects.cut(cutId, barriers(cutId, b, subscribed, null)))
+                for (Progress.Origin x : required(subscribed, null)) rejects.barrier(barrier(cutId, b, x, idle));
+                for (Object x : rejects.close())
                     if (x instanceof Disposition d) journals.disposition(d, RejectCollector.PARTITION);
                     else journals.progress(JournalFiles.DISPOSITIONS, (Progress) x, RejectCollector.PARTITION);
-                for (Object x : rejects2.cut(cutId, incidentBarriers(cutId, incidents)))
+                for (Progress.Origin x : incidentOrigins) rejects2.barrier(new CutAssembler.Barrier(cutId, x, incidents.get(x.partition()), 0, null, idle));
+                for (Object x : rejects2.close())
                     if (x instanceof Disposition d) journals.disposition(JournalFiles.DISPOSITIONS2, d, RejectCollector.PARTITION);
                     else journals.progress(JournalFiles.DISPOSITIONS2, (Progress) x, RejectCollector.PARTITION);
                 cutLog.cut(cutId, perStation, ranges, incidents);
@@ -344,35 +380,39 @@ public final class ReferenceEngine {
         }
     }
 
-    /** The stage-2 reject collector's required barriers: the six incident partitions. */
-    static List<JsonNode> incidentBarriers(long cutId, Map<Integer, Long> incidents) {
-        List<JsonNode> l = new ArrayList<>();
-        incidents.forEach((p, through) -> {
-            ObjectNode n = Json.putSafe(Json.object(), "cutId", cutId);
-            n.putObject("origin").put("topic", InputParser.INCIDENTS).put("partition", p);
-            l.add(Json.putSafe(n, "throughOffset", through));
-        });
+    /** A station's required barriers (spec 412, both forms of the harness): every subscribed raw telemetry partition, plus the session
+     *  partitions of its devices and its occupancy partition when subscribed (the routing manifest fixes both), in the order its
+     *  {@code barrierRefs} list them. */
+    static List<Progress.Origin> stationRequired(String station, RoutingManifest routing, Map<String, List<Integer>> subscribed) {
+        Set<Integer> sessions = new TreeSet<>();
+        for (String d : routing.devices()) if (routing.stationOf(d).equals(station)) sessions.add(routing.rawPartitionOf(d));
+        Map<String, Set<Integer>> keep = Map.of(InputParser.MESSAGES, new TreeSet<>(subscribed.get(InputParser.MESSAGES)),
+            InputParser.SESSIONS, sessions, InputParser.OCCUPANCY, Set.of(routing.partitionOf(station)));
+        return required(subscribed, keep);
+    }
+
+    /** Every subscribed stage-1 partition {@code keep} admits (all when null), by topic in input-topic order, then partition. */
+    static List<Progress.Origin> required(Map<String, List<Integer>> subscribed, Map<String, Set<Integer>> keep) {
+        List<Progress.Origin> l = new ArrayList<>();
+        for (String t : STAGE1_TOPICS) for (int p : subscribed.get(t)) {
+            if (keep != null && !keep.get(t).contains(p)) continue;
+            l.add(new Progress.Origin(t, p));
+        }
         return l;
     }
 
-    /** A station's required barriers: every subscribed raw telemetry partition, plus the session partitions of its devices and its
-     *  occupancy partition when subscribed (the routing manifest fixes both). */
-    static List<JsonNode> stationBarriers(long cutId, Recording.Batch b, StationTask task, RoutingManifest routing, Map<String, List<Integer>> subscribed) {
-        Set<Integer> sessions = new TreeSet<>();
-        for (String d : routing.devices()) if (routing.stationOf(d).equals(task.station)) sessions.add(routing.rawPartitionOf(d));
-        Map<String, Set<Integer>> keep = Map.of(InputParser.MESSAGES, new TreeSet<>(subscribed.get(InputParser.MESSAGES)),
-            InputParser.SESSIONS, sessions, InputParser.OCCUPANCY, Set.of(task.partition));
-        return barriers(cutId, b, subscribed, keep);
+    /** The barrier of cut {@code cutId} on {@code origin}: the batch's through-offset there, epoch 0 (the reference harness writes no
+     *  restart injection), the batch's idle inputs. */
+    static CutAssembler.Barrier barrier(long cutId, Recording.Batch b, Progress.Origin origin, List<CutAssembler.Idle> idle) {
+        return new CutAssembler.Barrier(cutId, origin, b.through(origin.topic(), origin.partition()), 0, null, idle);
     }
 
-    /** {@code {cutId, origin {topic, partition}, throughOffset}} for every subscribed stage-1 partition {@code keep} admits (all when null). */
-    static List<JsonNode> barriers(long cutId, Recording.Batch b, Map<String, List<Integer>> subscribed, Map<String, Set<Integer>> keep) {
-        List<JsonNode> l = new ArrayList<>();
-        for (String t : STAGE1_TOPICS) for (int p : subscribed.get(t)) {
-            if (keep != null && !keep.get(t).contains(p)) continue;
-            ObjectNode n = Json.putSafe(Json.object(), "cutId", cutId);
-            n.putObject("origin").put("topic", t).put("partition", p);
-            l.add(Json.putSafe(n, "throughOffset", b.through(t, p)));
+    /** The batch's {@code idleInputs[]}, read strictly. */
+    static List<CutAssembler.Idle> idleInputs(Recording.Batch b) {
+        List<CutAssembler.Idle> l = new ArrayList<>();
+        for (JsonNode x : b.idleInputs()) {
+            try { l.add(CutAssembler.Idle.fromJson(x)); }
+            catch (IllegalArgumentException e) { throw new IllegalArgumentException("malformed recording: idleInputs of cut " + b.cutId() + ": " + e.getMessage()); }
         }
         return l;
     }

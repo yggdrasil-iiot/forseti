@@ -9,12 +9,15 @@ import java.time.Clock;
 import java.util.*;
 import java.util.stream.Stream;
 import yggdrasil.forseti.cli.gate.CoreGate;
+import yggdrasil.forseti.cli.gate.EngineCheck;
+import yggdrasil.forseti.cli.recording.EngineScenarios;
 import yggdrasil.forseti.cli.generation.GenerationCli;
 import yggdrasil.forseti.cli.harness.ReferenceEngine;
 import yggdrasil.forseti.cli.live.CaptureLock;
 import yggdrasil.forseti.cli.recording.Recording;
 import yggdrasil.forseti.cli.recording.ReplayRecording;
 import yggdrasil.forseti.cli.recording.ScenarioBuilder;
+import yggdrasil.forseti.cli.recording.W1Form;
 import yggdrasil.forseti.core.Json;
 import yggdrasil.forseti.core.canon.Canonical;
 
@@ -55,6 +58,23 @@ public final class Main {
             catch (IllegalArgumentException e) { err.println(e.getMessage()); return usage(err); }
             return verifyCapture(Path.of(args[2]), Path.of(flags.required("lock")), flags.has("write-lock"), out, err);
         }
+        if (args[0].equals("recordings") && args[1].equals("engine-scenarios")) {
+            Args flags;
+            try { flags = Args.parse(args, 2, Set.of("check")).only(Set.of("fixtures", "out", "check")); flags.required("fixtures"); flags.required("out"); }
+            catch (IllegalArgumentException e) { err.println(e.getMessage()); return usage(err); }
+            return engineScenarios(Path.of(flags.required("fixtures")), Path.of(flags.required("out")), flags.has("check"), out, err);
+        }
+        if (args[0].equals("recordings") && args[1].equals("check-engine")) {
+            Args flags;
+            EngineCheck.Options o;
+            try {
+                flags = Args.parse(args, 2, Set.of()).only(Set.of("scenario", "registry", "trusted-keys", "python", "out", "w1-form"));
+                o = new EngineCheck.Options(Path.of(flags.required("scenario")), Path.of(flags.required("registry")), Path.of(flags.required("trusted-keys")),
+                    flags.required("python"), Path.of(flags.required("out")), flags.get("w1-form").map(W1Form::of).orElse(null), Path.of("").toAbsolutePath());
+            } catch (IllegalArgumentException e) { err.println(e.getMessage()); return usage(err); }
+            try { return EngineCheck.run(o, out, err); }
+            catch (IOException | InterruptedException | IllegalArgumentException | IllegalStateException | UncheckedIOException e) { err.println(e.getMessage()); return 2; }
+        }
         Args flags;
         try { flags = Args.parse(args, 2, Set.of("lock")); }
         catch (IllegalArgumentException e) { err.println(e.getMessage()); return usage(err); }
@@ -77,11 +97,14 @@ public final class Main {
         err.println("       forseti recordings verify --scenario <file> --out <dir> [--registry <dir>]");
         err.println("       forseti recordings replay --recording <dir> --out-of-orderness-ms <n> --out <dir> [--lock <file>]");
         err.println("       forseti recordings verify-capture <recording> --lock <capture lock> [--write-lock]");
+        err.println("       forseti recordings engine-scenarios --fixtures <dir> --out <engine-fixtures dir> [--check]");
+        err.println("       forseti recordings check-engine --scenario <file> --registry <dir> --trusted-keys <file> --python <interpreter> --out <dir>");
+        err.println("                   [--w1-form per-station|min-over-partitions]");
         err.println("       forseti gate --engine core [--out <dir>] [--python <interpreter>] [--negative-control <name>] [--seed <n>]");
         err.println("                    [--shard <name> | --aggregate <dir>] [--state <out>/state]");
         err.println("       forseti run --engine core --recording <dir> --registry <dir> --state <dir> --generation <n> --out <run dir>");
         err.println("                   [--seed <n>] [--shuffle | --replay event-time [--replay-lock <file>]] [--subscribe <topic>=<p,p>[;<topic>=<p,p>]]");
-        err.println("                   [--artifact-sha256 <hex>] [--negative-control <name>]");
+        err.println("                   [--artifact-sha256 <hex>] [--negative-control <name>] [--w1-form per-station|min-over-partitions]");
         err.println("       forseti generation new --state <dir> --mappings <dir> --trusted-keys <file> --stream <s> [--stream <s2>] --rule <id>@<version>");
         err.println("                   [--recording <dir>] [--definitions <file>]");
         err.println("       forseti generation retire --state <dir> --generation <n>");
@@ -97,7 +120,7 @@ public final class Main {
         ReferenceEngine.Options o;
         try {
             f.only(Set.of("engine", "recording", "registry", "state", "generation", "out", "seed", "shuffle", "subscribe", "artifact-sha256", "replay", "replay-lock",
-                "negative-control"));
+                "negative-control", "w1-form"));
             if (!"core".equals(f.required("engine"))) throw new IllegalArgumentException("--engine core is the only engine of this step");
             long generation = number(f.required("generation"), "--generation", 1);
             long seed = number(f.get("seed", Long.toString(ReferenceEngine.DEFAULT_SEED)), "--seed", 0);
@@ -105,7 +128,8 @@ public final class Main {
             if (artifact != null && !artifact.matches("[0-9a-f]{64}")) throw new IllegalArgumentException("--artifact-sha256 is 64 lowercase hex digits");
             o = new ReferenceEngine.Options(Path.of(f.required("recording")), Path.of(f.required("registry")), Path.of(f.required("state")), generation,
                 Path.of(f.required("out")), seed, f.has("shuffle"), subscribe(f.get("subscribe").orElse(null)), artifact, command,
-                f.get("replay").orElse(null), f.get("replay-lock").map(Path::of).orElse(null), f.get("negative-control").orElse(null));
+                f.get("replay").orElse(null), f.get("replay-lock").map(Path::of).orElse(null), f.get("negative-control").orElse(null),
+                W1Form.of(f.get("w1-form").orElse(null)));
         } catch (IllegalArgumentException e) { err.println(e.getMessage()); return usage(err); }
         try {
             GenerationCli.prepareRun(o.state(), o.generation(), o.recording());
@@ -177,6 +201,23 @@ public final class Main {
             return 0;
         } catch (IOException e) { err.println(e.getMessage()); return 2; }
         catch (IllegalArgumentException | IllegalStateException | UncheckedIOException e) { err.println(e.getMessage()); return 2; }
+    }
+
+    /** {@code recordings engine-scenarios}: the engine scenarios and their index derived from {@code <fixtures>/scenarios} and written
+     *  under {@code --out} ({@link EngineScenarios#write}), or with {@code --check} compared with the committed ones (exit 1 on a
+     *  difference). */
+    private static int engineScenarios(Path fixtures, Path dir, boolean check, PrintStream out, PrintStream err) {
+        try {
+            if (check) {
+                List<String> problems = EngineScenarios.check(fixtures.resolve("scenarios"), dir);
+                problems.forEach(err::println);
+                if (problems.isEmpty()) out.println("engine scenarios equal their derivation: " + EngineScenarios.derive(fixtures.resolve("scenarios")).size());
+                return problems.isEmpty() ? 0 : 1;
+            }
+            List<EngineScenarios.Derived> d = EngineScenarios.write(fixtures.resolve("scenarios"), dir);
+            out.println("engine scenarios written: " + d.size());
+            return 0;
+        } catch (IllegalArgumentException | IllegalStateException | UncheckedIOException e) { err.println(e.getMessage()); return 2; }
     }
 
     private static long number(String text, String flag, long min) {

@@ -257,3 +257,34 @@ def test_all_refuses_a_cut_log_that_differs_from_the_batches(tmp_path):
                           "--release", "line2-rules@1.0.0", "--rule", "line2-attribution@1.0.0", "--definitions", str(smoke / "manifest.json"),
                           "--out", str(tmp_path / "out")])
     assert code == 1 and "offsetRanges" in err
+
+
+def test_a_station_the_cut_log_does_not_list_is_frozen_until_the_cut_that_merges(tmp_path):
+    """Station 1 skips cuts 4 and 5 (absent from perStation) and cut 6 merges them: at cut 5 its rows are those of cut 3, the other
+    stations' those of cut 5; at cut 6 every table equals the run in which station 1 completed every cut."""
+    from forseti_oracle import recording as recmod
+    smoke = ROOT / "fixtures" / "recordings" / "smoke-incident"
+    rec = recmod.open_recording(smoke)
+    s1 = "synthetic-site:line2:station1"
+    full = _cut_log(rec, 8)
+    merged = json.loads(json.dumps(full))
+    for i in (3, 4):
+        del merged["cuts"][i]["perStation"][s1]
+    merged["cuts"][5]["perStation"][s1].update({"mergedCutIds": [4, 5], "admissionW": full["cuts"][2]["perStation"][s1]["W1"]})
+    tables = {}
+    for name, doc in (("full", full), ("merged", merged)):
+        (tmp_path / f"{name}.json").write_text(json.dumps(doc))
+        code, out, err = run(["all", "--recording", str(smoke), "--cuts", str(tmp_path / f"{name}.json"), "--mappings", str(REGISTRY),
+                              "--release", "line2-rules@1.0.0", "--rule", "line2-attribution@1.0.0", "--definitions", str(smoke / "manifest.json"),
+                              "--out", str(tmp_path / name)])
+        assert (code, err) == (0, ""), err
+        tables[name] = fold_cuts(tmp_path / name, list(range(1, 9)))
+
+    def of_s1(key: str) -> bool:
+        return s1 in key
+
+    f3, f5, m5 = tables["full"][3]["forseti.samples"], tables["full"][5]["forseti.samples"], tables["merged"][5]["forseti.samples"]
+    assert {k for k in f5 if of_s1(k)} != {k for k in f3 if of_s1(k)}, "station 1 receives samples in cuts 4 and 5"
+    assert {k: v for k, v in m5.items() if of_s1(k)} == {k: v for k, v in f3.items() if of_s1(k)}
+    assert {k: v for k, v in m5.items() if not of_s1(k)} == {k: v for k, v in f5.items() if not of_s1(k)}
+    assert tables["merged"][6] == tables["full"][6]
