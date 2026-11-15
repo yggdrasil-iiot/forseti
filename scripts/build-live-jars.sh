@@ -2,7 +2,7 @@
 # Builds the two upstream jars of the full loop from the commits live/stack-lock.json locks, and checks them against the lock:
 #   scripts/build-live-jars.sh <bifrost checkout> <muninn checkout> [<out dir, default build/live-jars>]
 # Each checkout must be at its locked commit with a clean tree (the script refuses otherwise; it never switches branches). The build is
-# reproducible: project.build.outputTimestamp is the commit's own time, so the same commit and JDK give the same jar bytes on every
+# reproducible: project.build.outputTimestamp is the commit's own time, so the same commit, JDK and Maven version (3.9.16) give the same jar bytes on every
 # host, and the lock can pin the jar's SHA-256. Extra Maven arguments (e.g. -Dmaven.repo.local=...) come from MVN_ARGS.
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
