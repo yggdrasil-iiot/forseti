@@ -11,6 +11,7 @@ import org.apache.flink.api.common.eventtime.WatermarkOutput;
 import org.apache.flink.api.common.eventtime.WatermarkStrategy;
 import org.apache.flink.api.common.typeinfo.Types;
 import org.apache.flink.configuration.Configuration;
+import org.apache.flink.configuration.RestOptions;
 import org.apache.flink.configuration.PipelineOptions;
 import org.apache.flink.configuration.RestartStrategyOptions;
 import org.apache.flink.runtime.jobgraph.JobGraph;
@@ -28,6 +29,8 @@ final class Spikes {
 
   static MiniCluster miniCluster(int slots) throws Exception {
     Configuration conf = new Configuration();
+    // any free port: the default 8081 may be taken by another process on the build host
+    conf.set(RestOptions.BIND_PORT, "0");
     MiniCluster mc = new MiniCluster(new MiniClusterConfiguration.Builder()
         .setConfiguration(conf).setNumTaskManagers(1).setNumSlotsPerTaskManager(slots).build());
     mc.start();
