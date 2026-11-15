@@ -1,0 +1,21 @@
+{
+  "kind": "target-instance",
+  "schemaVersion": "2.0.0",
+  "id": "station2",
+  "version": "1.0.0",
+  "equipmentInstanceId": "station2",
+  "label": "Station 2",
+  "semanticDefinitionRef": {
+    "id": "station-model",
+    "version": "1.0.0"
+  },
+  "evidenceRefs": [
+    {
+      "artifactId": "manual-station2-running",
+      "locator": {
+        "kind": "text-line",
+        "line": 1
+      }
+    }
+  ]
+}

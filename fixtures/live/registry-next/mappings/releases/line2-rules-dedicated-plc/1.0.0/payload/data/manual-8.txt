@@ -1,0 +1,2 @@
+Field label: station1-present
+Line2/Station1.VisitPresent, Boolean

@@ -1,0 +1,52 @@
+{
+  "kind": "mapping-set",
+  "schemaVersion": "2.12.0",
+  "id": "station2-mapping",
+  "version": "1.0.0",
+  "equipmentInstanceId": "station2",
+  "targetInstanceRef": {
+    "id": "station2",
+    "version": "1.0.0"
+  },
+  "mappings": [
+    {
+      "mappingId": "station2-running",
+      "valueRef": {
+        "kind": "source",
+        "sourceRef": {
+          "id": "station2-running",
+          "version": "1.0.0"
+        }
+      },
+      "memberPath": [
+        {
+          "kind": "member",
+          "memberId": "running"
+        }
+      ],
+      "transform": [],
+      "outputUnit": {
+        "status": "not-applicable"
+      },
+      "invalidValuePolicy": "bad-quality",
+      "evidenceRefs": [
+        {
+          "artifactId": "manual-station2-running",
+          "locator": {
+            "kind": "text-line",
+            "line": 1
+          }
+        }
+      ],
+      "temporalPolicy": {
+        "timestampBasis": "source",
+        "maxAgeMs": 5000,
+        "maxSkewMs": 0,
+        "uncertainInput": "reject",
+        "missingInput": "reject",
+        "badInput": "propagate",
+        "assembly": "latest"
+      }
+    }
+  ]
+}

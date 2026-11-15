@@ -20,6 +20,15 @@ by the same procedure, under fresh keys whose public halves go to fixtures/live/
                      manifest.json}, copied byte for byte (a Muninn registry directory)
   live/deployment.json: the definition each device runs (device path -> {templateRef, version}), see deployment();
                      --live --deployment-only rewrites it and its lock entry alone
+--live-next appends to the committed live registry instead of rebuilding it (step 6). It first checks that upstream,
+definitions and registry equal lock.json, then gives the same two principals a second fresh key each (the step-5 private
+keys are deleted; old and new public halves both stay authorized and trusted) and publishes, with the step-3 derivations:
+  live/registry:      + line2-rules-dedicated-plc-nocheck and line2-rules-shared-plc-nocheck 1.0.0 on streams
+                      line2-dedicated-plc-nocheck and line2-shared-plc-nocheck (nocheck() of the plc bundles), with their
+                      policy rules; the step-5 releases, heads, attestations, anchors and payloads stay byte-identical
+  live/registry-next: that registry, anchors included, plus line2-rules-dedicated and line2-rules-shared 1.0.1 on streams
+                      line2-dedicated and line2-shared (bump_rules(), base = the exact current head, head version 2)
+lock.json gains the registryNext inventory and the trustedKeys digest, and its registry section is rewritten.
 fixtures/live/lock.json pins the Tyr and Bifrost commits and the sha256 of every file under upstream, definitions and
 registry, and of deployment.json. The routing manifests in fixtures/live/routing are derived from the published registry by forseti's own
 placement code (cli live.Placement), not by this script.
@@ -60,6 +69,11 @@ def check_upstream(bundle: Path, stream: str, occupancy_sha: str, incident_sha: 
 
 def bump_rules(bundle: Path) -> None:
     a = bundle / "attribution-rules" / "0.json"; d = load(a); d["version"] = "1.0.1"; d["coverage"]["maxMissingPeriods"] = 4; dump(a, d)
+    i = bundle / "impact-rules" / "0.json"; d = load(i); d["version"] = "1.0.1"; d["attributionRuleRef"]["version"] = "1.0.1"; dump(i, d)
+
+
+def nocheck(bundle: Path) -> None:
+    r = bundle / "attribution-rules" / "0.json"; d = load(r); d["version"] = "1.0.1"; d["identity"]["crossCheck"] = "none"; dump(r, d)
     i = bundle / "impact-rules" / "0.json"; d = load(i); d["version"] = "1.0.1"; d["attributionRuleRef"]["version"] = "1.0.1"; dump(i, d)
 
 
@@ -131,6 +145,8 @@ def main() -> None:
     ap.add_argument("--tyr", type=Path, default=ROOT.parent / "tyr" / "fixtures" / "attribution-rule")
     ap.add_argument("--out", type=Path, default=ROOT / "fixtures")
     ap.add_argument("--live", action="store_true", help="write fixtures/live only (step 5); the step-3 fixtures stay untouched")
+    ap.add_argument("--live-next", action="store_true", help="append the nocheck streams to fixtures/live/registry and write fixtures/live/registry-next; "
+                    "every committed live byte but the registry's two identity files stays as it is")
     ap.add_argument("--deployment-only", action="store_true", help="with --live: rewrite fixtures/live/deployment.json and its lock entry only")
     a = ap.parse_args()
     gates = Gates(a.bifrost / "gates" / "target" / "bifrost-gates.jar")
@@ -142,6 +158,8 @@ def main() -> None:
         out = a.out / "live"; dump(out / "deployment.json", deployment(out))
         lock = load(out / "lock.json"); lock["deployment"] = {"deployment.json": sha((out / "deployment.json").read_bytes())}; dump(out / "lock.json", lock)
         print(f"wrote {out / 'deployment.json'}"); return
+    if a.live_next:
+        live_next(a, gates); return
     if a.live:
         live(a, gates, occupancy_sha, incident_sha); return
     upstream = a.out / "upstream"
@@ -179,10 +197,6 @@ def main() -> None:
             gates("mapping", "approve", str(reg), str(bundle), f"approval-{release}-{version}", *signers)
             gates("mapping", "publish", str(reg), str(bundle), release, version, "--approval", f"approval-{release}-{version}", *signers, "--expires-in", "P366D")
 
-        def nocheck(bundle: Path) -> None:
-            r = bundle / "attribution-rules" / "0.json"; d = load(r); d["version"] = "1.0.1"; d["identity"]["crossCheck"] = "none"; dump(r, d)
-            i = bundle / "impact-rules" / "0.json"; d = load(i); d["version"] = "1.0.1"; d["attributionRuleRef"]["version"] = "1.0.1"; dump(i, d)
-
         def snapshot(reg: Path, name: str) -> Path:
             out = a.out / name
             if out.exists(): shutil.rmtree(out)
@@ -210,6 +224,8 @@ def main() -> None:
 
 def live(a, gates: Gates, occupancy_sha: str, incident_sha: str) -> None:
     out = a.out / "live"; upstream = out / "upstream"; definitions = out / "definitions"; target = out / "registry"
+    if (out / "registry-next").exists():
+        raise SystemExit(f"{out / 'registry-next'} exists: --live would re-sign the registry it continues; remove both and rerun --live, then --live-next")
     for d in (upstream, definitions, target):
         if d.exists(): shutil.rmtree(d)
     for name, (stream, _, site) in LIVE.items():
@@ -244,6 +260,65 @@ def live(a, gates: Gates, occupancy_sha: str, incident_sha: str) -> None:
                              "upstream": inventory(upstream), "definitions": inventory(definitions), "registry": inventory(target),
                              "deployment": {"deployment.json": sha((out / "deployment.json").read_bytes())}})
     print(f"wrote {upstream} ({len(inventory(upstream))} files), {definitions} ({len(inventory(definitions))} files), {target} ({len(inventory(target))} files)")
+
+
+LIVE_NOCHECK = {"dedicated-plc": ("line2-dedicated-plc-nocheck", "line2-rules-dedicated-plc-nocheck"),
+                "shared-plc": ("line2-shared-plc-nocheck", "line2-rules-shared-plc-nocheck")}
+LIVE_NEXT = {"dedicated": ("line2-dedicated", "line2-rules-dedicated"), "shared": ("line2-shared", "line2-rules-shared")}
+IDENTITY = ("identity/activation-policy.json", "identity/authorized-keys.jsonl")
+
+
+def live_next(a, gates: Gates) -> None:
+    out = a.out / "live"; upstream = out / "upstream"; target = out / "registry"; nxt = out / "registry-next"
+    lock = load(out / "lock.json")
+    for section in ("upstream", "definitions", "registry"):
+        if inventory(out / section) != lock[section]:
+            raise SystemExit(f"{out / section} differs from lock.json; --live-next appends only to the committed live fixtures")
+    if git_head(a.bifrost) != lock["bifrost"]:
+        raise SystemExit(f"--bifrost must be at the locked commit {lock['bifrost']}")
+    if nxt.exists(): raise SystemExit(f"{nxt} exists; --live-next writes it once")
+    before = inventory(target)
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp = Path(tmp); keys = tmp / "keys"; reg = tmp / "registry"
+        shutil.copytree(target, reg)
+        lines = []
+        for principal in ("proposer", "approver"):
+            gates("identity", "keygen", principal, "--out", str(keys))
+            lines.append(json.dumps({"principal": principal, "publicKey": (keys / f"{principal}.pub").read_text().strip()}))
+        with open(reg / "identity" / "authorized-keys.jsonl", "a", encoding="utf-8", newline="\n") as f: f.write("\n".join(lines) + "\n")
+        policy = load(reg / "identity" / "activation-policy.json")
+        for stream, _ in LIVE_NOCHECK.values():
+            policy["rules"] += [{"id": f"publish-{stream}", "principal": "proposer", "action": "publish", "target": "mapping-publication", "kind": "mapping-release", "ref": stream},
+                                {"id": f"approve-{stream}", "principal": "approver", "action": "approve", "target": "mapping-publication", "kind": "mapping-release", "ref": stream}]
+        dump(reg / "identity" / "activation-policy.json", policy)
+        signers = ["--by", "proposer", "--by-key", str(keys / "proposer.key"), "--approved-by", "approver", "--approved-by-key", str(keys / "approver.key")]
+
+        def publish(name: str, stream: str, release: str, version: str, edit) -> None:
+            bundle = tmp / f"{release}-{version}"; shutil.copytree(upstream / name, bundle); edit(bundle)
+            # The base is the stream's current head exactly ({id, version, sha256}) in proposal.json and submission.json, or null.
+            head = reg / "mappings" / "heads" / f"{stream}.json"
+            base = load(head) if head.exists() else None
+            p = load(bundle / "proposal.json"); p["baseRelease"] = base; dump(bundle / "proposal.json", p)
+            s = load(bundle / "submission.json"); s["baseRelease"] = base; s["streamId"] = stream; s["version"] = version; dump(bundle / "submission.json", s)
+            repin(bundle)
+            gates("mapping", "validate", str(bundle))
+            gates("mapping", "approve", str(reg), str(bundle), f"approval-{release}-{version}", *signers)
+            gates("mapping", "publish", str(reg), str(bundle), release, version, "--approval", f"approval-{release}-{version}", *signers, "--expires-in", "P366D")
+
+        for name, (stream, release) in LIVE_NOCHECK.items(): publish(name, stream, release, "1.0.0", nocheck)
+        after = {k: v for k, v in inventory(reg).items() if Path(k).name != ".lock"}
+        changed = sorted(k for k, v in before.items() if after.get(k) != v)
+        if changed != sorted(IDENTITY): raise SystemExit(f"appending changed committed registry files: {changed}")
+        for rel in sorted(set(after) - set(before)) + list(IDENTITY):
+            (target / rel).parent.mkdir(parents=True, exist_ok=True); shutil.copyfile(reg / rel, target / rel)
+        for name, (stream, release) in LIVE_NEXT.items(): publish(name, stream, release, "1.0.1", bump_rules)
+        shutil.copytree(reg, nxt, ignore=shutil.ignore_patterns(".lock"))
+        with open(out / "trusted-keys.jsonl", "a", encoding="utf-8", newline="\n") as f: f.write("\n".join(lines) + "\n")
+    if inventory(target) != after: raise SystemExit(f"{target} is not the published registry")
+    lock["registry"] = inventory(target); lock["registryNext"] = inventory(nxt)
+    lock["trustedKeys"] = {"path": "trusted-keys.jsonl", "sha256": sha((out / "trusted-keys.jsonl").read_bytes())}
+    dump(out / "lock.json", lock)
+    print(f"appended {len(after) - len(before)} files to {target}, wrote {nxt} ({len(lock['registryNext'])} files)")
 
 
 if __name__ == "__main__":
