@@ -32,7 +32,10 @@
     {"unit": "UNIT0000000000001", "station": "synthetic-site:line2:station3", "enter": 780000, "leave": 840000, "tools": [], "visitSeq": 1},
     {"unit": "UNIT0000000000002", "station": "synthetic-site:line2:station3", "enter": 960000, "leave": 1020000, "tools": [], "visitSeq": 2},
     {"unit": "UNIT0000000000003", "station": "synthetic-site:line2:station3", "enter": 1140000, "leave": 1200000, "tools": [], "visitSeq": 3},
-    {"unit": "UNIT0000000000004", "station": "synthetic-site:line2:station3", "enter": 1320000, "leave": 1380000, "tools": [], "visitSeq": 4}
+    {"unit": "UNIT0000000000004", "station": "synthetic-site:line2:station3", "enter": 1320000, "leave": 1380000, "tools": [], "visitSeq": 4},
+    {"unit": "UNIT0000000000005", "station": "synthetic-site:line2:station3", "enter": 1540000, "leave": 1565000, "tools": [], "visitSeq": 5},
+    {"unit": "UNIT0000000000006", "station": "synthetic-site:line2:station3", "enter": 1720000, "leave": 1745000, "tools": [], "visitSeq": 6},
+    {"unit": "UNIT0000000000007", "station": "synthetic-site:line2:station3", "enter": 2030000, "leave": 2050000, "tools": [], "visitSeq": 7}
   ],
   "toolActivity": {"startAfterEnter": 5000, "endBeforeLeave": 1000, "torque": {"min": 10.0, "max": 45.0}},
   "incidents": [],
@@ -42,6 +45,12 @@
     {"type": "session-gap", "device": "synthetic-site:line2:station1:nutrunner1", "fromSeq": 985, "toSeq": 989},
     {"type": "stale-death", "device": "synthetic-site:line2:station2", "detectedEventTime": 900000, "rawPublishTs": 0, "bdSeq": 0},
     {"type": "session-ambiguous", "device": "synthetic-site:line2:station1:nutrunner2", "detectedEventTime": 1520000, "rawPublishTs": 1519000, "bdSeq": 1, "upAt": 1522000},
+    {"type": "session-down", "device": "synthetic-site:line2:station3", "at": 1499000, "upAt": 1559000},
+    {"type": "session-down", "device": "synthetic-site:line2:station3", "at": 1619000, "upAt": 1679000},
+    {"type": "session-down", "device": "synthetic-site:line2:station3", "at": 1679000, "upAt": 1739000},
+    {"type": "session-down", "device": "synthetic-site:line2:station3", "at": 1799000, "upAt": 1859000},
+    {"type": "session-down", "device": "synthetic-site:line2:station3", "at": 1859000, "upAt": 1859000},
+    {"type": "session-down", "device": "synthetic-site:line2:station3", "at": 1979000, "upAt": 2039000, "rebirth": true},
     {"type": "activity-without-visit", "device": "synthetic-site:line2:station1:nutrunner1", "from": 2100000, "to": 2160000}
   ]
 }

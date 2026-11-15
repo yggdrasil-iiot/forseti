@@ -325,22 +325,30 @@ final class GroundTruth {
 
     record Outcome(String state, String reason, Claim attributed, Claim blind) {}
 
-    private record Intervals(Map<String, List<long[]>> unknown, Map<String, List<long[]>> down, Map<String, List<long[]>> gaps) {}
+    record Intervals(Map<String, List<long[]>> unknown, Map<String, List<long[]>> down, Map<String, List<long[]>> gaps) {}
 
-    private Intervals sessionIntervals(int k) {
+    private Intervals sessionIntervals(int k) { return sessionIntervals(sessions, k, dev -> w1(stationOf.get(dev), k), samplesByDevice); }
+
+    /** The session intervals of the sessions delivered through cut {@code k}; {@code openOf} gives a device's W1 at that cut. */
+    static Intervals sessionIntervals(List<Delivery> sessions, int k, java.util.function.ToLongFunction<String> openOf, Map<String, List<Sample>> samplesByDevice) {
         Map<String, List<long[]>> unknown = new HashMap<>(), down = new HashMap<>(), gaps = new HashMap<>();
-        Map<String, List<Long>> ups = new HashMap<>();
+        Map<String, List<Up>> ups = new HashMap<>();
         for (Delivery d : sessions) if (d.batch() <= k && d.value().get("kind").asText().equals("session-up"))
-            ups.computeIfAbsent(d.value().get("device").asText(), x -> new ArrayList<>()).add(d.value().path("payload").path("at").longValue());
+            ups.computeIfAbsent(d.value().get("device").asText(), x -> new ArrayList<>()).add(new Up(sessionOf(d.value()), d.value().path("payload").path("at").longValue()));
         for (Delivery d : sessions) {
             if (d.batch() > k) continue;
             String dev = d.value().get("device").asText(), kind = d.value().get("kind").asText();
             JsonNode p = d.value().path("payload");
-            long open = w1(stationOf.get(dev), k);
+            long open = openOf.applyAsLong(dev);
             switch (kind) {
-                case "seq-gap" -> gaps.computeIfAbsent(dev, x -> new ArrayList<>()).add(new long[] {p.get("from").longValue(), p.get("to").longValue()});
+                case "seq-gap" -> {
+                    long from = p.get("from").longValue(), to = p.get("to").longValue();
+                    // closed and reversal-normalised: every instant from the earlier to the later bound, never dropped (spec 273, 515)
+                    gaps.computeIfAbsent(dev, x -> new ArrayList<>()).add(new long[] {Math.min(from, to), Math.max(from, to) + 1});
+                }
                 case "session-down" -> {
-                    long from = p.get("from").longValue(), end = nextUp(ups.get(dev), from, open);
+                    long from = p.get("from").longValue(), end = nextUp(ups.get(dev), sessionOf(d.value()), Math.max(from, birthOf(d.value())), open);
+                    if (end <= from) continue;   // an interval whose end is not after its start is empty
                     down.computeIfAbsent(dev, x -> new ArrayList<>()).add(new long[] {from, end});
                     gaps.computeIfAbsent(dev, x -> new ArrayList<>()).add(new long[] {from, end});
                 }
@@ -349,7 +357,8 @@ final class GroundTruth {
                     if (!p.path("detectedEventTime").isIntegralNumber()) continue;
                     long det = p.get("detectedEventTime").longValue(), start = det;
                     for (Sample x : samplesByDevice.getOrDefault(dev, List.of())) if (x.batch() <= k && x.sourceTs() < det) start = x.sourceTs();
-                    unknown.computeIfAbsent(dev, x -> new ArrayList<>()).add(new long[] {start, nextUp(ups.get(dev), det, open)});
+                    long end = nextUp(ups.get(dev), sessionOf(d.value()), Math.max(det, birthOf(d.value())), open);
+                    if (end > start) unknown.computeIfAbsent(dev, x -> new ArrayList<>()).add(new long[] {start, end});
                 }
                 default -> { }
             }
@@ -357,10 +366,22 @@ final class GroundTruth {
         return new Intervals(unknown, down, gaps);
     }
 
-    private static long nextUp(List<Long> ups, long from, long open) {
-        long best = open;
-        if (ups != null) for (long at : ups) if (at >= from && at < best) best = at;
-        return best;
+    private record Up(String session, long at) {}
+
+    /** The session identity (edge, device, birthPublishTs, bdSeq) of a session event; a null birthPublishTs (plan D4) keys as "null". */
+    private static String sessionOf(JsonNode v) {
+        return v.get("edge").asText() + "\u0000" + v.get("device").asText() + "\u0000" + v.get("birthPublishTs").asText() + "\u0000" + v.get("bdSeq").asText();
+    }
+    private static long birthOf(JsonNode v) { return v.path("birthPublishTs").isIntegralNumber() ? v.get("birthPublishTs").longValue() : Long.MIN_VALUE; }
+
+    /** The end of a session-down or unknown interval (spec 517): the {@code at} of the first delivered session-up of a session other
+     *  than {@code own} with {@code at >= from}, whatever W1 ({@code open}); {@code open} only while there is none. Residual: a
+     *  no-telemetry session and its successor born in the same millisecond with the same bdSeq share one identity, so the interval stays
+     *  open (fail-safe). */
+    private static long nextUp(List<Up> ups, String own, long from, long open) {
+        Long best = null;
+        if (ups != null) for (Up u : ups) if (!u.session().equals(own) && u.at() >= from && (best == null || u.at() < best)) best = u.at();
+        return best != null ? best : open;
     }
     private static boolean inside(List<long[]> l, long t) {
         if (l != null) for (long[] i : l) if (i[0] <= t && t < i[1]) return true;

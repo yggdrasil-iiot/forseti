@@ -338,36 +338,51 @@ def visits_of(station: str, idents: dict, profile: dict, w1) -> list[Visit]:
 
 @dataclass
 class DeviceSessions:
-    gaps: list = field(default_factory=list)       # [from, to) seq-gap and session-down intervals
+    gaps: list = field(default_factory=list)       # seq-gap [min(from, to), max(from, to) + 1) and session-down intervals
     down: list = field(default_factory=list)       # [from, to) session-down intervals
     unknown: list = field(default_factory=list)    # [from, to) session-ambiguous intervals
     definition_changed: set = field(default_factory=set)   # (edge, birthPublishTs, bdSeq)
 
 
+def _session_identity(e) -> tuple:
+    return (e.edge, e.device, e.birthPublishTs, e.bdSeq)
+
+
 def sessions_of(events: list, last_obs_before, w1) -> DeviceSessions:
     """``events``: the accepted session events of one device. ``last_obs_before(t)`` gives the device's last valid observation time
-    before ``t`` (None when there is none). Open intervals end at ``w1``."""
+    before ``t`` (None when there is none). A session-down or unknown interval ends at the ``at`` of the first session-up of a different
+    session identity (edge, device, birthPublishTs, bdSeq) with ``at >= max(from, birthPublishTs)``, whatever ``w1``; it ends at ``w1``
+    only while there is none. A seq-gap covers ``[min(from, to), max(from, to) + 1)``. A session-down or unknown interval whose end is
+    not after its start is empty and dropped."""
     ds = DeviceSessions()
-    ups = sorted(p.get("at") for e in events if e.kind == "session-up" for p in [e.payload or {}] if p.get("at") is not None)
+    ups = sorted(((p.get("at"), _session_identity(e)) for e in events if e.kind == "session-up" for p in [e.payload or {}]
+                  if p.get("at") is not None), key=lambda u: u[0])
 
-    def next_up(t):
-        i = bisect.bisect_right(ups, t)
-        if i < len(ups):
-            return ups[i]
+    def next_up(t, own, birth):
+        # residual: a no-telemetry session and its successor born in the same millisecond with the same bdSeq share one identity, so
+        # the interval stays open (fail-safe)
+        lo = t if birth is None else max(t, birth)
+        for at, ident in ups:
+            if at >= lo and ident != own:
+                return at
         return w1 if w1 is not None else INF
 
     for e in events:
         p = e.payload or {}
         if e.kind == "seq-gap" and p.get("from") is not None and p.get("to") is not None:
-            ds.gaps.append((p["from"], p["to"]))
+            # closed and reversal-normalised: every instant from the earlier to the later bound, never dropped (spec 273, 515)
+            ds.gaps.append((min(p["from"], p["to"]), max(p["from"], p["to"]) + 1))
         elif e.kind == "session-down" and p.get("from") is not None:
-            iv = (p["from"], next_up(p["from"]))
-            ds.gaps.append(iv)
-            ds.down.append(iv)
+            iv = (p["from"], next_up(p["from"], _session_identity(e), e.birthPublishTs))
+            if iv[1] > iv[0]:
+                ds.gaps.append(iv)
+                ds.down.append(iv)
         elif e.kind == "session-ambiguous" and p.get("detectedEventTime") is not None:
             t = p["detectedEventTime"]
             start = last_obs_before(t)
-            ds.unknown.append((start if start is not None else t, next_up(t)))
+            iv = (start if start is not None else t, next_up(t, _session_identity(e), e.birthPublishTs))
+            if iv[1] > iv[0]:
+                ds.unknown.append(iv)
         elif e.kind == "definition-changed":
             ds.definition_changed.add((e.edge, e.birthPublishTs, e.bdSeq))
     return ds

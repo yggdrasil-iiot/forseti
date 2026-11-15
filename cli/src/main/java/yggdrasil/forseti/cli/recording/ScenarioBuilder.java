@@ -417,10 +417,15 @@ public final class ScenarioBuilder {
                 // Session overlays in force at this scan.
                 boolean removed = false;
                 for (Overlays.SessionDown x : ov.downs) if (x.device().equals(dev)) {
+                    // from: the session's last observation, else its birth time for a session with no telemetry (the bridge's rule)
                     if (t == x.at()) sessionItems.add(new Item("ot.sessions", routing.rawPartitionOf(dev), dev, batchOf(boundaries, t, "session-down"),
-                        sessionEvent(edge, dev, ss.birth, ss.bdSeq, "session-down", ss.lastSeq, Json.putSafe(Json.object(), "from", t0 + (ss.lastTs == null ? t : ss.lastTs)).putNull("to"))));
+                        sessionEvent(edge, dev, ss.birth, ss.bdSeq, "session-down", ss.lastSeq, Json.putSafe(Json.object(), "from", ss.lastTs == null ? ss.birth : t0 + ss.lastTs).putNull("to"))));
                     if (x.at() <= t && t < x.upAt()) removed = true;
-                    if (t == x.upAt()) { ss.birth = t0 + t; ss.bdSeq++; ss.seq = 1; addUp(sessionItems, routing, boundaries, edge, dev, ss.birth, ss.bdSeq, t, t0 + t); }
+                    if (t == x.upAt()) {
+                        ss.birth = t0 + t; if (!x.rebirth()) ss.bdSeq++; ss.seq = 1; ss.lastSeq = 1; ss.lastTs = null;
+                        sessionItems.add(new Item("ot.sessions", routing.rawPartitionOf(dev), dev, batchOf(boundaries, t, "session-up"),
+                            sessionEvent(edge, dev, ss.birth, ss.bdSeq, "session-up", 1, upPayload(t0 + t).put("rebirth", x.rebirth()))));
+                    }
                 }
                 for (Overlays.SessionAmbiguous x : ov.ambiguous) if (x.device().equals(dev)) {
                     if (t == x.detectedEventTime()) {
@@ -431,7 +436,7 @@ public final class ScenarioBuilder {
                             sessionEvent(edge, dev, ss.birth, ss.bdSeq, "session-ambiguous", ss.lastSeq, p)));
                     }
                     if (x.detectedEventTime() <= t && t < x.upAt()) removed = true;
-                    if (t == x.upAt()) { ss.birth = t0 + t; ss.bdSeq = x.bdSeq() + 1; ss.seq = 1; addUp(sessionItems, routing, boundaries, edge, dev, ss.birth, ss.bdSeq, t, t0 + t); }
+                    if (t == x.upAt()) { ss.birth = t0 + t; ss.bdSeq = x.bdSeq() + 1; ss.seq = 1; ss.lastTs = null; addUp(sessionItems, routing, boundaries, edge, dev, ss.birth, ss.bdSeq, t, t0 + t); }
                 }
                 for (Overlays.StaleDeath x : ov.staleDeaths) if (x.device().equals(dev) && t == x.detectedEventTime()) {
                     ObjectNode p = Json.object();
