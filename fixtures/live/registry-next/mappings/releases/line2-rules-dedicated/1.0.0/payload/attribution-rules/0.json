@@ -1,0 +1,145 @@
+{
+  "kind": "attribution-rule",
+  "schemaVersion": "2.27.0",
+  "id": "line2-attribution",
+  "version": "1.0.0",
+  "label": "Line 2 occupancy-join attribution",
+  "description": "Joins nutrunner torque samples with MES occupancy at station 1, station 2 and station 3 by event time.",
+  "equipmentRef": {
+    "id": "line2-plant",
+    "version": "1.0.0"
+  },
+  "stations": [
+    "site-071:line2:station1",
+    "site-071:line2:station2",
+    "site-071:line2:station3"
+  ],
+  "members": [
+    {
+      "mappingSetRef": {
+        "id": "nutrunner1-mapping",
+        "version": "1.0.0"
+      },
+      "mappingId": "nutrunner1-torque",
+      "semanticId": "urn:bifrost:sem:Tool/Torque",
+      "metric": "Torque"
+    },
+    {
+      "mappingSetRef": {
+        "id": "nutrunner2-mapping",
+        "version": "1.0.0"
+      },
+      "mappingId": "nutrunner2-torque",
+      "semanticId": "urn:bifrost:sem:Tool/Torque",
+      "metric": "Torque"
+    },
+    {
+      "mappingSetRef": {
+        "id": "station1-mapping",
+        "version": "1.0.0"
+      },
+      "mappingId": "station1-running",
+      "semanticId": "urn:bifrost:sem:Station/Running",
+      "metric": "Running"
+    },
+    {
+      "mappingSetRef": {
+        "id": "station2-mapping",
+        "version": "1.0.0"
+      },
+      "mappingId": "station2-running",
+      "semanticId": "urn:bifrost:sem:Station/Running",
+      "metric": "Running"
+    },
+    {
+      "mappingSetRef": {
+        "id": "nutrunner1-mapping",
+        "version": "1.0.0"
+      },
+      "mappingId": "nutrunner1-running",
+      "semanticId": "urn:bifrost:sem:Tool/Running",
+      "metric": "Running"
+    },
+    {
+      "mappingSetRef": {
+        "id": "nutrunner2-mapping",
+        "version": "1.0.0"
+      },
+      "mappingId": "nutrunner2-running",
+      "semanticId": "urn:bifrost:sem:Tool/Running",
+      "metric": "Running"
+    },
+    {
+      "mappingSetRef": {
+        "id": "station3-mapping",
+        "version": "1.0.0"
+      },
+      "mappingId": "station3-running",
+      "semanticId": "urn:bifrost:sem:Station/Running",
+      "metric": "Running"
+    }
+  ],
+  "activity": [
+    {
+      "equipmentPath": "site-071:line2:station1",
+      "memberRef": "station1-running",
+      "activeWhen": true
+    },
+    {
+      "equipmentPath": "site-071:line2:station2",
+      "memberRef": "station2-running",
+      "activeWhen": true
+    },
+    {
+      "equipmentPath": "site-071:line2:station1:nutrunner1",
+      "memberRef": "nutrunner1-running",
+      "activeWhen": true
+    },
+    {
+      "equipmentPath": "site-071:line2:station1:nutrunner2",
+      "memberRef": "nutrunner2-running",
+      "activeWhen": true
+    },
+    {
+      "equipmentPath": "site-071:line2:station3",
+      "memberRef": "station3-running",
+      "activeWhen": true
+    }
+  ],
+  "occupancyBindingRef": {
+    "id": "occupancy-binding-line2",
+    "version": "1.0.0"
+  },
+  "identity": {
+    "mode": "occupancy-join",
+    "crossCheck": "none"
+  },
+  "temporal": {
+    "timestampBasis": "source",
+    "outOfOrdernessMs": 30000,
+    "allowedLatenessMs": 720000,
+    "horizonMs": 86400000,
+    "enterToleranceMs": 45000,
+    "leaveToleranceMs": 45000
+  },
+  "quality": {
+    "uncertainInput": "reject",
+    "maxBadShare": 0.1
+  },
+  "coverage": {
+    "expectedPeriodMs": 1000,
+    "maxMissingPeriods": 3
+  },
+  "overlap": {
+    "policy": "reject-ambiguous"
+  },
+  "evidenceRefs": [
+    {
+      "artifactId": "manual-nutrunner1-torque",
+      "locator": {
+        "kind": "text-line",
+        "line": 1
+      }
+    }
+  ]
+}

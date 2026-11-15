@@ -1,0 +1,56 @@
+{
+  "kind": "semantic-definition",
+  "schemaVersion": "2.12.0",
+  "id": "station-stamped-model",
+  "version": "1.0.0",
+  "members": [
+    {
+      "memberId": "running",
+      "name": "Running",
+      "semanticId": "urn:bifrost:sem:Station/Running",
+      "description": "Station is working",
+      "valueType": "Boolean",
+      "unit": {
+        "status": "not-applicable"
+      },
+      "role": "status",
+      "range": null
+    },
+    {
+      "memberId": "unit",
+      "name": "UnitId",
+      "semanticId": "urn:bifrost:sem:Station/UnitId",
+      "description": "Unit present at the station, as the controller stamps it",
+      "valueType": "String",
+      "unit": {
+        "status": "not-applicable"
+      },
+      "role": "status",
+      "range": null
+    },
+    {
+      "memberId": "visit",
+      "name": "VisitId",
+      "semanticId": "urn:bifrost:sem:Station/VisitId",
+      "description": "Producer visit id of the present unit",
+      "valueType": "String",
+      "unit": {
+        "status": "not-applicable"
+      },
+      "role": "status",
+      "range": null
+    },
+    {
+      "memberId": "present",
+      "name": "VisitPresent",
+      "semanticId": "urn:bifrost:sem:Station/VisitPresent",
+      "description": "True while a unit is present",
+      "valueType": "Boolean",
+      "unit": {
+        "status": "not-applicable"
+      },
+      "role": "status",
+      "range": null
+    }
+  ]
+}

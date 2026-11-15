@@ -1,0 +1,42 @@
+{
+  "kind": "impact-rule",
+  "schemaVersion": "2.27.0",
+  "id": "line2-impact",
+  "version": "1.0.0",
+  "label": "Line 2 tool incident impact",
+  "description": "Marks visits in which a nutrunner shows activity inside an incident's suspect interval.",
+  "attributionRuleRef": {
+    "id": "line2-attribution",
+    "version": "1.0.0"
+  },
+  "incidentScope": [
+    "site-019:line2:station1:nutrunner1",
+    "site-019:line2:station1:nutrunner2"
+  ],
+  "incidentBindingRef": {
+    "id": "incident-binding-line2",
+    "version": "1.0.0"
+  },
+  "interval": {
+    "start": "suspectFrom",
+    "overlap": "any-overlap",
+    "openEnd": "provisional-until-closed"
+  },
+  "evidence": {
+    "match": "equipment-evidence",
+    "onBasisRetracted": "by-cause",
+    "onWithdrawn": "not-affected"
+  },
+  "retention": {
+    "workRecordsMs": 604800000
+  },
+  "evidenceRefs": [
+    {
+      "artifactId": "manual-nutrunner1-torque",
+      "locator": {
+        "kind": "text-line",
+        "line": 1
+      }
+    }
+  ]
+}

@@ -65,6 +65,38 @@
       "target": "mapping-publication",
       "kind": "mapping-release",
       "ref": "line2-shared-plc"
+    },
+    {
+      "id": "publish-line2-dedicated-plc-nocheck",
+      "principal": "proposer",
+      "action": "publish",
+      "target": "mapping-publication",
+      "kind": "mapping-release",
+      "ref": "line2-dedicated-plc-nocheck"
+    },
+    {
+      "id": "approve-line2-dedicated-plc-nocheck",
+      "principal": "approver",
+      "action": "approve",
+      "target": "mapping-publication",
+      "kind": "mapping-release",
+      "ref": "line2-dedicated-plc-nocheck"
+    },
+    {
+      "id": "publish-line2-shared-plc-nocheck",
+      "principal": "proposer",
+      "action": "publish",
+      "target": "mapping-publication",
+      "kind": "mapping-release",
+      "ref": "line2-shared-plc-nocheck"
+    },
+    {
+      "id": "approve-line2-shared-plc-nocheck",
+      "principal": "approver",
+      "action": "approve",
+      "target": "mapping-publication",
+      "kind": "mapping-release",
+      "ref": "line2-shared-plc-nocheck"
     }
   ]
 }
