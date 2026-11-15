@@ -69,12 +69,13 @@ public final class LiveDeployment {
         return new Deployment(stream, tail, s.expectedPeriodMs(), List.copyOf(edges));
     }
 
-    /** The lines the runner reads: {@code tail-ms <n>}, {@code period-ms <n>}, then per edge
+    /** The lines the runner reads: {@code tail-ms <n>}, {@code rule-period-ms <n>} (the rule's {@code coverage.expectedPeriodMs}, not
+     *  Muninn's poll period, which the runner takes from the live scenario), then per edge
      *  {@code edge <edge> <device> <templateRef> <version> <namespaceUri> <node> <instanceId>}, tab-separated. */
     public static List<String> lines(Deployment d) {
         List<String> l = new ArrayList<>();
         l.add("tail-ms\t" + d.tailMs());
-        l.add("period-ms\t" + d.expectedPeriodMs());
+        l.add("rule-period-ms\t" + d.expectedPeriodMs());
         for (Edge e : d.edges())
             l.add(String.join("\t", "edge", e.edge(), e.device(), e.templateRef(), e.version(), e.namespaceUri(), e.node(), e.instanceId()));
         return l;

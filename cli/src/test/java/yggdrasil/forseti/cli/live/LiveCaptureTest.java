@@ -31,7 +31,9 @@ class LiveCaptureTest {
             ROUTING.resolve("dedicated.json"), DrivePlanTest.BASELINE, log, null, 60_000);
         assertEquals("baseline", in.name());
         assertEquals(1794700000000L, in.t0(), "the earliest commit of the step at offset 0");
-        assertEquals(1000, in.scanMs());
+        assertEquals(250, in.scanMs());
+        assertEquals(500, in.source().get("muninnPeriodMs").asLong());
+        assertEquals(0, in.source().get("injections").size(), "the baseline declares no injection");
         assertEquals("line2-dedicated", in.rulePin().get("stream").asText());
         JsonNode head = Json.read(LiveEquipmentTest.REGISTRY.resolve("mappings/heads/line2-dedicated.json"));
         assertEquals(head.get("id").asText(), in.rulePin().get("releaseId").asText());
@@ -55,5 +57,20 @@ class LiveCaptureTest {
         IllegalArgumentException e = assertThrows(IllegalArgumentException.class, () -> LiveCapture.inputs(LiveEquipmentTest.REGISTRY, LiveEquipmentTest.DEFINITIONS,
             LIVE.resolve("deployment.json"), "line2-dedicated", ROUTING.resolve("dedicated.json"), DrivePlanTest.BASELINE, log, "x", 60_000));
         assertTrue(e.getMessage().contains("no drive origin"), e.getMessage());
+    }
+
+    @Test
+    void theRunnersInjectionsAreDeclaredAndAPeriodThatDoesNotFitTheRuleIsRefused() throws Exception {
+        Path log = driveLog("{\"at\":0,\"commits\":{\"" + S1 + "\":1794700001000},\"eventTime\":1794700001000,\"sent\":[]}");
+        CaptureRecorder.Inputs in = LiveCapture.inputs(LiveEquipmentTest.REGISTRY, LiveEquipmentTest.DEFINITIONS, LIVE.resolve("deployment.json"), "line2-dedicated",
+            ROUTING.resolve("dedicated.json"), DrivePlanTest.BASELINE, log, null, 60_000, java.util.List.of("kill-muninn=line2:station1@440000+20000"));
+        assertEquals("kill-muninn", in.source().get("injections").get(0).get("kind").asText());
+        com.fasterxml.jackson.databind.node.ObjectNode slow = (com.fasterxml.jackson.databind.node.ObjectNode) Json.read(DrivePlanTest.BASELINE);
+        slow.put("scanMs", 1000).put("muninnPeriodMs", 1000);
+        Path f = tmp.resolve("slow.json");
+        Json.write(f, slow);
+        IllegalArgumentException e = assertThrows(IllegalArgumentException.class, () -> LiveCapture.inputs(LiveEquipmentTest.REGISTRY, LiveEquipmentTest.DEFINITIONS,
+            LIVE.resolve("deployment.json"), "line2-dedicated", ROUTING.resolve("dedicated.json"), f, log, null, 60_000));
+        assertTrue(e.getMessage().contains("exceeds the rule's expectedPeriodMs 1000"), e.getMessage());
     }
 }

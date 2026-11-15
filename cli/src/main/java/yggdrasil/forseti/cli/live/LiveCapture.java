@@ -27,17 +27,25 @@ import yggdrasil.forseti.core.canon.Canonical;
  *      event {@code <visitId>-arrive}, a plc-stamped one by the VisitId the driver stamps), and its {@code tools}.</li>
  *  <li>{@code sent} is every record the drive log lists; the recorder refuses a capture that does not hold exactly those
  *      occupancy and incident records.</li>
+ *  <li>{@code source.injections} declares the run's injections ({@link LiveInjections}): the scenario's bad statuses and the
+ *      runner's options. {@code source.muninnPeriodMs} is the acquisition cadence the run polled with.</li>
  *  </ul> */
 public final class LiveCapture {
     private LiveCapture() {}
 
     public static CaptureRecorder.Inputs inputs(Path registry, Path definitions, Path deployment, String stream, Path routingFile, Path scenarioFile,
                                                 Path driveLog, String name, long batchMs) {
+        return inputs(registry, definitions, deployment, stream, routingFile, scenarioFile, driveLog, name, batchMs, List.of());
+    }
+
+    /** @param injections the runner's injection options ({@link LiveInjections}), in the order given */
+    public static CaptureRecorder.Inputs inputs(Path registry, Path definitions, Path deployment, String stream, Path routingFile, Path scenarioFile,
+                                                Path driveLog, String name, long batchMs, List<String> injections) {
         LiveEquipment.LiveStream s = LiveEquipment.read(registry, definitions, deployment, stream);
         byte[] scenarioBytes = bytes(scenarioFile), routingBytes = bytes(routingFile), logBytes = bytes(driveLog);
         LiveScenario scenario = LiveScenario.read(Json.read(scenarioBytes), s);
-        if (scenario.scanMs() != s.expectedPeriodMs())
-            throw new IllegalArgumentException("scenario scanMs " + scenario.scanMs() + " is not the rule's expectedPeriodMs " + s.expectedPeriodMs());
+        String periods = Preflight.periodProblem(scenario.muninnPeriodMs(), scenario.scanMs(), s.expectedPeriodMs());
+        if (periods != null) throw new IllegalArgumentException("scenario " + scenario.name() + ": " + periods);
         RoutingManifest routing = RoutingManifest.read(Json.read(routingBytes));
 
         ObjectNode definitionPins = Json.object();
@@ -73,6 +81,8 @@ public final class LiveCapture {
         source.put("scenarioSha256", Canonical.digestOf(scenarioBytes));
         source.put("driveLogSha256", Canonical.digestOf(logBytes));
         source.put("stream", stream);
+        Json.putSafe(source, "muninnPeriodMs", scenario.muninnPeriodMs());
+        source.set("injections", LiveInjections.declare(scenario, s, injections));
         return new CaptureRecorder.Inputs(name == null ? scenario.name() : name, registry, rulePin(registry, stream), definitionPins, routingBytes, t0,
             scenario.scanMs(), batchMs, scenario.occupancySource(), facts, sent, source);
     }

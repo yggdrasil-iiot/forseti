@@ -1,6 +1,9 @@
 # LF everywhere a text file is written; digested bytes are never normalised.
 * text=auto eol=lf
 fixtures/** -text
+# Committed live captures (step 5): their capture locks digest these bytes; fixtures/** already covers them, named here so that no
+# later fixtures rule can make them text.
+fixtures/live-recordings/** -text
 vectors/** -text
 schemas/** -text
 core/src/main/resources/forseti/** -text

@@ -31,12 +31,16 @@ public final class CaptureTruth {
     public record Due(String kind, String ref, String station, long at) {}
     /** A deadline and the 0-based batches that bracket it. */
     public record Bracket(Due due, int cutA, int cutB) {}
-    /** The rule parameters the recorder plans with. */
-    public record Temporal(String mode, String crossCheck, long outOfOrdernessMs, long allowedLatenessMs, long expectedPeriodMs) {}
+    /** The rule parameters the recorder plans with. {@code memberEquipment}: the equipment that carries at least one member of the rule
+     *  (any role); only its telemetry advances a station's {@code W1} in the harness (the gate's {@code J-W1-FORMULA}), so a routed
+     *  device without a rule member (a tool the rule does not name) is not counted. */
+    public record Temporal(String mode, String crossCheck, long outOfOrdernessMs, long allowedLatenessMs, long expectedPeriodMs, Set<String> memberEquipment) {}
 
     public static Temporal temporal(Path registry, JsonNode pin) {
         GroundTruth.Rule r = GroundTruth.load(registry, pin);
-        return new Temporal(r.mode(), r.crossCheck(), r.ooo(), r.lateness(), r.period());
+        Set<String> equipment = new TreeSet<>();
+        for (GroundTruth.Member m : r.members()) equipment.add(m.equipment());
+        return new Temporal(r.mode(), r.crossCheck(), r.ooo(), r.lateness(), r.period(), Collections.unmodifiableSet(equipment));
     }
 
     /** The deadlines of the capture (their brackets are the recorder's to plan). Sorted by time, then kind and reference. */

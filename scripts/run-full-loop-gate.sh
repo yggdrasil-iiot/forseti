@@ -14,7 +14,9 @@
 # Steps, in order: lock check -> compose up (healthy) -> image check -> fresh prefixed topics -> sim -> bridge (subscribed) -> one
 # Muninn per routed device, then the retained online STATE of each one's host -> every session up -> preflight -> drive (with the
 # declared Muninn and host injections beside it) -> the spec-628 tail -> stop the bridge (it drains every write) -> stop Muninn and
-# the sim -> record -> verify-capture --write-lock, then --lock -> core harness and oracle on the capture. Teardown always runs.
+# the sim -> record -> verify-capture --write-lock, then --lock -> core harness and oracle on the capture -> recordings compare (the
+# core gate's per-cut comparison of the core with the oracle, its integrity checks, the ground truth and the acceptance of the visits
+# against the declared injections). Teardown always runs.
 #
 # Why the bridge stops before Muninn: a stopping Muninn publishes NDEATH, which the bridge would write as each device's session-down
 # dated at its last sample, a business event with no telemetry tail after it; the recorder refuses such a capture (spec 628). Stopping
@@ -130,6 +132,7 @@ teardown() {
       "$PLACEMENT" "$ATTRIBUTION" "$STREAM" "$SCENARIO" "$PREFIX"
     printf '  "injections": {"bridgeHold": "%s", "bridgeSourceOffsetMs": "%s", "killMuninn": "%s", "hostOffline": "%s"},\n' \
       "$BRIDGE_HOLD" "$BRIDGE_OFFSET" "$KILL_MUNINN" "$HOST_OFFLINE"
+    printf '  "tailMarginMs": %s,\n  "scenarioSha256": "%s",\n' "$TAIL_MARGIN_MS" "$(sha256sum "$SCENARIO" | cut -c1-64)"
     printf '  "stackLockSha256": "%s",\n' "$(sha256sum "$LOCK" | cut -c1-64)"
     printf '  "jars": {"bifrost-sim": "%s", "muninn": "%s", "forseti": "%s", "forseti-loop": "%s", "forseti-bridge": "%s"},\n' \
       "$(sha256sum "$SIM_JAR" 2>/dev/null | cut -c1-64)" "$(sha256sum "$MUNINN_JAR" 2>/dev/null | cut -c1-64)" "$(sha256sum "$FORSETI" 2>/dev/null | cut -c1-64)" \
@@ -169,8 +172,12 @@ step deployment
 java -jar "$LOOP" deployment --registry "$REGISTRY" --definitions "$DEFINITIONS" --stream "$STREAM" --routing "$ROUTING" --pins-out "$OUT/pins.json" \
   > "$OUT/deployment.tsv" 2> "$OUT/logs/deployment.log" || { cat "$OUT/logs/deployment.log" >&2; fail "deployment"; }
 TAIL_MS="$(awk -F'\t' '$1 == "tail-ms" {print $2}' "$OUT/deployment.tsv")"
-PERIOD_MS="$(awk -F'\t' '$1 == "period-ms" {print $2}' "$OUT/deployment.tsv")"
+# The rule's period (deployment) and the acquisition cadence (scenario) are separate settings: Muninn polls every MUNINN_MS, the sim
+# scans every SCAN_MS, and preflight checks MUNINN_MS + SCAN_MS + its jitter margin <= RULE_PERIOD_MS.
+RULE_PERIOD_MS="$(awk -F'\t' '$1 == "rule-period-ms" {print $2}' "$OUT/deployment.tsv")"
 SCAN_MS="$(json "$SCENARIO" 'd["scanMs"]')"
+MUNINN_MS="$(json "$SCENARIO" 'd["muninnPeriodMs"]')"
+echo "periods: rule expectedPeriodMs $RULE_PERIOD_MS, Muninn $MUNINN_MS, sim scan $SCAN_MS"
 mapfile -t EDGES < <(awk -F'\t' '$1 == "edge"' "$OUT/deployment.tsv")
 [ "${#EDGES[@]}" -gt 0 ] || fail "no edges"
 edge_of() { local d="$1"; d="${d//:/-}"; for e in "${EDGES[@]}"; do IFS=$'\t' read -r _ edge _ <<< "$e"; [ "$edge" = "$d" ] && { echo "$edge"; return 0; }; done; fail "no routed device $1"; }
@@ -186,13 +193,16 @@ BRIDGE_ARGS=(--mqtt "$MQTT" --kafka "$KAFKA" --client-id "$BRIDGE_ID" --pins "$O
   --raw-log "$OUT/bridge-frames.jsonl" --run-record "$OUT/bridge-run.json" --stop-file "$OUT/bridge.stop")
 [ -z "$BRIDGE_HOLD" ] || BRIDGE_ARGS+=(--hold-start-ms "${BRIDGE_HOLD%%:*}" --hold-ms "${BRIDGE_HOLD##*:}")
 [ -z "$BRIDGE_OFFSET" ] || BRIDGE_ARGS+=(--source-offset-ms "$BRIDGE_OFFSET")
+# Injection 25(a): the bridge's input stage hands the edge's host-offline NDEATH to its session tracker only after the edge's next
+# NBIRTH, so the earlier connection's death arrives past the newer birth (a stale-death); the raw-frame log keeps the wire order.
+[ -z "$HOST_OFFLINE" ] || BRIDGE_ARGS+=(--hold-death "$(edge_of "${HOST_OFFLINE%%@*}")")
 start bridge java "${JLOG[@]}" -Xmx512m -jar "$BRIDGE" "${BRIDGE_ARGS[@]}"
 await bridge "[BRIDGE] subscribed" 60
 
 # muninn <edge> <device> <ref> <version> <ns> <node> <instanceId>: one Muninn session for one device.
 muninn() {
   start "muninn-$1" java "${JLOG[@]}" -Xmx256m -jar "$MUNINN_JAR" feed "$DEFINITIONS" "$3" "$4" "$OPCUA" "$5" "$6" "$MQTT" "$GROUP" "$1" \
-    --hierarchy "$REGISTRY/mappings" "$STREAM" "$7" --session "$PERIOD_MS" --primary-host "host-$1"
+    --hierarchy "$REGISTRY/mappings" "$STREAM" "$7" --session "$MUNINN_MS" --primary-host "host-$1"
 }
 host_state() { java "${JLOG[@]}" -jar "$MUNINN_JAR" host "$MQTT" state "host-$1" "$2" "$(now_ms)" >> "$OUT/logs/host-state.log" 2>&1; }
 
@@ -209,7 +219,7 @@ step preflight
 PF_EDGES=()
 for e in "${EDGES[@]}"; do IFS=$'\t' read -r _ edge device _ <<< "$e"; PF_EDGES+=(--edge "$edge=$device"); done
 java "${JLOG[@]}" -jar "$LOOP" preflight --kafka "$KAFKA" --prefix "$PREFIX" --registry "$REGISTRY" --definitions "$DEFINITIONS" --stream "$STREAM" \
-  --routing "$ROUTING" --pins "$OUT/pins.json" --period-ms "$PERIOD_MS" --scan-ms "$SCAN_MS" --opcua "$OPCUA" "${PF_EDGES[@]}" \
+  --routing "$ROUTING" --pins "$OUT/pins.json" --muninn-period-ms "$MUNINN_MS" --scan-ms "$SCAN_MS" --opcua "$OPCUA" "${PF_EDGES[@]}" \
   --bridge-client-id "$BRIDGE_ID" --driver-client-id "$DRIVER_ID" > "$OUT/preflight.txt" 2> "$OUT/logs/preflight.log" \
   || { cat "$OUT/preflight.txt" >&2; fail "preflight found problems"; }
 
@@ -270,6 +280,10 @@ for ((i = 0; i < 600; i++)); do alive bridge || break; sleep 0.25; done
 alive bridge && fail "the bridge did not stop within 150 s"
 wait "$(pid_of bridge)" || fail "the bridge exited non-zero (see $OUT/bridge-run.json)"
 [ "$(json "$OUT/bridge-run.json" 'd["outcome"]')" = stopped ] || fail "the bridge run record is not 'stopped'"
+if [ -n "$HOST_OFFLINE" ]; then
+  [ "$(json "$OUT/bridge-run.json" '[s["stage"] for s in d["inputStages"] if s["completed"]] == ["death-after-birth"]')" = True ] \
+    || fail "injection 25(a) did not run: the death-after-birth stage did not complete (no newer birth after the held death; see $OUT/bridge-run.json)"
+fi
 rm -f "$OUT/pids/bridge"
 
 step stop-publishers
@@ -277,9 +291,16 @@ for e in "${EDGES[@]}"; do IFS=$'\t' read -r _ edge _ <<< "$e"; stop "muninn-$ed
 stop sim 10; rm -f "$OUT/pids/sim"
 
 step record
+# The run's injections, declared in the manifest (source.injections) beside the scenario's bad statuses: recordings compare judges
+# the visits by them (every visit complete except those an injection touches, with its reason).
+INJECTIONS=()
+[ -z "$BRIDGE_HOLD" ] || INJECTIONS+=(--injection "bridge-hold=$BRIDGE_HOLD")
+[ -z "$BRIDGE_OFFSET" ] || INJECTIONS+=(--injection "bridge-source-offset=$BRIDGE_OFFSET")
+[ -z "$KILL_MUNINN" ] || INJECTIONS+=(--injection "kill-muninn=$KILL_MUNINN")
+[ -z "$HOST_OFFLINE" ] || INJECTIONS+=(--injection "host-offline=$HOST_OFFLINE")
 java "${JLOG[@]}" -Xmx2g -jar "$LOOP" record --kafka "$KAFKA" --prefix "$PREFIX" --registry "$REGISTRY" --definitions "$DEFINITIONS" --stream "$STREAM" \
   --routing "$ROUTING" --scenario "$SCENARIO" --drive-log "$OUT/drive.jsonl" --out "$REC" --name "$NAME" \
-  --report "$OUT/recording.capture-report.json" --dead-letter "$OUT/recording.dead-letter.jsonl" --client-id "forseti-recorder-$RUN_ID" \
+  --report "$OUT/recording.capture-report.json" --dead-letter "$OUT/recording.dead-letter.jsonl" --client-id "forseti-recorder-$RUN_ID" "${INJECTIONS[@]}" \
   > "$OUT/logs/record.log" 2>&1 || { tail -5 "$OUT/logs/record.log" >&2; fail "the recorder refused the capture"; }
 grep -v '^[0-9][0-9]:' "$OUT/logs/record.log" | tail -1
 
@@ -308,6 +329,13 @@ while IFS= read -r s; do SUBSCRIBE+=(--subscribe "$s"); done < <(json "$OUT/core
   --definitions "$REC/manifest.json" --out "$OUT/oracle" "${SUBSCRIBE[@]}" --check-journals "$OUT/core" > "$OUT/logs/oracle.log" 2>&1 \
   || { tail -5 "$OUT/logs/oracle.log" >&2; fail "the oracle on the capture"; }
 cat "$OUT/logs/oracle.log"
+
+step compare
+java -Xmx2g -jar "$FORSETI" recordings compare "$REC" --registry "$REGISTRY" --trusted-keys fixtures/live/trusted-keys.jsonl --python "$PYTHON" \
+  --out "$OUT/compare" > "$OUT/logs/compare.log" 2>&1 \
+  || { tail -40 "$OUT/logs/compare.log" >&2; fail "recordings compare: the core and the oracle differ, a check failed, or the visits are not the ones the injections explain"; }
+cp "$OUT/compare/compare-report.json" "$OUT/recording.compare-report.json"
+json "$OUT/recording.compare-report.json" '"compare: " + d["outcome"] + ", accepted " + str(d["accepted"]) + ", " + str(d["cutsCompared"]) + " cuts, " + str(d["rowsCompared"]) + " rows, " + str(d["differences"]) + " differences"'
 
 step done
 echo "full loop passed: $OUT"
