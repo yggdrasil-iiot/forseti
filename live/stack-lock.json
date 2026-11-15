@@ -1,0 +1,31 @@
+{
+  "stackLockVersion": 1,
+  "images": {
+    "hivemq": {
+      "image": "hivemq/hivemq-ce",
+      "version": "2026.5",
+      "digest": "sha256:bac6d4d1d815bffe4bc9a7fca8d06ea12b32d34f84ef2f1851ff4548560ee67b"
+    },
+    "kafka": {
+      "image": "apache/kafka",
+      "version": "4.2.2",
+      "digest": "sha256:1213eb3943d551e5ed1fca7a4e109001cee35770b66a02a0c37a8964efe09b69"
+    }
+  },
+  "jars": {
+    "bifrost-sim": {
+      "repository": "yggdrasil-iiot/bifrost",
+      "commit": "a405cb60ff032f5d870b35106fe2dbbca78c1552",
+      "module": "sim",
+      "path": "sim/target/bifrost-sim.jar",
+      "sha256": "11218825a15d7b4484ee478a04291dd9a60c9f5c0e54ef42f0dbf2102d9304d1"
+    },
+    "muninn": {
+      "repository": "yggdrasil-iiot/muninn",
+      "commit": "ef2e6865396b5ab12fa150c75fd75594406be2e2",
+      "module": ".",
+      "path": "target/muninn.jar",
+      "sha256": "a60bcba846565eece122cb6a6187137fcc3b8a578921e508b28bdfa0cd1976fd"
+    }
+  }
+}

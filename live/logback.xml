@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- The log configuration the full-loop runner gives every JVM it starts (-Dlogback.configurationFile=live/logback.xml): the sim, the
+     Muninns and the bridge ship Logback without a configuration and would log at DEBUG and TRACE for a whole run. INFO keeps each
+     process's own lines and the client libraries' warnings. -->
+<configuration>
+  <appender name="OUT" class="ch.qos.logback.core.ConsoleAppender">
+    <encoder><pattern>%d{HH:mm:ss.SSS} %-5level %logger{36} - %msg%n</pattern></encoder>
+  </appender>
+  <logger name="org.apache.kafka" level="WARN"/>
+  <logger name="io.netty" level="WARN"/>
+  <root level="INFO"><appender-ref ref="OUT"/></root>
+</configuration>

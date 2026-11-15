@@ -2,6 +2,7 @@ package yggdrasil.forseti.bridge;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.function.Consumer;
 
 /** Core, then the declared D3 stages in order, then the writer. One thread drives it, so the frames of an edge keep their arrival order
  *  end to end; the stages see only the core's output and never feed back into the session tracker. */
@@ -12,9 +13,16 @@ public final class Pipeline {
     private final Records.Topics topics;
     private final RunRecord run;
     private final RawFrameLog log;
+    private final Consumer<Emitted.SessionEvent> sessions;
 
     /** @param log the raw-frame log, or null when the run keeps none */
     public Pipeline(BridgeCore core, List<Stage> stages, Sink sink, Records.Topics topics, RunRecord run, RawFrameLog log) {
+        this(core, stages, sink, topics, run, log, null);
+    }
+
+    /** @param sessions told of every session event once it is handed to the writer (the process prints it), or null */
+    public Pipeline(BridgeCore core, List<Stage> stages, Sink sink, Records.Topics topics, RunRecord run, RawFrameLog log, Consumer<Emitted.SessionEvent> sessions) {
+        this.sessions = sessions;
         this.core = core;
         this.stages = List.copyOf(stages);
         this.sink = sink;
@@ -55,6 +63,7 @@ public final class Pipeline {
             Records.Out r = Records.encode(e, topics);
             sink.send(r);
             run.written(r);
+            if (sessions != null && e instanceof Emitted.SessionEvent se) sessions.accept(se);
         }
     }
 }
