@@ -1,15 +1,15 @@
 {
   "lockVersion": 1,
   "scenario": "session",
-  "scenarioSha256": "f73761afb7811a930f79799684495fc5c9cb3acc6b42dd6f9f31bee8b3ff6eb7",
+  "scenarioSha256": "7a2b5c8742848b87ea31f52090ac3337b3430a361fb4e9a27b3a83b36fd52b60",
   "generator": "forseti recordings build 0.1.0",
   "counts": {
-    "messages": 15755,
-    "samples": 22054,
-    "sessions": 9,
-    "occupancy": 32,
+    "messages": 15455,
+    "samples": 21754,
+    "sessions": 21,
+    "occupancy": 38,
     "incidents": 0,
-    "cuts": 73
+    "cuts": 79
   },
   "firstBatchTelemetryPartitions": [
     0,
@@ -19,16 +19,16 @@
   ],
   "w1Form": "min-over-partitions",
   "files": {
-    "expected.json": "458b1a886d64e9865191057668b4930d8d49354e1751176ae19ea1732f44f838",
-    "manifest.json": "606567f07903b259a0858c85bbaa72267384edb9f566a4f550e2cc674135d154",
+    "expected.json": "84aa1ad5be92959eeb182af6decf84e043ce591c3e279065957695bb3d5f0930",
+    "manifest.json": "4d1360adf7d5b75bf97c273ccbf721c677a8460fa6fe16933cf341e868f9a3bf",
     "mfg.occupancy/0.jsonl": "e4e5518e2426d2061c7c2a488563cfb77e410659fbfba70f9b8a25ecd1fbfc21",
     "mfg.occupancy/1.jsonl": "b2aee61c88461efced1842c4a061866e7c803621f59c4cf1d2d96f666f2a1a11",
-    "mfg.occupancy/2.jsonl": "492fb0db5e96b8682364e2ca0ea7c1648ee241716913a469ea46e3ca69852047",
-    "ot.messages/0.jsonl": "f5113bc02eb6439c8b8a5088b76191e4c7663da56ff76a087f51a401d5d4c64d",
+    "mfg.occupancy/2.jsonl": "ac1392158876a6a9ddf9e56de9ad136e20dfed324cac9ef52140af4b2e8a7490",
+    "ot.messages/0.jsonl": "3d502839477203ef670a0adacbc681aecc6b5db8911f314828271934eb2c61d8",
     "ot.messages/2.jsonl": "18fd1dbfeb26c66098a389265ee4cc87704776dec19f094a9720e4b2c300a217",
     "ot.messages/3.jsonl": "83e03e4b449758d218e2c83da22dcbe871fd7573f98899127dd6b8dd4166e262",
     "ot.messages/5.jsonl": "6d9a55edfc38572713b807a8af4bec0c0bd2e0fdc8b4364b2f45b78223fc393e",
-    "ot.sessions/0.jsonl": "a0a2c910ea0f6021e9a73516d7c84ca03bb7dc7c701881f5c4e0abc835fc59cd",
+    "ot.sessions/0.jsonl": "d4f3a34be665504011b63c21814b6d6a832b51992ba2fd039be5d48b929fbfa9",
     "ot.sessions/2.jsonl": "80212ccb4e0232116eb9c1b3f1f2ee3d08f1e50cac1354aff398a000388f9850",
     "ot.sessions/3.jsonl": "dc8ee36d292438ac28d251ecf62aa2a74e2563d4b61a68a0029c6345ff09acfe",
     "ot.sessions/5.jsonl": "1310499a9927b0f02f3e32885e886e43b785f0a7498599e19c7f99c8202543a0",

@@ -21,7 +21,9 @@ final class Overlays {
     record BadStatus(String device, String metric, long from, long to, long code) {}
     record Activity(String device, long from, long to) {}
     record SessionGap(String device, long fromSeq, long toSeq) {}
-    record SessionDown(String device, long at, long upAt) {}
+    /** A session-down at scan {@code at} and the next session's birth at {@code upAt}; with {@code rebirth} the next birth is a rebirth:
+     *  it keeps the dead session's bdSeq and its session-up carries {@code rebirth: true}. */
+    record SessionDown(String device, long at, long upAt, boolean rebirth) {}
     record StaleDeath(String device, long detectedEventTime, long rawPublishTs, long bdSeq) {}
     record SessionAmbiguous(String device, long detectedEventTime, long rawPublishTs, long bdSeq, long upAt) {}
     record DelayOccupancy(String eventId, long deliverAt) {}
@@ -93,7 +95,10 @@ final class Overlays {
                     Json.safeLong(inj.get("code"), "code", 0, 0xFFFFFFFFL)));
                 case "activity-without-visit" -> activity.add(new Activity(device(Json.text(inj, "device"), devices), ms(inj, "from"), ms(inj, "to")));
                 case "session-gap" -> gaps.add(new SessionGap(device(Json.text(inj, "device"), devices), ms(inj, "fromSeq"), ms(inj, "toSeq")));
-                case "session-down" -> downs.add(new SessionDown(device(Json.text(inj, "device"), devices), ms(inj, "at"), ms(inj, "upAt")));
+                case "session-down" -> {
+                    if (inj.has("rebirth") && !inj.get("rebirth").isBoolean()) throw refuse("session-down rebirth must be a boolean");
+                    downs.add(new SessionDown(device(Json.text(inj, "device"), devices), ms(inj, "at"), ms(inj, "upAt"), inj.path("rebirth").asBoolean(false)));
+                }
                 case "stale-death" -> staleDeaths.add(new StaleDeath(device(Json.text(inj, "device"), devices), ms(inj, "detectedEventTime"), ms(inj, "rawPublishTs"), ms(inj, "bdSeq")));
                 case "session-ambiguous" -> ambiguous.add(new SessionAmbiguous(device(Json.text(inj, "device"), devices), ms(inj, "detectedEventTime"),
                     ms(inj, "rawPublishTs"), ms(inj, "bdSeq"), ms(inj, "upAt")));

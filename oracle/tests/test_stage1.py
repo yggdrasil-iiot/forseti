@@ -523,7 +523,7 @@ def test_a_measurement_conflict_quarantines_every_delivery_of_the_triple():
 def test_a_session_down_interval_makes_samples_outside_session():
     d = Driver()
     d.input(SESSIONS, session(NR1, "session-down", 40, {"from": T + 10_000, "to": None}))
-    d.input(SESSIONS, session(NR1, "session-up", 41, {"at": T + 20_000, "rebirth": False}))
+    d.input(SESSIONS, dict(session(NR1, "session-up", 1, {"at": T + 20_000, "rebirth": False}), birthPublishTs=T + 20_000, bdSeq=1))
     inside = d.scan(T + 15_000)[1]
     after = d.scan(T + 25_000)[1]
     d.cut()
@@ -690,3 +690,81 @@ def test_a_null_time_event_sorts_first_in_its_cut():
     assert stage1.event_time(death) is None
     assert stage1.contract_key(death) < stage1.contract_key(occ)
     assert sorted([occ, death], key=stage1.contract_key)[0] is death
+
+
+# --- session interval end (S8, spec 517) ------------------------------------------------------------------------------------------
+
+from forseti_oracle.inputs import Session as _Session  # noqa: E402
+
+
+def _ev(kind, payload, birth=1_000, bd_seq=0, edge="edge-1", device="dev-1"):
+    return _Session(edge, device, birth, bd_seq, kind, 1, payload)
+
+
+def _down(frm, birth=1_000, bd_seq=0):
+    return _ev("session-down", {"from": frm, "to": None}, birth, bd_seq)
+
+
+def _up(at, birth, bd_seq=0):
+    return _ev("session-up", {"at": at, "rebirth": False}, birth, bd_seq)
+
+
+def _no_obs(t):
+    return None
+
+
+def test_a_session_up_of_a_different_identity_ends_the_down_interval():
+    # a rebirth: same bdSeq, another birthPublishTs, so another session identity
+    ds = stage1.sessions_of([_down(5_000), _up(1_000, 1_000), _up(8_000, 8_000)], _no_obs, 20_000)
+    assert ds.down == [(5_000, 8_000)] and ds.gaps == [(5_000, 8_000)]
+
+
+def test_the_dead_sessions_own_session_up_never_ends_its_interval():
+    # a no-telemetry session: its down's from is its birth, the same instant as its own session-up
+    ds = stage1.sessions_of([_down(5_000, birth=5_000, bd_seq=1), _up(5_000, 5_000, bd_seq=1)], _no_obs, 20_000)
+    assert ds.down == [(5_000, 20_000)]
+    ds = stage1.sessions_of([_down(5_000, birth=5_000, bd_seq=1), _up(5_000, 5_000, bd_seq=1), _up(9_000, 9_000, bd_seq=2)], _no_obs, 20_000)
+    assert ds.down == [(5_000, 9_000)]
+
+
+def test_a_session_up_after_w1_still_ends_the_interval():
+    ds = stage1.sessions_of([_down(5_000), _up(9_000, 9_000, bd_seq=1)], _no_obs, 7_000)
+    assert ds.down == [(5_000, 9_000)]
+
+
+def test_a_session_up_before_max_from_birth_is_ignored():
+    # before from
+    ds = stage1.sessions_of([_down(5_000), _up(4_000, 4_000, bd_seq=1), _up(9_000, 9_000, bd_seq=2)], _no_obs, 20_000)
+    assert ds.down == [(5_000, 9_000)]
+    # at or after from but before the down's own birthPublishTs (a down whose from precedes its birth)
+    ds = stage1.sessions_of([_down(5_000, birth=6_000), _up(5_500, 5_500, bd_seq=1), _up(9_000, 9_000, bd_seq=2)], _no_obs, 20_000)
+    assert ds.down == [(5_000, 9_000)]
+
+
+def test_an_interval_whose_end_is_not_after_its_start_is_dropped():
+    # W1 before from with no session-up delivered
+    ds = stage1.sessions_of([_down(5_000)], _no_obs, 4_000)
+    assert ds.down == [] and ds.gaps == []
+    # a successor born in the same millisecond as from
+    ds = stage1.sessions_of([_down(5_000, birth=5_000), _up(5_000, 5_000, bd_seq=1)], _no_obs, 20_000)
+    assert ds.down == [] and ds.gaps == []
+    # an unknown interval: the ambiguous event's own identity is excluded, the successor ends it, an inverted one is dropped
+    amb = _ev("session-ambiguous", {"detectedEventTime": 6_000, "rawPublishTs": 0, "bdSeq": 0, "payloadDigest": "0" * 64})
+    ds = stage1.sessions_of([amb, _up(6_000, 1_000), _up(7_000, 7_000, bd_seq=1)], lambda t: 5_500, 20_000)
+    assert ds.unknown == [(5_500, 7_000)]
+    ds = stage1.sessions_of([amb], lambda t: None, 3_000)
+    assert ds.unknown == []
+
+
+def _gap(frm, to):
+    return _ev("seq-gap", {"from": frm, "to": to, "missing": 2})
+
+
+def test_a_seq_gap_is_closed_and_reversal_normalised():
+    assert stage1.sessions_of([_gap(5_000, 7_000)], _no_obs, 20_000).gaps == [(5_000, 7_001)]
+    assert stage1.sessions_of([_gap(5_000, 5_000)], _no_obs, 20_000).gaps == [(5_000, 5_001)]   # to == from
+    assert stage1.sessions_of([_gap(7_000, 5_000)], _no_obs, 20_000).gaps == [(5_000, 7_001)]   # to < from
+    ds = stage1.sessions_of([_gap(5_000, 7_000)], _no_obs, 20_000)
+    assert stage1._overlaps(ds.gaps, 7_000, 9_000) == [(5_000, 7_001)]   # an evaluation interval starting exactly at to
+    assert stage1._overlaps(ds.gaps, 7_001, 9_000) == []
+    assert ds.down == []   # a seq-gap rejects no sample

@@ -191,6 +191,30 @@
       "leave": 1380000,
       "tools": [],
       "visitSeq": 4
+    },
+    {
+      "unit": "UNIT0000000000005",
+      "station": "site-019:line2:station3",
+      "enter": 1540000,
+      "leave": 1565000,
+      "tools": [],
+      "visitSeq": 5
+    },
+    {
+      "unit": "UNIT0000000000006",
+      "station": "site-019:line2:station3",
+      "enter": 1720000,
+      "leave": 1745000,
+      "tools": [],
+      "visitSeq": 6
+    },
+    {
+      "unit": "UNIT0000000000007",
+      "station": "site-019:line2:station3",
+      "enter": 2030000,
+      "leave": 2050000,
+      "tools": [],
+      "visitSeq": 7
     }
   ],
   "toolActivity": {
@@ -225,6 +249,43 @@
       "rawPublishTs": 1519000,
       "bdSeq": 1,
       "upAt": 1522000
+    },
+    {
+      "type": "session-down",
+      "device": "site-019:line2:station3",
+      "at": 1499000,
+      "upAt": 1559000
+    },
+    {
+      "type": "session-down",
+      "device": "site-019:line2:station3",
+      "at": 1619000,
+      "upAt": 1679000
+    },
+    {
+      "type": "session-down",
+      "device": "site-019:line2:station3",
+      "at": 1679000,
+      "upAt": 1739000
+    },
+    {
+      "type": "session-down",
+      "device": "site-019:line2:station3",
+      "at": 1799000,
+      "upAt": 1859000
+    },
+    {
+      "type": "session-down",
+      "device": "site-019:line2:station3",
+      "at": 1859000,
+      "upAt": 1859000
+    },
+    {
+      "type": "session-down",
+      "device": "site-019:line2:station3",
+      "at": 1979000,
+      "upAt": 2039000,
+      "rebirth": true
     },
     {
       "type": "activity-without-visit",
