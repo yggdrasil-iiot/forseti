@@ -1,8 +1,8 @@
 {
   "liveScenarioVersion": 1,
   "name": "baseline",
-  "scanMs": 250,
-  "muninnPeriodMs": 500,
+  "scanMs": 500,
+  "muninnPeriodMs": 250,
   "seed": 20261109,
   "occupancy": {"emit": true, "source": "mes-line2"},
   "toolActivity": {"startAfterEnter": 5000, "endBeforeLeave": 1000, "torque": {"min": 10.0, "max": 45.0}},

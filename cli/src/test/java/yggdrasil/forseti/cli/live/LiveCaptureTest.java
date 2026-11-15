@@ -31,8 +31,8 @@ class LiveCaptureTest {
             ROUTING.resolve("dedicated.json"), DrivePlanTest.BASELINE, log, null, 60_000);
         assertEquals("baseline", in.name());
         assertEquals(1794700000000L, in.t0(), "the earliest commit of the step at offset 0");
-        assertEquals(250, in.scanMs());
-        assertEquals(500, in.source().get("muninnPeriodMs").asLong());
+        assertEquals(500, in.scanMs());
+        assertEquals(250, in.source().get("muninnPeriodMs").asLong());
         assertEquals(0, in.source().get("injections").size(), "the baseline declares no injection");
         assertEquals("line2-dedicated", in.rulePin().get("stream").asText());
         JsonNode head = Json.read(LiveEquipmentTest.REGISTRY.resolve("mappings/heads/line2-dedicated.json"));

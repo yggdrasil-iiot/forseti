@@ -22,8 +22,11 @@ import yggdrasil.forseti.core.input.InputParser;
  *  {@code M} Muninn's {@code --session} period and {@code S} the sim's {@code bifrost.sim.scanMs} ({@link #periodProblem}). Muninn
  *  polls free-running and publishes the last scan it read, which is at most {@code S} old, so two consecutive distinct source
  *  timestamps it delivers lie less than {@code M + S} plus jitter apart; under the bound every slot of {@code expectedPeriodMs} holds
- *  an observation wherever a visit's {@code enter} falls, and coverage counts only real absences. The source timestamps stay the
- *  sim's real acquisition times: none is moved onto a grid.</li>
+ *  an observation wherever a visit's {@code enter} falls, and coverage counts only real absences. And {@code 2 M <= S}: neither the
+ *  sim's scan nor Muninn's read of a device's members is atomic (the sim sets its nodes one by one, Muninn reads them one by one), so a
+ *  read that straddles a scan boundary mixes two scans and is an incoherent snapshot, which plc-stamped attribution leaves
+ *  unattributed; with at least two reads per scan a straddling read is not a scan's only reading. The source timestamps stay the sim's
+ *  real acquisition times: none is moved onto a grid.</li>
  *  <li>The routing manifest meets the placement rules of its fixture ({@link Placement#problems}) and is byte-for-byte the routing
  *  recomputed from the registry: a hand-edited partition number would be visible.</li>
  *  <li>Every routed device's live members and their {@code Sim/<member>.Value} and {@code .StatusCode} controls exist in the sim,
@@ -77,13 +80,17 @@ public final class Preflight {
         return s;
     }
 
-    /** Null when Muninn's period {@code muninnPeriodMs} (M) and the sim's scan {@code scanMs} (S) are positive and
-     *  {@code M + S + JITTER_MARGIN_MS <= expectedPeriodMs}; otherwise the problem. The live values are 500, 250 and 1000. */
+    /** Null when Muninn's period {@code muninnPeriodMs} (M) and the sim's scan {@code scanMs} (S) are positive,
+     *  {@code M + S + JITTER_MARGIN_MS <= expectedPeriodMs} and {@code 2 M <= S}; otherwise the problem. The live values are 250, 500
+     *  and 1000. */
     public static String periodProblem(long muninnPeriodMs, long scanMs, long expectedPeriodMs) {
         if (muninnPeriodMs <= 0 || scanMs <= 0) return "Muninn period " + muninnPeriodMs + " ms and sim scan " + scanMs + " ms must be positive";
         if (muninnPeriodMs + scanMs + JITTER_MARGIN_MS > expectedPeriodMs)
             return "Muninn period " + muninnPeriodMs + " ms + sim scan " + scanMs + " ms + jitter margin " + JITTER_MARGIN_MS + " ms exceeds the rule's expectedPeriodMs "
                 + expectedPeriodMs;
+        if (2 * muninnPeriodMs > scanMs)
+            return "Muninn period " + muninnPeriodMs + " ms is more than half the sim scan " + scanMs
+                + " ms: each scan must be read at least twice, so that a read straddling a scan boundary is not its only reading";
         return null;
     }
 
