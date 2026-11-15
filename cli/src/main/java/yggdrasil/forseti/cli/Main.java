@@ -51,6 +51,7 @@ public final class Main {
             try { flags = Args.parse(args, 2, Set.of()); } catch (IllegalArgumentException e) { err.println(e.getMessage()); return usage(err); }
             return replay(flags, out, err);
         }
+        if (args[0].equals("recordings") && args[1].equals("compare")) return yggdrasil.forseti.cli.gate.RecordingCompare.main(args, 2, out, err);
         if (args[0].equals("recordings") && args[1].equals("verify-capture")) {
             if (args.length < 3 || args[2].startsWith("--")) { err.println("recordings verify-capture needs a recording directory"); return usage(err); }
             Args flags;
@@ -97,6 +98,7 @@ public final class Main {
         err.println("       forseti recordings verify --scenario <file> --out <dir> [--registry <dir>]");
         err.println("       forseti recordings replay --recording <dir> --out-of-orderness-ms <n> --out <dir> [--lock <file>]");
         err.println("       forseti recordings verify-capture <recording> --lock <capture lock> [--write-lock]");
+        err.println("       forseti recordings compare <recording> [--registry <dir>] [--trusted-keys <file>] [--python <interpreter>] [--out <dir>]");
         err.println("       forseti recordings engine-scenarios --fixtures <dir> --out <engine-fixtures dir> [--check]");
         err.println("       forseti recordings check-engine --scenario <file> --registry <dir> --trusted-keys <file> --python <interpreter> --out <dir>");
         err.println("                   [--w1-form per-station|min-over-partitions]");

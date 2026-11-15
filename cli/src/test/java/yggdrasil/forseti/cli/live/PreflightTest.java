@@ -22,7 +22,7 @@ class PreflightTest {
         String bridge = "forseti-bridge", driver = "forseti-driver";
         List<Preflight.Edge> edges = new ArrayList<>(List.of(new Preflight.Edge("s1", S1), new Preflight.Edge("t1", T1), new Preflight.Edge("t2", T2),
             new Preflight.Edge("s2", S2), new Preflight.Edge("s3", S3)));
-        long period = 1000, scan = 1000;
+        long period = 500, scan = 250;
         List<LiveTopics.Spec> topics = LiveTopics.plan("run-1.");
         Map<String, LiveTopics.Observed> observed = LiveTopicsTest.asPlanned(topics);
         Set<String> present = new TreeSet<>(Preflight.requiredNodes(stream, stream.equipment().keySet()));
@@ -82,20 +82,28 @@ class PreflightTest {
     }
 
     @Test
-    void thePeriodTheRulePeriodAndTheScanMustAllBe1000() {
-        String bad = "PERIOD_MS %d, rule expectedPeriodMs %d and sim scanMs %d must all be 1000";
+    void theMuninnPeriodPlusTheScanPlusTheJitterMarginMustFitTheRulePeriod() {
+        String bad = "Muninn period %d ms + sim scan %d ms + jitter margin 100 ms exceeds the rule's expectedPeriodMs %d";
+        assertEquals(100, Preflight.JITTER_MARGIN_MS);
         F f = new F();
-        f.period = 500;
-        hasOnly(f.problems(), String.format(bad, 500, 1000, 1000));
+        assertEquals(List.of(), f.problems(), "the live values 500, 250 and 1000");
+        f.period = 250; f.scan = 500;
+        assertEquals(List.of(), f.problems(), "the fallback 250 and 500");
+        f.period = 600; f.scan = 300;
+        assertEquals(List.of(), f.problems(), "exactly at the bound");
+        f.period = 601;
+        hasOnly(f.problems(), String.format(bad, 601, 300, 1000));
         f = new F();
-        f.scan = 2000;
-        hasOnly(f.problems(), String.format(bad, 1000, 1000, 2000));
+        f.period = 1000; f.scan = 1000;   // the old equality no longer passes
+        hasOnly(f.problems(), String.format(bad, 1000, 1000, 1000));
         f = new F();
         LiveEquipment.LiveStream s = f.stream;
-        f.stream = new LiveEquipment.LiveStream(s.stream(), s.mode(), s.crossCheck(), 2000, s.stations(), s.equipment(), s.occupancy(), s.incidents());
-        hasOnly(f.problems(), String.format(bad, 1000, 2000, 1000));
-        f.period = 2000; f.scan = 2000;   // equal, but not 1000
-        hasOnly(f.problems(), String.format(bad, 2000, 2000, 2000));
+        f.stream = new LiveEquipment.LiveStream(s.stream(), s.mode(), s.crossCheck(), 800, s.stations(), s.equipment(), s.occupancy(), s.incidents());
+        hasOnly(f.problems(), String.format(bad, 500, 250, 800));
+        f = new F();
+        f.scan = 0;
+        hasOnly(f.problems(), "Muninn period 500 ms and sim scan 0 ms must be positive");
+        assertNull(Preflight.periodProblem(500, 250, 1000));
     }
 
     @Test

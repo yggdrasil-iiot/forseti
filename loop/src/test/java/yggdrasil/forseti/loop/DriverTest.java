@@ -36,7 +36,7 @@ class DriverTest {
     static Run drive(ObjectNode scenario, long pollMs, java.util.function.Consumer<FakeSim> setup) throws InterruptedException {
         LiveEquipment.LiveStream s = stream();
         LiveScenario sc = LiveScenario.read(scenario, s);
-        FakeSim sim = new FakeSim(s, 1000, 437);
+        FakeSim sim = new FakeSim(s, sc.scanMs(), 137);
         setup.accept(sim);
         Sink sink = new Sink();
         List<ObjectNode> log = new ArrayList<>();
@@ -157,7 +157,7 @@ class DriverTest {
     void aStraddlingReadIsRepeatedAndAScanBetweenReadAndWriteIsNotTakenForTheCommit() throws Exception {
         LiveEquipment.LiveStream s = stream();
         LiveScenario sc = LiveScenario.read(baseline(), s);
-        FakeSim sim = new FakeSim(s, 1000, 437);
+        FakeSim sim = new FakeSim(s, sc.scanMs(), 137);
         Driver d = new Driver(sim, new Sink(), sim, sc, s, 10, 10_000, l -> {});
         DrivePlan.Snapshot st1 = DrivePlan.stateAt(sc, s.device(S1), 60000);
 

@@ -60,7 +60,7 @@ class LoopMainTest {
     static LoopMain.Config config(Path pins, String... edges) {
         Map<String, List<String>> a = LoopMain.options(new String[] {"--registry", LIVE.resolve("registry").toString(), "--definitions", LIVE.resolve("definitions").toString(),
             "--stream", "line2-dedicated", "--routing", LIVE.resolve("routing/dedicated.json").toString(), "--pins", pins.toString(),
-            "--period-ms", "1000", "--scan-ms", "1000", "--prefix", "run-9."});
+            "--muninn-period-ms", "500", "--scan-ms", "250", "--prefix", "run-9."});
         List<String> e = new ArrayList<>();
         for (String x : edges) e.add(x);
         a.put("edge", e);
@@ -110,5 +110,17 @@ class LoopMainTest {
         assertThrows(LoopMain.Usage.class, () -> LoopMain.options(new String[] {"--kafka", "a", "--kafka", "b"}));
         assertEquals(List.of("a=b", "c=d"), LoopMain.options(new String[] {"--edge", "a=b", "--edge", "c=d"}).get("edge"));
         assertThrows(LoopMain.Usage.class, () -> LoopMain.config(LoopMain.options(new String[] {"--edge", "nodevice"})));
+    }
+
+    @Test
+    void aDriveWhoseAcquisitionCadenceDoesNotFitTheRulePeriodIsRefusedBeforeItConnects(@TempDir Path tmp) {
+        com.fasterxml.jackson.databind.node.ObjectNode slow = (com.fasterxml.jackson.databind.node.ObjectNode) Json.read(DriverTest.BASELINE);
+        slow.put("muninnPeriodMs", 1000);
+        Path f = tmp.resolve("slow.json");
+        Json.write(f, slow);
+        LoopMain.Usage u = assertThrows(LoopMain.Usage.class, () -> LoopMain.run(new String[] {"drive", "--kafka", "localhost:1", "--registry", LIVE.resolve("registry").toString(),
+            "--definitions", LIVE.resolve("definitions").toString(), "--stream", "line2-dedicated", "--routing", LIVE.resolve("routing/dedicated.json").toString(),
+            "--scenario", f.toString(), "--opcua", "opc.tcp://localhost:1"}, System.out));
+        assertTrue(u.getMessage().contains("Muninn period 1000 ms + sim scan 250 ms + jitter margin 100 ms exceeds the rule's expectedPeriodMs 1000"), u.getMessage());
     }
 }

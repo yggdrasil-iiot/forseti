@@ -51,7 +51,7 @@ Fixed rules:
   - *Reason:* Dropping mixed messages would hide the condition injection 11c covers; a batched read in Muninn stays a possible follow-up, outside step 5.
 - **D9 (Upstream definitions derivation and pinning):** Definitions for Muninn originate upstream. Mimir derives `station-model` and `tool-model` candidate definitions from the simulator's `StationType` and `ToolType`. Bifrost admits and publishes them. Forseti imports the published definition bytes unchanged, locking them by commit hash and SHA-256 digest.
   - *Reason:* Maintains zero shared code between repositories while ensuring strict schema governance.
-- **Period configuration:** Muninn `PERIOD_MS` = rule `expectedPeriodMs` = simulator `scanMs` = 1000. Preflight checks assert equality across all three values before execution.
+- **Period configuration:** the acquisition cadence is separate from the rule's period. Muninn's poll period `PERIOD_MS` (M) and the simulator `scanMs` (S) come from the live scenario (`muninnPeriodMs`, `scanMs`); the rule's `expectedPeriodMs` (P) stays 1000 with `maxMissingPeriods` 3. Preflight, the driver and the recorder assert `M + S + 100 <= P` (a declared jitter margin of 100 ms; the live captures at a 1000 ms scan showed distinct source timestamps at most 72 ms off the scan period). Live values: P = 1000, M = 500, S = 250 (fallback M = 250, S = 500). Muninn polls free-running and publishes the last scan it read, so consecutive distinct source timestamps lie less than M + S plus jitter apart and every 1000 ms slot holds an observation; no source time is moved onto a grid.
 - **Placement configuration:** The smoke placement subscribes raw partitions {1, 2, 4, 5}. Modulo 4, these map to residues {1, 2, 0, 1}, violating row 5 ("distinct modulo their count"). Two replacement fixtures (`dedicated`: each device on its own raw partition; `shared`: one partition shared by two stations) are generated via deterministic search over hierarchy device paths using `Murmur2` (partition numbers are never manually overridden). The same station is starved in both fixtures. Each partition residue is distinct modulo the subscription count, and split-ownership `(((topic.hashCode() * 31) & 0x7FFFFFFF) % n + partition) % n` is validated per raw topic.
 - **Live recording verification:** Live recordings are lock-verified against recorded manifests and digests, rather than byte-reproducible across runs, due to real-world wall-clock timestamps (`sourceTimestamp`, birth, publish, append). Committed fixtures remain byte-stable in git via `.gitattributes` (`fixtures/** -text`).
 - **Horizon scenarios:** Multi-day horizon scenarios remain synthetic; engine restarts, rebalances, isolation verdicts, and formal requirements runs belong to steps 6 and 7.
@@ -121,6 +121,7 @@ PR 8 (Committed captures) ◄── PR 7 (Compose & workflows) ◄── PR 6 (R
     - Refuse alias-only Sparkplug messages.
     - Idempotent acknowledged Kafka producer using `kafka-clients` 4.2.2 with bounded queues; message delivery failure aborts the run.
     - Fault injection stages (D3): configurable hold-and-release stage (Injection 1) and source timestamp offset stage (Injection 9) before Kafka write.
+    - Death-after-birth input stage (Injection 25(a)), declared and off by default: before session classification it holds the chosen edge's NDEATH until the edge's next NBIRTH has been processed (the raw-frame log keeps the wire order); the run record names the held frame, the frame it was released after and `completed`.
   - Add table-driven unit tests on recorded MQTT frames without external brokers, covering Decision 10 states and Injections 25(a) and 25(b).
 - **Verification:**
   - `mvn test -pl bridge`
@@ -130,7 +131,7 @@ PR 8 (Committed captures) ◄── PR 7 (Compose & workflows) ◄── PR 6 (R
 - **Tasks:**
   - In module `loop` and `cli/src/main/java/yggdrasil/forseti/cli/live/`:
     - Implement `forseti-loop topics`: creates six partitions per input topic, configures `LogAppendTime`, and sets 30-day retention.
-    - Implement `preflight` command: verifies unique MQTT client IDs (including Muninn's `muninn-edge-<edge>`), asserts partition counts, verifies `LogAppendTime`, checks `PERIOD_MS == expectedPeriodMs == scanMs == 1000`, validates placement split-owner rules, checks simulator controls, and asserts definition digests.
+    - Implement `preflight` command: verifies unique MQTT client IDs (including Muninn's `muninn-edge-<edge>`), asserts partition counts, verifies `LogAppendTime`, checks `PERIOD_MS + scanMs + 100 <= expectedPeriodMs`, validates placement split-owner rules, checks simulator controls, and asserts definition digests.
     - Implement occupancy and incident Kafka producers conforming to committed 1.0.0 schemas.
     - Implement scenario driver using Eclipse Milo 1.1.8 client:
       - Reads wall-clock schedule from scenario file matching spec visit profiles (60 s visit, 120 s gap; T1-only, T2-only, both-tool, no-tool visits).
@@ -160,7 +161,7 @@ PR 8 (Committed captures) ◄── PR 7 (Compose & workflows) ◄── PR 6 (R
   - Author `docker-compose.yml`:
     - HiveMQ CE pinned to a dated tag by digest (not `latest`, fixed in this task).
     - Single-node Kafka KRaft pinned by digest (Kafka 4.2.2).
-    - Bifrost simulator container configured with `-Dbifrost.sim.scanMs=1000`.
+    - Bifrost simulator container configured with `-Dbifrost.sim.scanMs=<scenario scanMs>` (250); Muninn with `--session <scenario muninnPeriodMs>` (500).
     - Five Muninn processes started with `--session --hierarchy --primary-host host-<edge>` and unique edge IDs.
     - Bridge service subscribing to MQTT prior to the publication of the five retained online STATE messages.
   - Commit lock files for container image digests and simulator/Muninn commit hashes.
@@ -177,11 +178,12 @@ PR 8 (Committed captures) ◄── PR 7 (Compose & workflows) ◄── PR 6 (R
     - Baseline run on `shared` placement.
     - Fault injection 3: Bad via StatusCode.
     - Fault injection 8: termination of one Muninn instance.
-    - Fault injection 25(a): host offline followed by online recovery.
+    - Fault injection 25(a): host offline followed by online recovery, with the bridge's death-after-birth input stage making the earlier connection's NDEATH arrive past the newer NBIRTH; the run fails unless the stage completed and a `stale-death` was captured.
     - One `plc-stamped` attribution run.
     - Bridge fault injection 1: 10-minute hold-and-release.
     - Bridge fault injection 9: source clock +30 s offset.
   - Verify all captures using `forseti recordings verify-capture`, core harness, and Python oracle.
+  - Accept each capture's visits (`forseti recordings compare`): with no injection every visit is `complete`; with an injection the non-complete visits are exactly those it touches (its station, its window), `insufficient` with its reason (`bad-share-exceeded` for 3, `session-gap` for 8, `missing-periods` for 25(a)); injections 1 and 9 touch none.
   - Commit verified capture directories under `fixtures/live-recordings/` with lock files, preflight summaries, provenance metadata, and gate execution logs. Mark byte-stable in `.gitattributes`.
 - **Verification:**
   - Step-5 completion gate execution on committed fixtures.
@@ -217,13 +219,14 @@ Gate criteria:
 4. All five devices, both placement layouts, both attribution regimes (`occupancy-join` and `plc-stamped`), and all four Station1 tool usage patterns (T1-only, T2-only, both tools, no tools) are present in the committed captures.
 5. The incoherent-snapshot and repeated-`sourceTs` rates are recorded in each capture's report.
 6. Execution logs and run records are preserved in the run output directory.
+7. Every committed capture's visits are accepted: all `complete` in the baseline captures, and in an injection capture the non-complete visits are exactly those the injection touches, with its reason.
 
 ## Risks
 
 | Risk | Impact | Mitigation |
 | :--- | :--- | :--- |
 | Mixed snapshots from per-member reads | Muninn reads nodes individually, allowing polls to straddle simulator updates. | Mixed-scan messages are preserved as emitted; core handles them via `incoherent-snapshot`; recorder measures and reports rates. |
-| Scan jitter and lack of phase lock | Identical 1000 ms scan and poll rates without synchronization produce skipped or duplicated scans. | Assertions evaluate observable timestamp and sequence evidence rather than assuming uniform sample counts. |
+| Scan jitter and lack of phase lock | Scan and poll rates without synchronization produce skipped or duplicated scans; at equal 1000 ms rates any gap above 1000 ms (jitter, or a skipped scan) leaves a slot without an observation. | Sample faster than the rule's period (scan 250 ms, poll 500 ms, `M + S + 100 <= 1000`); assertions evaluate observable timestamp and sequence evidence rather than assuming uniform sample counts; a pilot baseline must show no drive failure, distinct-`sourceTs` gaps under 1000 ms per device and every visit complete. |
 | OPC UA endpoint binding | Bifrost simulator requires exact endpoint address `localhost:48400`. | Muninn and driver JVMs share the simulator's container network namespace or utilize host networking. |
 | Unreleased upstream dependencies | Simulator and Muninn lack published Maven releases. | Binaries are compiled from locked upstream git commits and pinned by SHA-256 digest. |
 | Local port collision | Port 9090 is occupied on the controller's machine. | Heimdall is not part of the step-5 loop. |
