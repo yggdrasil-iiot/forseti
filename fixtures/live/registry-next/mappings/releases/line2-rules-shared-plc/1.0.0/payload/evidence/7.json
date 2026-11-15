@@ -1,0 +1,17 @@
+{
+  "kind": "evidence-artifact",
+  "schemaVersion": "1.0.0",
+  "id": "manual-station1-visit",
+  "version": "1.0.0",
+  "origin": "synthetic",
+  "file": {
+    "path": "data/manual-7.txt",
+    "sha256": "e1a23af0248aecd4d3b5bd7a15243cbed95d174be3ad114b5ad4ba693383641d",
+    "mediaType": "text/plain"
+  },
+  "capturedAt": "2026-11-07T00:00:00Z",
+  "product": null,
+  "scope": [
+    "station1"
+  ]
+}
