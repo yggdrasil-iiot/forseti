@@ -13,7 +13,7 @@ final class Overlays {
     static final List<String> TYPES = List.of("plc-identity", "hold-back", "redeliver", "shift-source-ts", "bad-status", "overlap-visit",
         "delay-occupancy", "late-correction", "error-declaration", "resend-different", "activity-without-visit", "session-gap",
         "session-down", "stale-death", "session-ambiguous", "plc-cross-check-mismatch", "mixed-snapshot", "id-change-without-false",
-        "no-visit-end", "no-departure", "planned-late-samples", "incident");
+        "no-visit-end", "no-departure", "planned-late-samples", "starve-station", "incident");
     static final String DID_NOT_OCCUR = "urn:epcglobal:cbv:er:did_not_occur", INCORRECT_DATA = "urn:epcglobal:cbv:er:incorrect_data";
 
     record HoldBack(String topic, Set<String> devices, long from, long to, long delayMs) {}
@@ -35,6 +35,10 @@ final class Overlays {
     /** Injection 23 (Task 17): the on-time {@code metric} observation of {@code device} at the scan {@code holeAt} is removed, and three
      *  late samples at {@code holeAt}, {@code holeAt - 1}, {@code holeAt - 2} follow the batch that ends at {@code holeAt + H + O}. */
     record PlannedLate(String device, String metric, long holeAt) {}
+    /** Injection 24 (spec 681): the telemetry of every device of {@code station} with a scan in {@code [from, resumeAt)} is withheld
+     *  before it reaches raw Kafka and appended, in scan order, as a late burst delivered at {@code resumeAt}; the batches written while
+     *  it is withheld declare the station {@code starved} in their {@code idleInputs}. */
+    record Starve(String station, Set<String> devices, long from, long resumeAt) {}
 
     final List<JsonNode> all = new ArrayList<>();
     final List<JsonNode> plcIdentity = new ArrayList<>(), overlapVisits = new ArrayList<>();
@@ -57,6 +61,7 @@ final class Overlays {
     final List<NoVisitEnd> noVisitEnds = new ArrayList<>();
     final Set<String> noDeparture = new TreeSet<>();
     final List<PlannedLate> plannedLate = new ArrayList<>();
+    final List<Starve> starves = new ArrayList<>();
 
     Overlays(JsonNode injections, Set<String> devices) {
         for (JsonNode inj : injections) {
@@ -115,6 +120,15 @@ final class Overlays {
                     if (!plannedLate.isEmpty()) throw refuse("one planned-late-samples overlay per scenario");
                     plannedLate.add(new PlannedLate(device(Json.text(inj, "device"), devices), Json.text(inj, "metric"), ms(inj, "holeAt")));
                 }
+                case "starve-station" -> {
+                    if (!starves.isEmpty()) throw refuse("one starve-station overlay per scenario");
+                    String station = device(Json.text(inj, "station"), devices);
+                    Set<String> of = new TreeSet<>();
+                    for (String d : devices) if (d.equals(station) || d.startsWith(station + ":")) of.add(d);
+                    long from = ms(inj, "from"), resumeAt = ms(inj, "resumeAt");
+                    if (resumeAt <= from) throw refuse("starve-station resumeAt <= from");
+                    starves.add(new Starve(station, of, from, resumeAt));
+                }
                 case "incident" -> throw refuse("incident overlays are written as the scenario's incidents[]");
                 default -> throw new IllegalStateException(type);
             }
@@ -132,6 +146,7 @@ final class Overlays {
         for (SessionDown d : downs) m = Math.max(m, d.upAt());
         for (StaleDeath d : staleDeaths) m = Math.max(m, d.detectedEventTime());
         for (SessionAmbiguous a : ambiguous) m = Math.max(m, Math.max(a.detectedEventTime(), a.upAt()));
+        for (Starve x : starves) m = Math.max(m, x.resumeAt());
         return m;
     }
 
@@ -139,6 +154,7 @@ final class Overlays {
 
     /** The delivery time of a telemetry scan of {@code device} at scan time {@code t}: delayed by a hold-back, else the scan time. */
     long telemetryDeliverAt(String device, long t) {
+        for (Starve x : starves) if (x.devices().contains(device) && x.from() <= t && t < x.resumeAt()) return x.resumeAt();
         for (HoldBack h : holdBacks) if ((h.devices().isEmpty() || h.devices().contains(device)) && h.from() <= t && t < h.to()) return t + h.delayMs();
         return t;
     }

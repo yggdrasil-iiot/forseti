@@ -1,0 +1,121 @@
+{
+  "lockVersion": 1,
+  "scenario": "starved-station3",
+  "scenarioSha256": "178bacfef516fd2ac1a21a5a4775b9b72f1c5ab048f7d19ceaf4a774a296c841",
+  "generator": "forseti recordings build 0.1.0",
+  "counts": {
+    "messages": 15760,
+    "samples": 22064,
+    "sessions": 5,
+    "occupancy": 32,
+    "incidents": 0,
+    "cuts": 74
+  },
+  "firstBatchTelemetryPartitions": [
+    1,
+    2,
+    3,
+    4,
+    5
+  ],
+  "w1Form": "min-over-partitions",
+  "starvation": {
+    "station": "site-071:line2:station3",
+    "devices": [
+      "site-071:line2:station3"
+    ],
+    "partitions": [
+      2
+    ],
+    "from": 1794183900000,
+    "resumeAt": 1794184500000,
+    "frozenAt": 1794183899000,
+    "evidenceRef": "injection-24",
+    "heldDeadlines": [
+      {
+        "kind": "visit-settlement",
+        "ref": "visit-2",
+        "station": "site-071:line2:station1",
+        "at": 1794183960000
+      },
+      {
+        "kind": "visit-settlement",
+        "ref": "visit-3",
+        "station": "site-071:line2:station1",
+        "at": 1794184140000
+      },
+      {
+        "kind": "visit-settlement",
+        "ref": "visit-4",
+        "station": "site-071:line2:station1",
+        "at": 1794184320000
+      },
+      {
+        "kind": "visit-settlement",
+        "ref": "visit-9",
+        "station": "site-071:line2:station2",
+        "at": 1794183870000
+      },
+      {
+        "kind": "visit-settlement",
+        "ref": "visit-10",
+        "station": "site-071:line2:station2",
+        "at": 1794184050000
+      },
+      {
+        "kind": "visit-settlement",
+        "ref": "visit-11",
+        "station": "site-071:line2:station2",
+        "at": 1794184230000
+      },
+      {
+        "kind": "visit-settlement",
+        "ref": "visit-12",
+        "station": "site-071:line2:station2",
+        "at": 1794184410000
+      },
+      {
+        "kind": "visit-settlement",
+        "ref": "visit-13",
+        "station": "site-071:line2:station3",
+        "at": 1794183960000
+      },
+      {
+        "kind": "visit-settlement",
+        "ref": "visit-14",
+        "station": "site-071:line2:station3",
+        "at": 1794184140000
+      },
+      {
+        "kind": "visit-settlement",
+        "ref": "visit-15",
+        "station": "site-071:line2:station3",
+        "at": 1794184320000
+      }
+    ]
+  },
+  "files": {
+    "expected.json": "6c3d908c2d6f2de657a009553c660a303afde45b6d7e6ead012beda1b542c7f8",
+    "manifest.json": "7f5af2809f256fabd7e2a4234766e420ad7e5849f2d63fe103a466f71ca767e9",
+    "mfg.occupancy/0.jsonl": "596421ee5fbfb51b6a72f057dff2405e0d896dda3a445b318760d1f810c4c4f6",
+    "mfg.occupancy/1.jsonl": "3f00b399f70deb4e465a1ce53561305c52a7ec9a077c20ae4c7da0b783074d17",
+    "mfg.occupancy/2.jsonl": "12e15bdb480610a8164f541610bc0ae9d6000b998420033d900b8c8364c9d9cf",
+    "ot.messages/1.jsonl": "30b8fc1a0786e2488efaac7ed57c6042386483f3ebc9ebc09e93a6d34e738afc",
+    "ot.messages/2.jsonl": "d9f72d2d5fc5378450114f1dfa760c063d44992f82feb3d41598ebb8f9819282",
+    "ot.messages/3.jsonl": "13acfbbe6293e0a2cd0316f4487798cbaec017a175536c8fa4dea1e9767ad9a3",
+    "ot.messages/4.jsonl": "f668c11d707be4bb3467620862d34b3fec4839981f370cecca5a2679a4e75cff",
+    "ot.messages/5.jsonl": "117f8c80adb6a01afd80595ad5c25f5797fc1a28aa80cef9511b79bc8ef4dd73",
+    "ot.sessions/1.jsonl": "96fb3bfb72bbb75e40927f84adb58310095c3ad589061966bbac100b992f37d8",
+    "ot.sessions/2.jsonl": "0dd7388606d933b22bd8c0168a51f9463bb595bad59f92a4b69c291c2ebf95d3",
+    "ot.sessions/3.jsonl": "570200aa0667a7b7ebb9b844f94ad2709686d960bb9348ba05869b5a0d813639",
+    "ot.sessions/4.jsonl": "b3878c3034af9a657d335d40122c7873b2f30128e2850b46931e617fd12ea8db",
+    "ot.sessions/5.jsonl": "2c6bca4ba935bd85352be87fe4c3ba0b480fa17f023b233156227e6f8b3a58f0",
+    "quality.incidents/0.jsonl": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "quality.incidents/1.jsonl": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "quality.incidents/2.jsonl": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "quality.incidents/3.jsonl": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "quality.incidents/4.jsonl": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "quality.incidents/5.jsonl": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "routing.json": "9e43db53b63a7be391c237e1c0c709edf218e6be98d6bfbe9cc62b6577ea34c5"
+  }
+}

@@ -1,0 +1,43 @@
+{
+  "lockVersion": 1,
+  "scenario": "cascade",
+  "scenarioSha256": "e5e8559b2dedde1ad647c9760c2f22419f7c115a23684e88c761a0c9c4559703",
+  "generator": "forseti recordings build 0.1.0",
+  "counts": {
+    "messages": 17260,
+    "samples": 24164,
+    "sessions": 5,
+    "occupancy": 33,
+    "incidents": 2,
+    "cuts": 79
+  },
+  "firstBatchTelemetryPartitions": [
+    0,
+    2,
+    3,
+    5
+  ],
+  "w1Form": "min-over-partitions",
+  "files": {
+    "expected.json": "536875697d7a95d35cab68652689b7891c7e6226871a5e14a95d44d347eee907",
+    "manifest.json": "9737ecc4e3824c925caf55d567546c3f19f6cc947ca105801ebae215ff774986",
+    "mfg.occupancy/0.jsonl": "87f6b9a3247060044c4d89c0dda7a5068116d97ae98b6d98169121e157760592",
+    "mfg.occupancy/1.jsonl": "b2aee61c88461efced1842c4a061866e7c803621f59c4cf1d2d96f666f2a1a11",
+    "mfg.occupancy/2.jsonl": "492fb0db5e96b8682364e2ca0ea7c1648ee241716913a469ea46e3ca69852047",
+    "ot.messages/0.jsonl": "2e57c324493e66711d74f23da2c3ed3918d391f608c24e7543b2a453203a2eb2",
+    "ot.messages/2.jsonl": "1e0ea297dff9dd0afa6403a4873df280120d63a8b56d012583afb61c13720f45",
+    "ot.messages/3.jsonl": "b1776da23604ee4d5289215a9cb58f3ab7bc7214e73ad06e16058317b903abbc",
+    "ot.messages/5.jsonl": "ea018ada87620de155baee09b671b373f1054157be1c5ac56778c26ff11715c6",
+    "ot.sessions/0.jsonl": "97135809c4737e5b7d4a4d4cc6dee594c4fef06ceae02fd5375db3e4c2f3f382",
+    "ot.sessions/2.jsonl": "80212ccb4e0232116eb9c1b3f1f2ee3d08f1e50cac1354aff398a000388f9850",
+    "ot.sessions/3.jsonl": "57be2c8ab6384faed2c227e5321c388926b81930a6f09c65f217b76ff6503c15",
+    "ot.sessions/5.jsonl": "88ccbe27d0ed4612102409d89fdd6f8cf297a197d116bbf16365daa5caed4c2f",
+    "quality.incidents/0.jsonl": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "quality.incidents/1.jsonl": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "quality.incidents/2.jsonl": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "quality.incidents/3.jsonl": "58abdb98ddd839f639392d7e2e475b3dc7b62628456e8ec95717fe421a163148",
+    "quality.incidents/4.jsonl": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "quality.incidents/5.jsonl": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "routing.json": "f7f6aece08ede312d9c8c4dc03743bd27f6d10a8f89b30eedbdaeeae96a14d8e"
+  }
+}

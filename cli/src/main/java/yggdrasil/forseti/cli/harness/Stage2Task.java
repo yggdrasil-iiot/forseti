@@ -60,15 +60,20 @@ final class Stage2Task {
 
     void addIncident(Inputs.InputRecord r) { incidents.add(r); }
 
-    /** {@code stage1}: the station's stage-1 outputs of the cut as written; {@code incidentThrough}: the cut's barrier per incident
-     *  partition (all six). */
-    CutOutputs cut(long cutId, List<Object> stage1, Map<Integer, Long> incidentThrough) {
+    /** The incident routing barriers of {@code cutId} (all six partitions), collected whether or not stage 1 wrote the cut's progress:
+     *  a merged cut's barriers are a completion condition of the progress that merges it. */
+    void incidentBarriers(long cutId, Map<Integer, Long> incidentThrough) {
+        for (Map.Entry<Integer, Long> b : incidentThrough.entrySet()) tracker.observeIncidentBarrier(station, cutId, b.getKey(), b.getValue());
+    }
+
+    /** {@code stage1}: the station's stage-1 outputs of the cut as written, its progress last ({@code cutId} is that progress's, which
+     *  may merge earlier cuts); the incident barriers of the cut and of every merged cut were collected with {@link #incidentBarriers}. */
+    CutOutputs cut(long cutId, List<Object> stage1) {
         Progress.Stage1 progress = null;
         for (Object o : stage1) if (o instanceof Progress.Stage1 p) progress = p;
         if (progress == null || progress.cutId() != cutId) throw new IllegalStateException("station " + station + ": no stage-1 progress of cut " + cutId);
         tracker.observe(Stage1.WORK_RECORDS, station, progress);
         tracker.observe(Stage1.SAMPLES, station, progress);
-        for (Map.Entry<Integer, Long> b : incidentThrough.entrySet()) tracker.observeIncidentBarrier(station, cutId, b.getKey(), b.getValue());
         if (!tracker.ready(station, cutId)) throw new IllegalStateException("station " + station + ": cut " + cutId + " is not ready at stage 2");
         OptionalLong ow = tracker.w2(station);
         long w2 = ow.getAsLong();

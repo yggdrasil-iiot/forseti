@@ -20,8 +20,13 @@ public final class Events {
     /** A due deadline of the index: its instant, the logical key (a visitRef) and the purpose. */
     public record Timer(long deadline, JsonNode key, String purpose) implements Event {}
     /** The cut is complete at this station: {@code w1} is the station's W1, {@code barrierRefs} the collected barriers as
-     *  {@code {cutId, origin {topic, partition}, throughOffset}}. */
-    public record CutClose(long cutId, long w1, List<JsonNode> barrierRefs) implements Event {}
+     *  {@code {cutId, origin {topic, partition}, throughOffset}}; {@code restartEpoch} and {@code recoveryRef} those of the cut's barriers,
+     *  {@code mergedCutIds} the cuts folded into this progress (the writer's {@code CutAssembler} decides all three). */
+    public record CutClose(long cutId, long w1, List<JsonNode> barrierRefs, long restartEpoch, String recoveryRef, List<Long> mergedCutIds) implements Event {
+        public CutClose { barrierRefs = List.copyOf(barrierRefs); mergedCutIds = List.copyOf(mergedCutIds); }
+        /** A normal cut of epoch 0 (the step-3 reference harness). */
+        public CutClose(long cutId, long w1, List<JsonNode> barrierRefs) { this(cutId, w1, barrierRefs, 0, null, List.of()); }
+    }
 
     public static final int SESSION = 0, OCCUPANCY = 1, SAMPLE = 2;
 

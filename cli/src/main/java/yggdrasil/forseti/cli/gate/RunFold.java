@@ -110,7 +110,8 @@ final class RunFold implements Closeable {
         final String topic; final int partition; final BufferedReader in;
         final boolean ledger, stage2;
         final List<Mark> marks = new ArrayList<>();
-        JsonNode lastProgress, held;
+        JsonNode lastProgress;
+        final java.util.ArrayDeque<JsonNode> held = new java.util.ArrayDeque<>();
         long fpA, fpB; int count;   // the order-independent fingerprint of the live rows of this partition
         boolean done;
         Part(String topic, int partition, BufferedReader in) {
@@ -120,13 +121,16 @@ final class RunFold implements Closeable {
         String label() { return topic + "/" + partition; }
 
         void advance(long cutId) throws IOException {
+            // the rows read since the last progress, applied once the progress that follows them is known: a progress of a later cut
+            // that merges cutId (spec 418, 602) means they belong to that later cut and stay unread until it
+            List<JsonNode> rows = new ArrayList<>();
             while (true) {
                 JsonNode n;
-                if (held != null) { n = held; held = null; }
+                if (!held.isEmpty()) n = held.removeFirst();
                 else {
-                    if (done) { findings.add("J-PROGRESS-ORDER", label() + ": no progress record of cut " + cutId); return; }
+                    if (done) { applyRows(rows, cutId); findings.add("J-PROGRESS-ORDER", label() + ": no progress record of cut " + cutId); return; }
                     String s = in.readLine();
-                    if (s == null) { done = true; in.close(); findings.add("J-PROGRESS-ORDER", label() + ": no progress record of cut " + cutId); return; }
+                    if (s == null) { done = true; in.close(); applyRows(rows, cutId); findings.add("J-PROGRESS-ORDER", label() + ": no progress record of cut " + cutId); return; }
                     if (s.isEmpty()) continue;
                     n = readLine(s);
                 }
@@ -134,14 +138,32 @@ final class RunFold implements Closeable {
                 if ("progress".equals(v.path("type").textValue())) {
                     if (v.path("generation").asLong(generation) != generation) continue;
                     long c = v.path("cutId").asLong();
-                    if (c > cutId) { held = n; findings.add("J-PROGRESS-ORDER", label() + ": no progress record of cut " + cutId + " (next is " + c + ")"); return; }
+                    if (c > cutId) {
+                        boolean merged = false;
+                        for (JsonNode m : v.path("mergedCutIds")) if (m.asLong() == cutId) merged = true;
+                        if (merged) {   // the partition stays at its last progress until the merging one
+                            held.addFirst(n);
+                            for (int i = rows.size() - 1; i >= 0; i--) held.addFirst(rows.get(i));
+                            return;
+                        }
+                        applyRows(rows, cutId);
+                        held.addFirst(n);
+                        findings.add("J-PROGRESS-ORDER", label() + ": no progress record of cut " + cutId + " (next is " + c + ")");
+                        return;
+                    }
+                    applyRows(rows, cutId);
+                    rows.clear();
                     progress(v, c);
                     if (c == cutId) return;
                     continue;
                 }
-                if (ledger) disposition(this, n, cutId);
-                else row(this, n, cutId);
+                rows.add(n);
             }
+        }
+
+        private void applyRows(List<JsonNode> rows, long cutId) {
+            for (JsonNode n : rows) { if (ledger) disposition(this, n, cutId); else row(this, n, cutId); }
+            rows.clear();
         }
 
         void progress(JsonNode v, long c) {
@@ -286,7 +308,7 @@ final class RunFold implements Closeable {
     /** After the last cut: a row after the last progress of a partition is a row after its cut's progress. */
     void finish() throws IOException {
         for (Part p : parts.values()) {
-            if (p.held != null) { findings.add("J-PROGRESS-ORDER", p.label() + ": records after the progress of the last cut " + cut); continue; }
+            if (!p.held.isEmpty()) { findings.add("J-PROGRESS-ORDER", p.label() + ": records after the progress of the last cut " + cut); continue; }
             if (p.done) continue;
             String s;
             int trailing = 0;

@@ -141,6 +141,65 @@ def from_manifest(recording: Recording, per_station: list[dict]) -> History:
     return History(1, recording.routing.get("routingDigest"), cuts)
 
 
+class Completed:
+    """Each station's completed cuts in a history: the cuts whose ``perStation`` lists it (spec 602: the oracle receives each station's
+    actual completed-cut history and never assumes a completion of a skipped cut). A cut a station skipped (starved, or merged into a
+    later progress) is not listed for it; the inputs routed to it in that cut are applied at the cut that lists it next, against that
+    cut's ``admissionW``."""
+
+    def __init__(self, history: History, stations):
+        self.index = {s: [c.index for c in history.cuts if s in c.per_station] for s in stations}
+
+    def last(self, station: str, index: int):
+        """The last cut at or before ``index`` that the station completed (None before its first)."""
+        import bisect
+        xs = self.index.get(station, [])
+        i = bisect.bisect_right(xs, index)
+        return xs[i - 1] if i else None
+
+    def closing(self, station: str, index: int):
+        """The first cut at or after ``index`` that the station completed: the progress that applied an input delivered in ``index``."""
+        import bisect
+        xs = self.index.get(station, [])
+        i = bisect.bisect_left(xs, index)
+        return xs[i] if i < len(xs) else None
+
+    def frozen(self, index: int) -> dict:
+        """station -> its last completed cut (or None), for every station the cut ``index`` does not list."""
+        return {s: self.last(s, index) for s, xs in self.index.items() if index not in xs}
+
+    @staticmethod
+    def held(d, frozen: dict, stations) -> bool:
+        """Whether delivery ``d`` is routed to a frozen station and arrived after the last cut it completed."""
+        if not frozen:
+            return False
+        s = routed_station(d, stations)
+        if s is None or s not in frozen:
+            return False
+        last = frozen[s]
+        return last is None or d.cut > last
+
+
+def completed_cuts(history: History, stations) -> Completed:
+    return Completed(history, stations)
+
+
+def routed_station(d, stations):
+    """The station a delivery is routed to (S1 and T1 by its station field; None for an input without one, which goes to a reject
+    collector and is never frozen)."""
+    from forseti_oracle.rules import station_of
+    v = d.read.parsed
+    if v is None:
+        return None
+    if d.topic in ("ot.messages", "ot.sessions"):
+        return station_of(list(stations), v.device)
+    if d.topic == "mfg.occupancy":
+        return v.readPoint if v.readPoint in stations else None
+    if d.topic == INCIDENTS:
+        return v.stationRef if v.stationRef in stations else None
+    return None
+
+
 # --- delivered records -----------------------------------------------------------------------------------------------------
 
 
@@ -197,16 +256,24 @@ def deliveries(recording: Recording, history: History, through_index: int | None
     return out
 
 
-def formula_history(recording: Recording, rs, out_of_orderness: int) -> History:
-    """The history the step-3 reference harness reports, computed from the spec's formulas alone (spec 607): per station,
-    ``W1(s)`` = the largest valid member ``sourceTs`` of telemetry routed to ``s`` over everything delivered through the cut, minus
-    ``outOfOrdernessMs``, minus 1, never decreasing; ``admissionW`` = the previous cut's ``W1``; ``W2 = W1``. A station with no
-    telemetry yet reports the lower end of the JCS integer domain, as the step-3 harness does."""
+PER_STATION, MIN_OVER_PARTITIONS = "per-station", "min-over-partitions"
+
+
+def formula_history(recording: Recording, rs, out_of_orderness: int, form: str = PER_STATION) -> History:
+    """The history the reference harness reports, computed from the spec's formulas alone (spec 607, 620): ``per-station`` (the step-3
+    form), ``W1(s)`` = the largest valid member ``sourceTs`` of telemetry routed to ``s`` over everything delivered through the cut,
+    minus ``outOfOrdernessMs``, minus 1, never decreasing; ``min-over-partitions`` (the Flink form), the same ``W1`` at every station:
+    the smallest, over the subscribed raw telemetry partitions, of the largest valid member ``sourceTs`` delivered on that partition
+    (whatever its device), minus ``outOfOrdernessMs``, minus 1. ``admissionW`` = the previous cut's ``W1``; ``W2 = W1``. A station
+    with no bound yet reports the lower end of the JCS integer domain, as the harness does."""
+    if form not in (PER_STATION, MIN_OVER_PARTITIONS):
+        raise ValueError(f"W1 form {form!r}")
     from forseti_oracle import inputs as inp
     from forseti_oracle.rules import station_of
     throughs = through_offsets(recording)
     raws = {p: raw_records(recording, "ot.messages", p) for p in recording.subscribed("ot.messages")}
     largest: dict = {}
+    on_partition: dict = {}
     per_batch = []
     previous: dict = {}
     for i, b in enumerate(recording.batches()):
@@ -217,11 +284,17 @@ def formula_history(recording: Recording, rs, out_of_orderness: int) -> History:
                     continue
                 s = station_of(rs.stations, r.parsed.device)
                 ts = [m.sourceTs for m in r.parsed.members if m.sourceTs is not None]
+                if ts:
+                    on_partition[p] = max(on_partition.get(p, ts[0]), max(ts))
                 if s is not None and ts:
                     largest[s] = max(largest.get(s, ts[0]), max(ts))
+        lowest = min(on_partition.values()) if len(on_partition) == len(raws) and raws else None
         row = {}
         for s in rs.stations:
-            w = largest[s] - out_of_orderness - 1 if s in largest else None
+            if form == MIN_OVER_PARTITIONS:
+                w = lowest - out_of_orderness - 1 if lowest is not None else None
+            else:
+                w = largest[s] - out_of_orderness - 1 if s in largest else None
             prev = previous.get(s)
             if w is None or (prev is not None and w < prev):
                 w = prev if prev is not None else -SAFE_MAX
