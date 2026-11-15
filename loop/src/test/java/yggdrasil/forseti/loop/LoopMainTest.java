@@ -60,7 +60,7 @@ class LoopMainTest {
     static LoopMain.Config config(Path pins, String... edges) {
         Map<String, List<String>> a = LoopMain.options(new String[] {"--registry", LIVE.resolve("registry").toString(), "--definitions", LIVE.resolve("definitions").toString(),
             "--stream", "line2-dedicated", "--routing", LIVE.resolve("routing/dedicated.json").toString(), "--pins", pins.toString(),
-            "--muninn-period-ms", "500", "--scan-ms", "250", "--prefix", "run-9."});
+            "--muninn-period-ms", "250", "--scan-ms", "500", "--prefix", "run-9."});
         List<String> e = new ArrayList<>();
         for (String x : edges) e.add(x);
         a.put("edge", e);
@@ -121,6 +121,6 @@ class LoopMainTest {
         LoopMain.Usage u = assertThrows(LoopMain.Usage.class, () -> LoopMain.run(new String[] {"drive", "--kafka", "localhost:1", "--registry", LIVE.resolve("registry").toString(),
             "--definitions", LIVE.resolve("definitions").toString(), "--stream", "line2-dedicated", "--routing", LIVE.resolve("routing/dedicated.json").toString(),
             "--scenario", f.toString(), "--opcua", "opc.tcp://localhost:1"}, System.out));
-        assertTrue(u.getMessage().contains("Muninn period 1000 ms + sim scan 250 ms + jitter margin 100 ms exceeds the rule's expectedPeriodMs 1000"), u.getMessage());
+        assertTrue(u.getMessage().contains("Muninn period 1000 ms + sim scan 500 ms + jitter margin 100 ms exceeds the rule's expectedPeriodMs 1000"), u.getMessage());
     }
 }

@@ -6,9 +6,9 @@
   Host ports `FORSETI_MQTT_PORT` (default 1883) and `FORSETI_KAFKA_PORT` (default 9092). `auto.create.topics.enable=false`.
 - Host JVMs (JDK 17), all on localhost, so Muninn and the driver reach the sim at the endpoint URL it advertises
   (`opc.tcp://localhost:48400`):
-  - the Bifrost sim, `-Dbifrost.sim.scanMs=<scenario scanMs>` (250);
+  - the Bifrost sim, `-Dbifrost.sim.scanMs=<scenario scanMs>` (500);
   - one Muninn per routed device (five): `feed ... --hierarchy fixtures/live/registry/mappings <stream> <instanceId>
-    --session <scenario muninnPeriodMs> --primary-host host-<edge>` (500); edge id = device path below the site with `:` -> `-`
+    --session <scenario muninnPeriodMs> --primary-host host-<edge>` (250); edge id = device path below the site with `:` -> `-`
     (`line2-station1-nutrunner1`);
   - the bridge (`bridge/target/forseti-bridge.jar`), the driver and the recorder (`loop/target/forseti-loop.jar`).
 - `live/stack-lock.json`: the two image digests; the Bifrost and Muninn commits and the SHA-256 of the sim and Muninn jars built
@@ -18,17 +18,23 @@
 ## Periods
 
 - The rule's period and the acquisition cadence are separate settings. The rule (`coverage.expectedPeriodMs` 1000,
-  `maxMissingPeriods` 3) is the deployment's `rule-period-ms`; the sim's scan S (`scanMs`, 250) and Muninn's poll M
-  (`muninnPeriodMs`, 500) are the live scenario's.
+  `maxMissingPeriods` 3) is the deployment's `rule-period-ms`; the sim's scan S (`scanMs`, 500) and Muninn's poll M
+  (`muninnPeriodMs`, 250) are the live scenario's.
 - Preflight, `forseti-loop drive` and `forseti-loop record` require `M + S + 100 <= expectedPeriodMs`. Muninn polls free-running and
   publishes the last scan it read, which is at most S old, so two consecutive distinct source timestamps lie less than `M + S` plus
   jitter apart; under the bound every 1000 ms slot holds an observation wherever a visit's `enter` falls. The margin of 100 ms covers
   the largest jitter seen in the live captures at a 1000 ms scan (consecutive distinct source timestamps 928 to 1072 ms apart, at most
   72 ms off, typically 16 ms). At M = S = 1000 any gap above 1000 ms left a slot without an observation, and every visit of those
   captures was insufficient.
+- Preflight, `forseti-loop drive` and `forseti-loop record` also require `2 M <= S`. Neither the sim's scan nor Muninn's read is
+  atomic (the sim sets a scan's nodes one by one, Muninn reads a device's members one by one), so a read that straddles a scan
+  boundary mixes two scans; that message is an incoherent snapshot, which plc-stamped attribution leaves unattributed. With at
+  least two reads per scan, a straddling read is not a scan's only reading. At S = 250 and M = 500 (one read every other scan)
+  the plc-stamped capture had 0.45 % incoherent snapshots; in a 1000 ms slot holding a single message that message was sometimes
+  incoherent, the slot had no attributed sample, and a visit with no injection was insufficient (missing-periods). The baseline
+  captures in occupancy-join mode passed, since that mode does not require a coherent snapshot.
 - Source timestamps stay the sim's real acquisition times; none is moved onto a grid.
-- The driver steps on the scan grid (every 250 ms) and fails a commit seen 1.5 scan periods (375 ms) after the last scan without it.
-- Fallback when the driver cannot hold 250 ms scans: S = 500, M = 250.
+- The driver steps on the scan grid (every 500 ms) and fails a commit seen 1.5 scan periods (750 ms) after the last scan without it.
 
 ## Setup
 
@@ -115,8 +121,9 @@ bash scripts/run-full-loop-gate.sh --placement dedicated --scenario fixtures/liv
 
 ## Committed recordings (`fixtures/live-recordings/<name>/`)
 
-- None is committed yet: the eight runs below are captured once a pilot baseline at S = 250, M = 500 shows no drive failure,
-  per-device distinct-`sourceTs` gaps under 1000 ms and every visit complete, and then committed together.
+- None is committed yet: the eight runs below are captured at S = 500, M = 250 once a plc-stamped pilot shows no drive failure,
+  every visit complete, per device consecutive distinct source timestamps of coherent messages at most 900 ms apart and no slot of
+  a visit without a coherent sample, and then committed together.
 - One directory per passed run, copied by `python -I scripts/commit-live-recording.py <run out> <name>` (it refuses a run that did not
   pass or whose compare report is not `equal` and `accepted`): `recording/` (step-3 format), `recording.capture-lock.json`,
   `recording.capture-report.json` (counts, incoherent-snapshot and repeated-`sourceTs` rates per device), `recording.dead-letter.jsonl`,
