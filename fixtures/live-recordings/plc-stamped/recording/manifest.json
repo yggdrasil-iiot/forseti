@@ -1,0 +1,1235 @@
+{
+  "recordingVersion": 1,
+  "name": "baseline",
+  "synthetic": false,
+  "source": {
+    "scenario": "baseline",
+    "scenarioSha256": "0626b9bb44ed8d2bf8b6a662f935bbcaf586c6cde6f586d3c55d715007a539fb",
+    "driveLogSha256": "caa0453c10175d3ece5ee26ecbd8a7b2fd91ff24e26c9ed99ada2978a60d1e45",
+    "stream": "line2-dedicated-plc",
+    "muninnPeriodMs": 250,
+    "injections": [],
+    "generator": "forseti capture 0.1.0",
+    "capture": {
+      "topicPrefix": "run-20261116t064423z.",
+      "batchMs": 60000,
+      "outOfOrdernessMs": 30000,
+      "terminalOffsets": {
+        "ot.messages": {
+          "0": 0,
+          "1": 5728,
+          "2": 5722,
+          "3": 5726,
+          "4": 5724,
+          "5": 5730
+        },
+        "ot.sessions": {
+          "0": 0,
+          "1": 1,
+          "2": 1,
+          "3": 1,
+          "4": 1,
+          "5": 1
+        },
+        "mfg.occupancy": {
+          "0": 8,
+          "1": 4,
+          "2": 4,
+          "3": 0,
+          "4": 0,
+          "5": 0
+        },
+        "quality.incidents": {
+          "0": 0,
+          "1": 0,
+          "2": 0,
+          "3": 0,
+          "4": 0,
+          "5": 0
+        },
+        "ot.dead-letter": {
+          "0": 0,
+          "1": 0,
+          "2": 0,
+          "3": 0,
+          "4": 0,
+          "5": 0
+        }
+      }
+    }
+  },
+  "rule": {
+    "stream": "line2-dedicated-plc",
+    "releaseId": "line2-rules-dedicated-plc",
+    "version": "1.0.0",
+    "attributionRuleId": "line2-attribution",
+    "attributionRuleVersion": "1.0.0"
+  },
+  "definitions": {
+    "site-071:line2:station1": {
+      "templateRef": "station-model",
+      "version": "1.0.0",
+      "sha256": "4d40df048267814f409ff93e16cb838cb0e5be710fbde83a39001f96c39efbac"
+    },
+    "site-071:line2:station1:nutrunner1": {
+      "templateRef": "tool-model",
+      "version": "1.0.0",
+      "sha256": "276bf45c3f834818d359442395c40f2932af7436c81a4b72d20a8ff218c9a4dc"
+    },
+    "site-071:line2:station1:nutrunner2": {
+      "templateRef": "tool-model",
+      "version": "1.0.0",
+      "sha256": "276bf45c3f834818d359442395c40f2932af7436c81a4b72d20a8ff218c9a4dc"
+    },
+    "site-071:line2:station2": {
+      "templateRef": "station-model",
+      "version": "1.0.0",
+      "sha256": "4d40df048267814f409ff93e16cb838cb0e5be710fbde83a39001f96c39efbac"
+    },
+    "site-071:line2:station3": {
+      "templateRef": "station-model",
+      "version": "1.0.0",
+      "sha256": "4d40df048267814f409ff93e16cb838cb0e5be710fbde83a39001f96c39efbac"
+    }
+  },
+  "T0": 1794811486292,
+  "scanMs": 500,
+  "evidenceRange": {
+    "site-071:line2:station1": {
+      "from": 1794811480290,
+      "to": 1794812912790
+    },
+    "site-071:line2:station1:nutrunner1": {
+      "from": 1794811480787,
+      "to": 1794812912790
+    },
+    "site-071:line2:station1:nutrunner2": {
+      "from": 1794811481283,
+      "to": 1794812912790
+    },
+    "site-071:line2:station2": {
+      "from": 1794811481793,
+      "to": 1794812912790
+    },
+    "site-071:line2:station3": {
+      "from": 1794811482286,
+      "to": 1794812912790
+    }
+  },
+  "batches": [
+    {
+      "cutId": 1,
+      "throughOffsets": {
+        "ot.messages": {
+          "1": 246,
+          "2": 240,
+          "3": 244,
+          "4": 242,
+          "5": 248
+        },
+        "ot.sessions": {
+          "1": 0,
+          "2": 0,
+          "3": 0,
+          "4": 0,
+          "5": 0
+        },
+        "mfg.occupancy": {
+          "0": -1,
+          "1": -1,
+          "2": -1
+        },
+        "quality.incidents": {
+          "0": -1,
+          "1": -1,
+          "2": -1,
+          "3": -1,
+          "4": -1,
+          "5": -1
+        }
+      },
+      "idleInputs": []
+    },
+    {
+      "cutId": 2,
+      "throughOffsets": {
+        "ot.messages": {
+          "1": 486,
+          "2": 480,
+          "3": 484,
+          "4": 482,
+          "5": 488
+        },
+        "ot.sessions": {
+          "1": 0,
+          "2": 0,
+          "3": 0,
+          "4": 0,
+          "5": 0
+        },
+        "mfg.occupancy": {
+          "0": 0,
+          "1": -1,
+          "2": -1
+        },
+        "quality.incidents": {
+          "0": -1,
+          "1": -1,
+          "2": -1,
+          "3": -1,
+          "4": -1,
+          "5": -1
+        }
+      },
+      "idleInputs": []
+    },
+    {
+      "cutId": 3,
+      "throughOffsets": {
+        "ot.messages": {
+          "1": 725,
+          "2": 719,
+          "3": 723,
+          "4": 722,
+          "5": 728
+        },
+        "ot.sessions": {
+          "1": 0,
+          "2": 0,
+          "3": 0,
+          "4": 0,
+          "5": 0
+        },
+        "mfg.occupancy": {
+          "0": 1,
+          "1": 0,
+          "2": -1
+        },
+        "quality.incidents": {
+          "0": -1,
+          "1": -1,
+          "2": -1,
+          "3": -1,
+          "4": -1,
+          "5": -1
+        }
+      },
+      "idleInputs": []
+    },
+    {
+      "cutId": 4,
+      "throughOffsets": {
+        "ot.messages": {
+          "1": 966,
+          "2": 960,
+          "3": 964,
+          "4": 962,
+          "5": 968
+        },
+        "ot.sessions": {
+          "1": 0,
+          "2": 0,
+          "3": 0,
+          "4": 0,
+          "5": 0
+        },
+        "mfg.occupancy": {
+          "0": 1,
+          "1": 1,
+          "2": -1
+        },
+        "quality.incidents": {
+          "0": -1,
+          "1": -1,
+          "2": -1,
+          "3": -1,
+          "4": -1,
+          "5": -1
+        }
+      },
+      "idleInputs": []
+    },
+    {
+      "cutId": 5,
+      "throughOffsets": {
+        "ot.messages": {
+          "1": 1206,
+          "2": 1200,
+          "3": 1204,
+          "4": 1202,
+          "5": 1208
+        },
+        "ot.sessions": {
+          "1": 0,
+          "2": 0,
+          "3": 0,
+          "4": 0,
+          "5": 0
+        },
+        "mfg.occupancy": {
+          "0": 2,
+          "1": 1,
+          "2": 0
+        },
+        "quality.incidents": {
+          "0": -1,
+          "1": -1,
+          "2": -1,
+          "3": -1,
+          "4": -1,
+          "5": -1
+        }
+      },
+      "idleInputs": []
+    },
+    {
+      "cutId": 6,
+      "throughOffsets": {
+        "ot.messages": {
+          "1": 1446,
+          "2": 1440,
+          "3": 1444,
+          "4": 1442,
+          "5": 1448
+        },
+        "ot.sessions": {
+          "1": 0,
+          "2": 0,
+          "3": 0,
+          "4": 0,
+          "5": 0
+        },
+        "mfg.occupancy": {
+          "0": 3,
+          "1": 2,
+          "2": 1
+        },
+        "quality.incidents": {
+          "0": -1,
+          "1": -1,
+          "2": -1,
+          "3": -1,
+          "4": -1,
+          "5": -1
+        }
+      },
+      "idleInputs": []
+    },
+    {
+      "cutId": 7,
+      "throughOffsets": {
+        "ot.messages": {
+          "1": 1685,
+          "2": 1679,
+          "3": 1683,
+          "4": 1681,
+          "5": 1687
+        },
+        "ot.sessions": {
+          "1": 0,
+          "2": 0,
+          "3": 0,
+          "4": 0,
+          "5": 0
+        },
+        "mfg.occupancy": {
+          "0": 3,
+          "1": 3,
+          "2": 1
+        },
+        "quality.incidents": {
+          "0": -1,
+          "1": -1,
+          "2": -1,
+          "3": -1,
+          "4": -1,
+          "5": -1
+        }
+      },
+      "idleInputs": []
+    },
+    {
+      "cutId": 8,
+      "throughOffsets": {
+        "ot.messages": {
+          "1": 1926,
+          "2": 1920,
+          "3": 1924,
+          "4": 1922,
+          "5": 1928
+        },
+        "ot.sessions": {
+          "1": 0,
+          "2": 0,
+          "3": 0,
+          "4": 0,
+          "5": 0
+        },
+        "mfg.occupancy": {
+          "0": 4,
+          "1": 3,
+          "2": 2
+        },
+        "quality.incidents": {
+          "0": -1,
+          "1": -1,
+          "2": -1,
+          "3": -1,
+          "4": -1,
+          "5": -1
+        }
+      },
+      "idleInputs": []
+    },
+    {
+      "cutId": 9,
+      "throughOffsets": {
+        "ot.messages": {
+          "1": 2166,
+          "2": 2160,
+          "3": 2164,
+          "4": 2162,
+          "5": 2168
+        },
+        "ot.sessions": {
+          "1": 0,
+          "2": 0,
+          "3": 0,
+          "4": 0,
+          "5": 0
+        },
+        "mfg.occupancy": {
+          "0": 5,
+          "1": 3,
+          "2": 3
+        },
+        "quality.incidents": {
+          "0": -1,
+          "1": -1,
+          "2": -1,
+          "3": -1,
+          "4": -1,
+          "5": -1
+        }
+      },
+      "idleInputs": []
+    },
+    {
+      "cutId": 10,
+      "throughOffsets": {
+        "ot.messages": {
+          "1": 2405,
+          "2": 2399,
+          "3": 2403,
+          "4": 2401,
+          "5": 2407
+        },
+        "ot.sessions": {
+          "1": 0,
+          "2": 0,
+          "3": 0,
+          "4": 0,
+          "5": 0
+        },
+        "mfg.occupancy": {
+          "0": 5,
+          "1": 3,
+          "2": 3
+        },
+        "quality.incidents": {
+          "0": -1,
+          "1": -1,
+          "2": -1,
+          "3": -1,
+          "4": -1,
+          "5": -1
+        }
+      },
+      "idleInputs": []
+    },
+    {
+      "cutId": 11,
+      "throughOffsets": {
+        "ot.messages": {
+          "1": 2646,
+          "2": 2640,
+          "3": 2644,
+          "4": 2642,
+          "5": 2648
+        },
+        "ot.sessions": {
+          "1": 0,
+          "2": 0,
+          "3": 0,
+          "4": 0,
+          "5": 0
+        },
+        "mfg.occupancy": {
+          "0": 6,
+          "1": 3,
+          "2": 3
+        },
+        "quality.incidents": {
+          "0": -1,
+          "1": -1,
+          "2": -1,
+          "3": -1,
+          "4": -1,
+          "5": -1
+        }
+      },
+      "idleInputs": []
+    },
+    {
+      "cutId": 12,
+      "throughOffsets": {
+        "ot.messages": {
+          "1": 2885,
+          "2": 2879,
+          "3": 2883,
+          "4": 2881,
+          "5": 2887
+        },
+        "ot.sessions": {
+          "1": 0,
+          "2": 0,
+          "3": 0,
+          "4": 0,
+          "5": 0
+        },
+        "mfg.occupancy": {
+          "0": 7,
+          "1": 3,
+          "2": 3
+        },
+        "quality.incidents": {
+          "0": -1,
+          "1": -1,
+          "2": -1,
+          "3": -1,
+          "4": -1,
+          "5": -1
+        }
+      },
+      "idleInputs": []
+    },
+    {
+      "cutId": 13,
+      "throughOffsets": {
+        "ot.messages": {
+          "1": 3125,
+          "2": 3119,
+          "3": 3123,
+          "4": 3121,
+          "5": 3127
+        },
+        "ot.sessions": {
+          "1": 0,
+          "2": 0,
+          "3": 0,
+          "4": 0,
+          "5": 0
+        },
+        "mfg.occupancy": {
+          "0": 7,
+          "1": 3,
+          "2": 3
+        },
+        "quality.incidents": {
+          "0": -1,
+          "1": -1,
+          "2": -1,
+          "3": -1,
+          "4": -1,
+          "5": -1
+        }
+      },
+      "idleInputs": []
+    },
+    {
+      "cutId": 14,
+      "throughOffsets": {
+        "ot.messages": {
+          "1": 3366,
+          "2": 3360,
+          "3": 3364,
+          "4": 3362,
+          "5": 3368
+        },
+        "ot.sessions": {
+          "1": 0,
+          "2": 0,
+          "3": 0,
+          "4": 0,
+          "5": 0
+        },
+        "mfg.occupancy": {
+          "0": 7,
+          "1": 3,
+          "2": 3
+        },
+        "quality.incidents": {
+          "0": -1,
+          "1": -1,
+          "2": -1,
+          "3": -1,
+          "4": -1,
+          "5": -1
+        }
+      },
+      "idleInputs": []
+    },
+    {
+      "cutId": 15,
+      "throughOffsets": {
+        "ot.messages": {
+          "1": 3500,
+          "2": 3494,
+          "3": 3498,
+          "4": 3496,
+          "5": 3502
+        },
+        "ot.sessions": {
+          "1": 0,
+          "2": 0,
+          "3": 0,
+          "4": 0,
+          "5": 0
+        },
+        "mfg.occupancy": {
+          "0": 7,
+          "1": 3,
+          "2": 3
+        },
+        "quality.incidents": {
+          "0": -1,
+          "1": -1,
+          "2": -1,
+          "3": -1,
+          "4": -1,
+          "5": -1
+        }
+      },
+      "idleInputs": []
+    },
+    {
+      "cutId": 16,
+      "throughOffsets": {
+        "ot.messages": {
+          "1": 3501,
+          "2": 3495,
+          "3": 3499,
+          "4": 3497,
+          "5": 3503
+        },
+        "ot.sessions": {
+          "1": 0,
+          "2": 0,
+          "3": 0,
+          "4": 0,
+          "5": 0
+        },
+        "mfg.occupancy": {
+          "0": 7,
+          "1": 3,
+          "2": 3
+        },
+        "quality.incidents": {
+          "0": -1,
+          "1": -1,
+          "2": -1,
+          "3": -1,
+          "4": -1,
+          "5": -1
+        }
+      },
+      "idleInputs": []
+    },
+    {
+      "cutId": 17,
+      "throughOffsets": {
+        "ot.messages": {
+          "1": 3605,
+          "2": 3599,
+          "3": 3603,
+          "4": 3602,
+          "5": 3607
+        },
+        "ot.sessions": {
+          "1": 0,
+          "2": 0,
+          "3": 0,
+          "4": 0,
+          "5": 0
+        },
+        "mfg.occupancy": {
+          "0": 7,
+          "1": 3,
+          "2": 3
+        },
+        "quality.incidents": {
+          "0": -1,
+          "1": -1,
+          "2": -1,
+          "3": -1,
+          "4": -1,
+          "5": -1
+        }
+      },
+      "idleInputs": []
+    },
+    {
+      "cutId": 18,
+      "throughOffsets": {
+        "ot.messages": {
+          "1": 3845,
+          "2": 3839,
+          "3": 3843,
+          "4": 3841,
+          "5": 3847
+        },
+        "ot.sessions": {
+          "1": 0,
+          "2": 0,
+          "3": 0,
+          "4": 0,
+          "5": 0
+        },
+        "mfg.occupancy": {
+          "0": 7,
+          "1": 3,
+          "2": 3
+        },
+        "quality.incidents": {
+          "0": -1,
+          "1": -1,
+          "2": -1,
+          "3": -1,
+          "4": -1,
+          "5": -1
+        }
+      },
+      "idleInputs": []
+    },
+    {
+      "cutId": 19,
+      "throughOffsets": {
+        "ot.messages": {
+          "1": 4086,
+          "2": 4080,
+          "3": 4084,
+          "4": 4082,
+          "5": 4088
+        },
+        "ot.sessions": {
+          "1": 0,
+          "2": 0,
+          "3": 0,
+          "4": 0,
+          "5": 0
+        },
+        "mfg.occupancy": {
+          "0": 7,
+          "1": 3,
+          "2": 3
+        },
+        "quality.incidents": {
+          "0": -1,
+          "1": -1,
+          "2": -1,
+          "3": -1,
+          "4": -1,
+          "5": -1
+        }
+      },
+      "idleInputs": []
+    },
+    {
+      "cutId": 20,
+      "throughOffsets": {
+        "ot.messages": {
+          "1": 4220,
+          "2": 4214,
+          "3": 4218,
+          "4": 4216,
+          "5": 4222
+        },
+        "ot.sessions": {
+          "1": 0,
+          "2": 0,
+          "3": 0,
+          "4": 0,
+          "5": 0
+        },
+        "mfg.occupancy": {
+          "0": 7,
+          "1": 3,
+          "2": 3
+        },
+        "quality.incidents": {
+          "0": -1,
+          "1": -1,
+          "2": -1,
+          "3": -1,
+          "4": -1,
+          "5": -1
+        }
+      },
+      "idleInputs": []
+    },
+    {
+      "cutId": 21,
+      "throughOffsets": {
+        "ot.messages": {
+          "1": 4221,
+          "2": 4215,
+          "3": 4219,
+          "4": 4217,
+          "5": 4223
+        },
+        "ot.sessions": {
+          "1": 0,
+          "2": 0,
+          "3": 0,
+          "4": 0,
+          "5": 0
+        },
+        "mfg.occupancy": {
+          "0": 7,
+          "1": 3,
+          "2": 3
+        },
+        "quality.incidents": {
+          "0": -1,
+          "1": -1,
+          "2": -1,
+          "3": -1,
+          "4": -1,
+          "5": -1
+        }
+      },
+      "idleInputs": []
+    },
+    {
+      "cutId": 22,
+      "throughOffsets": {
+        "ot.messages": {
+          "1": 4326,
+          "2": 4320,
+          "3": 4324,
+          "4": 4322,
+          "5": 4328
+        },
+        "ot.sessions": {
+          "1": 0,
+          "2": 0,
+          "3": 0,
+          "4": 0,
+          "5": 0
+        },
+        "mfg.occupancy": {
+          "0": 7,
+          "1": 3,
+          "2": 3
+        },
+        "quality.incidents": {
+          "0": -1,
+          "1": -1,
+          "2": -1,
+          "3": -1,
+          "4": -1,
+          "5": -1
+        }
+      },
+      "idleInputs": []
+    },
+    {
+      "cutId": 23,
+      "throughOffsets": {
+        "ot.messages": {
+          "1": 4565,
+          "2": 4559,
+          "3": 4563,
+          "4": 4561,
+          "5": 4567
+        },
+        "ot.sessions": {
+          "1": 0,
+          "2": 0,
+          "3": 0,
+          "4": 0,
+          "5": 0
+        },
+        "mfg.occupancy": {
+          "0": 7,
+          "1": 3,
+          "2": 3
+        },
+        "quality.incidents": {
+          "0": -1,
+          "1": -1,
+          "2": -1,
+          "3": -1,
+          "4": -1,
+          "5": -1
+        }
+      },
+      "idleInputs": []
+    },
+    {
+      "cutId": 24,
+      "throughOffsets": {
+        "ot.messages": {
+          "1": 4806,
+          "2": 4800,
+          "3": 4804,
+          "4": 4802,
+          "5": 4808
+        },
+        "ot.sessions": {
+          "1": 0,
+          "2": 0,
+          "3": 0,
+          "4": 0,
+          "5": 0
+        },
+        "mfg.occupancy": {
+          "0": 7,
+          "1": 3,
+          "2": 3
+        },
+        "quality.incidents": {
+          "0": -1,
+          "1": -1,
+          "2": -1,
+          "3": -1,
+          "4": -1,
+          "5": -1
+        }
+      },
+      "idleInputs": []
+    },
+    {
+      "cutId": 25,
+      "throughOffsets": {
+        "ot.messages": {
+          "1": 4942,
+          "2": 4936,
+          "3": 4940,
+          "4": 4938,
+          "5": 4944
+        },
+        "ot.sessions": {
+          "1": 0,
+          "2": 0,
+          "3": 0,
+          "4": 0,
+          "5": 0
+        },
+        "mfg.occupancy": {
+          "0": 7,
+          "1": 3,
+          "2": 3
+        },
+        "quality.incidents": {
+          "0": -1,
+          "1": -1,
+          "2": -1,
+          "3": -1,
+          "4": -1,
+          "5": -1
+        }
+      },
+      "idleInputs": []
+    },
+    {
+      "cutId": 26,
+      "throughOffsets": {
+        "ot.messages": {
+          "1": 4943,
+          "2": 4937,
+          "3": 4941,
+          "4": 4939,
+          "5": 4945
+        },
+        "ot.sessions": {
+          "1": 0,
+          "2": 0,
+          "3": 0,
+          "4": 0,
+          "5": 0
+        },
+        "mfg.occupancy": {
+          "0": 7,
+          "1": 3,
+          "2": 3
+        },
+        "quality.incidents": {
+          "0": -1,
+          "1": -1,
+          "2": -1,
+          "3": -1,
+          "4": -1,
+          "5": -1
+        }
+      },
+      "idleInputs": []
+    },
+    {
+      "cutId": 27,
+      "throughOffsets": {
+        "ot.messages": {
+          "1": 5046,
+          "2": 5040,
+          "3": 5044,
+          "4": 5042,
+          "5": 5048
+        },
+        "ot.sessions": {
+          "1": 0,
+          "2": 0,
+          "3": 0,
+          "4": 0,
+          "5": 0
+        },
+        "mfg.occupancy": {
+          "0": 7,
+          "1": 3,
+          "2": 3
+        },
+        "quality.incidents": {
+          "0": -1,
+          "1": -1,
+          "2": -1,
+          "3": -1,
+          "4": -1,
+          "5": -1
+        }
+      },
+      "idleInputs": []
+    },
+    {
+      "cutId": 28,
+      "throughOffsets": {
+        "ot.messages": {
+          "1": 5286,
+          "2": 5280,
+          "3": 5284,
+          "4": 5282,
+          "5": 5288
+        },
+        "ot.sessions": {
+          "1": 0,
+          "2": 0,
+          "3": 0,
+          "4": 0,
+          "5": 0
+        },
+        "mfg.occupancy": {
+          "0": 7,
+          "1": 3,
+          "2": 3
+        },
+        "quality.incidents": {
+          "0": -1,
+          "1": -1,
+          "2": -1,
+          "3": -1,
+          "4": -1,
+          "5": -1
+        }
+      },
+      "idleInputs": []
+    },
+    {
+      "cutId": 29,
+      "throughOffsets": {
+        "ot.messages": {
+          "1": 5526,
+          "2": 5520,
+          "3": 5524,
+          "4": 5522,
+          "5": 5528
+        },
+        "ot.sessions": {
+          "1": 0,
+          "2": 0,
+          "3": 0,
+          "4": 0,
+          "5": 0
+        },
+        "mfg.occupancy": {
+          "0": 7,
+          "1": 3,
+          "2": 3
+        },
+        "quality.incidents": {
+          "0": -1,
+          "1": -1,
+          "2": -1,
+          "3": -1,
+          "4": -1,
+          "5": -1
+        }
+      },
+      "idleInputs": []
+    },
+    {
+      "cutId": 30,
+      "throughOffsets": {
+        "ot.messages": {
+          "1": 5660,
+          "2": 5654,
+          "3": 5658,
+          "4": 5656,
+          "5": 5662
+        },
+        "ot.sessions": {
+          "1": 0,
+          "2": 0,
+          "3": 0,
+          "4": 0,
+          "5": 0
+        },
+        "mfg.occupancy": {
+          "0": 7,
+          "1": 3,
+          "2": 3
+        },
+        "quality.incidents": {
+          "0": -1,
+          "1": -1,
+          "2": -1,
+          "3": -1,
+          "4": -1,
+          "5": -1
+        }
+      },
+      "idleInputs": []
+    },
+    {
+      "cutId": 31,
+      "throughOffsets": {
+        "ot.messages": {
+          "1": 5661,
+          "2": 5655,
+          "3": 5659,
+          "4": 5657,
+          "5": 5663
+        },
+        "ot.sessions": {
+          "1": 0,
+          "2": 0,
+          "3": 0,
+          "4": 0,
+          "5": 0
+        },
+        "mfg.occupancy": {
+          "0": 7,
+          "1": 3,
+          "2": 3
+        },
+        "quality.incidents": {
+          "0": -1,
+          "1": -1,
+          "2": -1,
+          "3": -1,
+          "4": -1,
+          "5": -1
+        }
+      },
+      "idleInputs": []
+    },
+    {
+      "cutId": 32,
+      "throughOffsets": {
+        "ot.messages": {
+          "1": 5727,
+          "2": 5721,
+          "3": 5725,
+          "4": 5723,
+          "5": 5729
+        },
+        "ot.sessions": {
+          "1": 0,
+          "2": 0,
+          "3": 0,
+          "4": 0,
+          "5": 0
+        },
+        "mfg.occupancy": {
+          "0": 7,
+          "1": 3,
+          "2": 3
+        },
+        "quality.incidents": {
+          "0": -1,
+          "1": -1,
+          "2": -1,
+          "3": -1,
+          "4": -1,
+          "5": -1
+        }
+      },
+      "idleInputs": []
+    }
+  ],
+  "deadlines": [
+    {
+      "kind": "visit-settlement",
+      "ref": "S1-V1",
+      "at": 1794812326292,
+      "cutA": 15,
+      "cutB": 16
+    },
+    {
+      "kind": "visit-settlement",
+      "ref": "S1-V2",
+      "at": 1794812506294,
+      "cutA": 20,
+      "cutB": 21
+    },
+    {
+      "kind": "visit-settlement",
+      "ref": "S1-V3",
+      "at": 1794812686296,
+      "cutA": 25,
+      "cutB": 26
+    },
+    {
+      "kind": "visit-settlement",
+      "ref": "S1-V4",
+      "at": 1794812866294,
+      "cutA": 30,
+      "cutB": 31
+    }
+  ],
+  "settleTargetW": 1794812866294,
+  "tailMs": 751000,
+  "digests": {
+    "expected-samples/0000.json": "a2fecd3e067d66467b0b5d6b843e26011f8eda154a3c55cc7db4ab95735e1b28",
+    "expected-samples/0001.json": "d8c663cbec52671b53fc2ebd16c3531afda6c7d0a11e2caecc56dabdac6424b9",
+    "expected-samples/0002.json": "3bc9558f653a385b8de9135e3b970f95d1e6e5f9be16bafbb734c86cad6ad33b",
+    "expected.json": "d4832d8ff4fc3ca20ba6688a3552298116634427bfab6c6a1d5f3a8d0fd5d9b7",
+    "mfg.occupancy/0.jsonl": "84e14719c0cc1cacd6932148f8dad7074bac1ed0c4d1e7cc5b9f9c505064b646",
+    "mfg.occupancy/1.jsonl": "082a3f2831697eac3e81d3e84579feb5c72e757d9775efa0a666927faa8074ab",
+    "mfg.occupancy/2.jsonl": "881e922d37a511b1534cc8e972704fccee90b11b1abc1cba1b73eddfe1a3378c",
+    "ot.messages/1.jsonl": "2854e58368d420d54eb04da17b9a435c7ac86306374cf4bebdf3e6a2a3a48ef7",
+    "ot.messages/2.jsonl": "a9950cb8d2f795ed26fcf31b5d111eb5894ce4ae682be4dfdaa28f1e9aa7bd0e",
+    "ot.messages/3.jsonl": "f4f7ddf6a96f11560aae6dbe789dbf57ea8a54454e2540a0b9d8abb3c994af80",
+    "ot.messages/4.jsonl": "06236800981599db9b62887a84bea54628a4f053a40e2d799a4468922fce634f",
+    "ot.messages/5.jsonl": "3429e53a16d5aaf75213cb5a6e79089cbde256a7643486d3ed921c52e01769e4",
+    "ot.sessions/1.jsonl": "ea31b5376fbdb5e43241def0dcb92c17781d83425e5ebcc8b6350289905aacf6",
+    "ot.sessions/2.jsonl": "93587f193886ddf6fb9e0362c5512f3e56a7a22f1926cc39fbaa15290a61f97f",
+    "ot.sessions/3.jsonl": "15b89d9051f0e1717a3adc25185a1ad0d61dc3618d156270e5fbb4d08ab0f21a",
+    "ot.sessions/4.jsonl": "b02a13290d81e66b9295f0459f5c6236382839ec3af4c9289d871a8f0c178b4c",
+    "ot.sessions/5.jsonl": "b388a3ff116bff66a5673ac876dfc1212dbde60faa8981524d18bafb6bdb6924",
+    "quality.incidents/0.jsonl": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "quality.incidents/1.jsonl": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "quality.incidents/2.jsonl": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "quality.incidents/3.jsonl": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "quality.incidents/4.jsonl": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "quality.incidents/5.jsonl": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "routing.json": "9e43db53b63a7be391c237e1c0c709edf218e6be98d6bfbe9cc62b6577ea34c5"
+  }
+}

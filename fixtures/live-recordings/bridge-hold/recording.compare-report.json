@@ -1,0 +1,113 @@
+{
+  "kind": "forseti-recording-compare",
+  "compareReportVersion": 1,
+  "recording": "baseline",
+  "stream": "line2-dedicated",
+  "manifestSha256": "af69a2c1ffe74e2489c500aade74ecbd5fccf40b6270c38b8849f73b847dabe8",
+  "outcome": "equal",
+  "accepted": true,
+  "generation": 1,
+  "rulesDigest": "77046cc5b50bcdfbd3c67cdd3e94b40024b6752bc6160eff2975b06c46db7bfb",
+  "cuts": 37,
+  "cutsCompared": 37,
+  "rowsCompared": 2704730,
+  "dispositionsCompared": 2705164,
+  "differences": 0,
+  "oracleDigestMismatches": 0,
+  "differencesByTopic": {},
+  "keysAtLastCut": {
+    "forseti.affected": 0,
+    "forseti.affected-sets": 0,
+    "forseti.dispositions-stage1": 125995,
+    "forseti.dispositions-stage2": 0,
+    "forseti.samples": 125974,
+    "forseti.work-records": 8
+  },
+  "differenceExamples": [],
+  "dispositionCoverage": {
+    "deliveries": 28651,
+    "inputsWithoutDisposition": 0
+  },
+  "lateness": {
+    "longestAcceptedMs": -30001,
+    "acceptedLateSamples": 0
+  },
+  "findings": {},
+  "groundTruth": {
+    "scope": "full",
+    "ok": true,
+    "visits": 8,
+    "samples": 125974,
+    "identityParts": 125995,
+    "incidentSets": 0,
+    "transitions": 8,
+    "problems": 0,
+    "problemExamples": []
+  },
+  "acceptance": {
+    "applies": true,
+    "problems": [],
+    "injections": [
+      "1 bridge-hold"
+    ],
+    "visits": [
+      {
+        "visit": "S1-V1",
+        "station": "site-071:line2:station1",
+        "status": "complete",
+        "reasons": [],
+        "touchedBy": []
+      },
+      {
+        "visit": "S1-V2",
+        "station": "site-071:line2:station1",
+        "status": "complete",
+        "reasons": [],
+        "touchedBy": []
+      },
+      {
+        "visit": "S1-V3",
+        "station": "site-071:line2:station1",
+        "status": "complete",
+        "reasons": [],
+        "touchedBy": []
+      },
+      {
+        "visit": "S1-V4",
+        "station": "site-071:line2:station1",
+        "status": "complete",
+        "reasons": [],
+        "touchedBy": []
+      },
+      {
+        "visit": "S2-V1",
+        "station": "site-071:line2:station2",
+        "status": "complete",
+        "reasons": [],
+        "touchedBy": []
+      },
+      {
+        "visit": "S2-V2",
+        "station": "site-071:line2:station2",
+        "status": "complete",
+        "reasons": [],
+        "touchedBy": []
+      },
+      {
+        "visit": "S3-V1",
+        "station": "site-071:line2:station3",
+        "status": "complete",
+        "reasons": [],
+        "touchedBy": []
+      },
+      {
+        "visit": "S3-V2",
+        "station": "site-071:line2:station3",
+        "status": "complete",
+        "reasons": [],
+        "touchedBy": []
+      }
+    ],
+    "ok": true
+  }
+}

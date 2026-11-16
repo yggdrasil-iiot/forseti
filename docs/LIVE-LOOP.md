@@ -123,9 +123,9 @@ bash scripts/run-full-loop-gate.sh --placement dedicated --scenario fixtures/liv
 
 ## Committed recordings (`fixtures/live-recordings/<name>/`)
 
-- None is committed yet: the eight runs below are captured at S = 500, M = 250 once a plc-stamped pilot shows no drive failure,
-  every visit complete, per device consecutive distinct source timestamps of coherent messages at most 900 ms apart and no slot of
-  a visit without a coherent sample, and then committed together.
+- The eight runs below are committed together. They were captured at S = 500, M = 250 after a plc-stamped pilot showed no drive
+  failure, every visit complete, per device consecutive distinct source timestamps of coherent messages at most 900 ms apart and no
+  slot of a visit without a coherent sample.
 - One directory per passed run, copied by `python -I scripts/commit-live-recording.py <run out> <name>` (it refuses a run that did not
   pass or whose compare report is not `equal` and `accepted`): `recording/` (step-3 format), `recording.capture-lock.json`,
   `recording.capture-report.json` (counts, incoherent-snapshot and repeated-`sourceTs` rates per device), `recording.dead-letter.jsonl`,

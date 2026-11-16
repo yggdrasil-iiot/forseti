@@ -1,0 +1,192 @@
+{
+  "captureReportVersion": 1,
+  "recording": "baseline",
+  "generator": "forseti capture 0.1.0",
+  "manifestSha256": "c0d852e1127f91e61e997b481863e2ed65823320453b8ae1f29da84e22844202",
+  "terminalOffsets": {
+    "ot.messages": {
+      "0": 0,
+      "1": 5737,
+      "2": 5729,
+      "3": 5734,
+      "4": 5731,
+      "5": 5739
+    },
+    "ot.sessions": {
+      "0": 0,
+      "1": 1,
+      "2": 1,
+      "3": 1,
+      "4": 1,
+      "5": 1
+    },
+    "mfg.occupancy": {
+      "0": 8,
+      "1": 4,
+      "2": 4,
+      "3": 0,
+      "4": 0,
+      "5": 0
+    },
+    "quality.incidents": {
+      "0": 0,
+      "1": 0,
+      "2": 0,
+      "3": 0,
+      "4": 0,
+      "5": 0
+    },
+    "ot.dead-letter": {
+      "0": 0,
+      "1": 0,
+      "2": 0,
+      "3": 0,
+      "4": 0,
+      "5": 0
+    }
+  },
+  "counts": {
+    "ot.messages": 28670,
+    "ot.sessions": 5,
+    "mfg.occupancy": 16,
+    "quality.incidents": 0,
+    "ot.dead-letter": 0,
+    "cuts": 38,
+    "deadlines": 8
+  },
+  "lastBusinessEvent": 1794803842428,
+  "rates": {
+    "messages": 28670,
+    "incoherentSnapshots": 3,
+    "incoherentSnapshotRate": 0.000105,
+    "repeatedSourceTs": 14333,
+    "repeatedSourceTsRate": 0.499930,
+    "rejected": 0,
+    "perDevice": {
+      "site-071:line2:station1": {
+        "messages": 5739,
+        "incoherentSnapshots": 1,
+        "incoherentSnapshotRate": 0.000174,
+        "repeatedSourceTs": 2869,
+        "repeatedSourceTsRate": 0.499913
+      },
+      "site-071:line2:station1:nutrunner1": {
+        "messages": 5737,
+        "incoherentSnapshots": 1,
+        "incoherentSnapshotRate": 0.000174,
+        "repeatedSourceTs": 2868,
+        "repeatedSourceTsRate": 0.499913
+      },
+      "site-071:line2:station1:nutrunner2": {
+        "messages": 5734,
+        "incoherentSnapshots": 1,
+        "incoherentSnapshotRate": 0.000174,
+        "repeatedSourceTs": 2867,
+        "repeatedSourceTsRate": 0.500000
+      },
+      "site-071:line2:station2": {
+        "messages": 5731,
+        "incoherentSnapshots": 0,
+        "incoherentSnapshotRate": 0.000000,
+        "repeatedSourceTs": 2865,
+        "repeatedSourceTsRate": 0.499913
+      },
+      "site-071:line2:station3": {
+        "messages": 5729,
+        "incoherentSnapshots": 0,
+        "incoherentSnapshotRate": 0.000000,
+        "repeatedSourceTs": 2864,
+        "repeatedSourceTsRate": 0.499913
+      }
+    }
+  },
+  "lastSourceTs": {
+    "site-071:line2:station1": 1794804638927,
+    "site-071:line2:station1:nutrunner1": 1794804638927,
+    "site-071:line2:station1:nutrunner2": 1794804638927,
+    "site-071:line2:station2": 1794804638927,
+    "site-071:line2:station3": 1794804638927
+  },
+  "brackets": [
+    {
+      "kind": "visit-settlement",
+      "ref": "S1-V1",
+      "station": "site-071:line2:station1",
+      "at": 1794804022430,
+      "cutA": 15,
+      "cutB": 16,
+      "w1A": 1794804022429,
+      "w1B": 1794804022927
+    },
+    {
+      "kind": "visit-settlement",
+      "ref": "S2-V1",
+      "station": "site-071:line2:station2",
+      "at": 1794804112432,
+      "cutA": 18,
+      "cutB": 19,
+      "w1A": 1794804111932,
+      "w1B": 1794804112436
+    },
+    {
+      "kind": "visit-settlement",
+      "ref": "S1-V2",
+      "station": "site-071:line2:station1",
+      "at": 1794804202432,
+      "cutA": 22,
+      "cutB": 23,
+      "w1A": 1794804201927,
+      "w1B": 1794804202435
+    },
+    {
+      "kind": "visit-settlement",
+      "ref": "S3-V1",
+      "station": "site-071:line2:station3",
+      "at": 1794804202432,
+      "cutA": 23,
+      "cutB": 24,
+      "w1A": 1794804201927,
+      "w1B": 1794804202435
+    },
+    {
+      "kind": "visit-settlement",
+      "ref": "S2-V2",
+      "station": "site-071:line2:station2",
+      "at": 1794804292433,
+      "cutA": 26,
+      "cutB": 27,
+      "w1A": 1794804291938,
+      "w1B": 1794804292439
+    },
+    {
+      "kind": "visit-settlement",
+      "ref": "S1-V3",
+      "station": "site-071:line2:station1",
+      "at": 1794804382436,
+      "cutA": 30,
+      "cutB": 31,
+      "w1A": 1794804382428,
+      "w1B": 1794804382927
+    },
+    {
+      "kind": "visit-settlement",
+      "ref": "S3-V2",
+      "station": "site-071:line2:station3",
+      "at": 1794804382436,
+      "cutA": 31,
+      "cutB": 32,
+      "w1A": 1794804382428,
+      "w1B": 1794804382927
+    },
+    {
+      "kind": "visit-settlement",
+      "ref": "S1-V4",
+      "station": "site-071:line2:station1",
+      "at": 1794804562428,
+      "cutA": 36,
+      "cutB": 37,
+      "w1A": 1794804561934,
+      "w1B": 1794804562430
+    }
+  ]
+}

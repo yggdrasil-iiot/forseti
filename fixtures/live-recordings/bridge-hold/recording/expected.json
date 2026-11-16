@@ -1,0 +1,628 @@
+{
+  "expectedVersion": 2,
+  "scope": "full",
+  "mode": "occupancy-join",
+  "visits": [
+    {
+      "visitRef": "S1-V1",
+      "key": {
+        "mode": "occupancy-join",
+        "source": "mes-line2",
+        "arrivalEventId": "S1-V1-arrive"
+      },
+      "unitId": "UNIT0000000000001",
+      "station": "site-071:line2:station1",
+      "enter": 1794833008383,
+      "leave": 1794833068382,
+      "attributionEnd": null,
+      "toolsUsed": [
+        "site-071:line2:station1:nutrunner1"
+      ],
+      "finalStatus": "complete",
+      "insufficiencyReasons": [],
+      "retraction": null,
+      "equipmentEvidence": {
+        "site-071:line2:station1": {
+          "unknownActivityPeriods": 0,
+          "sessionGaps": 0,
+          "status": "complete"
+        },
+        "site-071:line2:station1:nutrunner1": {
+          "members": {
+            "nutrunner1-torque": {
+              "observedPeriods": 60,
+              "missingPeriods": 0,
+              "badSlots": 0
+            }
+          },
+          "unknownActivityPeriods": 0,
+          "sessionGaps": 0,
+          "status": "complete"
+        },
+        "site-071:line2:station1:nutrunner2": {
+          "members": {
+            "nutrunner2-torque": {
+              "observedPeriods": 60,
+              "missingPeriods": 0,
+              "badSlots": 0
+            }
+          },
+          "unknownActivityPeriods": 0,
+          "sessionGaps": 0,
+          "status": "complete"
+        }
+      }
+    },
+    {
+      "visitRef": "S1-V2",
+      "key": {
+        "mode": "occupancy-join",
+        "source": "mes-line2",
+        "arrivalEventId": "S1-V2-arrive"
+      },
+      "unitId": "UNIT0000000000002",
+      "station": "site-071:line2:station1",
+      "enter": 1794833188372,
+      "leave": 1794833248378,
+      "attributionEnd": null,
+      "toolsUsed": [
+        "site-071:line2:station1:nutrunner2"
+      ],
+      "finalStatus": "complete",
+      "insufficiencyReasons": [],
+      "retraction": null,
+      "equipmentEvidence": {
+        "site-071:line2:station1": {
+          "unknownActivityPeriods": 0,
+          "sessionGaps": 0,
+          "status": "complete"
+        },
+        "site-071:line2:station1:nutrunner1": {
+          "members": {
+            "nutrunner1-torque": {
+              "observedPeriods": 60,
+              "missingPeriods": 1,
+              "badSlots": 0
+            }
+          },
+          "unknownActivityPeriods": 0,
+          "sessionGaps": 0,
+          "status": "complete"
+        },
+        "site-071:line2:station1:nutrunner2": {
+          "members": {
+            "nutrunner2-torque": {
+              "observedPeriods": 60,
+              "missingPeriods": 1,
+              "badSlots": 0
+            }
+          },
+          "unknownActivityPeriods": 0,
+          "sessionGaps": 0,
+          "status": "complete"
+        }
+      }
+    },
+    {
+      "visitRef": "S1-V3",
+      "key": {
+        "mode": "occupancy-join",
+        "source": "mes-line2",
+        "arrivalEventId": "S1-V3-arrive"
+      },
+      "unitId": "UNIT0000000000003",
+      "station": "site-071:line2:station1",
+      "enter": 1794833368370,
+      "leave": 1794833428382,
+      "attributionEnd": null,
+      "toolsUsed": [
+        "site-071:line2:station1:nutrunner1",
+        "site-071:line2:station1:nutrunner2"
+      ],
+      "finalStatus": "complete",
+      "insufficiencyReasons": [],
+      "retraction": null,
+      "equipmentEvidence": {
+        "site-071:line2:station1": {
+          "unknownActivityPeriods": 0,
+          "sessionGaps": 0,
+          "status": "complete"
+        },
+        "site-071:line2:station1:nutrunner1": {
+          "members": {
+            "nutrunner1-torque": {
+              "observedPeriods": 60,
+              "missingPeriods": 1,
+              "badSlots": 0
+            }
+          },
+          "unknownActivityPeriods": 0,
+          "sessionGaps": 0,
+          "status": "complete"
+        },
+        "site-071:line2:station1:nutrunner2": {
+          "members": {
+            "nutrunner2-torque": {
+              "observedPeriods": 60,
+              "missingPeriods": 1,
+              "badSlots": 0
+            }
+          },
+          "unknownActivityPeriods": 0,
+          "sessionGaps": 0,
+          "status": "complete"
+        }
+      }
+    },
+    {
+      "visitRef": "S1-V4",
+      "key": {
+        "mode": "occupancy-join",
+        "source": "mes-line2",
+        "arrivalEventId": "S1-V4-arrive"
+      },
+      "unitId": "UNIT0000000000004",
+      "station": "site-071:line2:station1",
+      "enter": 1794833548380,
+      "leave": 1794833608377,
+      "attributionEnd": null,
+      "toolsUsed": [],
+      "finalStatus": "complete",
+      "insufficiencyReasons": [],
+      "retraction": null,
+      "equipmentEvidence": {
+        "site-071:line2:station1": {
+          "unknownActivityPeriods": 0,
+          "sessionGaps": 0,
+          "status": "complete"
+        },
+        "site-071:line2:station1:nutrunner1": {
+          "members": {
+            "nutrunner1-torque": {
+              "observedPeriods": 60,
+              "missingPeriods": 0,
+              "badSlots": 0
+            }
+          },
+          "unknownActivityPeriods": 0,
+          "sessionGaps": 0,
+          "status": "complete"
+        },
+        "site-071:line2:station1:nutrunner2": {
+          "members": {
+            "nutrunner2-torque": {
+              "observedPeriods": 60,
+              "missingPeriods": 0,
+              "badSlots": 0
+            }
+          },
+          "unknownActivityPeriods": 0,
+          "sessionGaps": 0,
+          "status": "complete"
+        }
+      }
+    },
+    {
+      "visitRef": "S2-V1",
+      "key": {
+        "mode": "occupancy-join",
+        "source": "mes-line2",
+        "arrivalEventId": "S2-V1-arrive"
+      },
+      "unitId": "UNIT0000000000001",
+      "station": "site-071:line2:station2",
+      "enter": 1794833098376,
+      "leave": 1794833158379,
+      "attributionEnd": null,
+      "toolsUsed": [],
+      "finalStatus": "complete",
+      "insufficiencyReasons": [],
+      "retraction": null,
+      "equipmentEvidence": {
+        "site-071:line2:station2": {
+          "unknownActivityPeriods": 0,
+          "sessionGaps": 0,
+          "status": "complete"
+        }
+      }
+    },
+    {
+      "visitRef": "S2-V2",
+      "key": {
+        "mode": "occupancy-join",
+        "source": "mes-line2",
+        "arrivalEventId": "S2-V2-arrive"
+      },
+      "unitId": "UNIT0000000000002",
+      "station": "site-071:line2:station2",
+      "enter": 1794833278379,
+      "leave": 1794833338378,
+      "attributionEnd": null,
+      "toolsUsed": [],
+      "finalStatus": "complete",
+      "insufficiencyReasons": [],
+      "retraction": null,
+      "equipmentEvidence": {
+        "site-071:line2:station2": {
+          "unknownActivityPeriods": 0,
+          "sessionGaps": 0,
+          "status": "complete"
+        }
+      }
+    },
+    {
+      "visitRef": "S3-V1",
+      "key": {
+        "mode": "occupancy-join",
+        "source": "mes-line2",
+        "arrivalEventId": "S3-V1-arrive"
+      },
+      "unitId": "UNIT0000000000001",
+      "station": "site-071:line2:station3",
+      "enter": 1794833188372,
+      "leave": 1794833248378,
+      "attributionEnd": null,
+      "toolsUsed": [],
+      "finalStatus": "complete",
+      "insufficiencyReasons": [],
+      "retraction": null,
+      "equipmentEvidence": {
+        "site-071:line2:station3": {
+          "unknownActivityPeriods": 0,
+          "sessionGaps": 0,
+          "status": "complete"
+        }
+      }
+    },
+    {
+      "visitRef": "S3-V2",
+      "key": {
+        "mode": "occupancy-join",
+        "source": "mes-line2",
+        "arrivalEventId": "S3-V2-arrive"
+      },
+      "unitId": "UNIT0000000000002",
+      "station": "site-071:line2:station3",
+      "enter": 1794833368370,
+      "leave": 1794833428382,
+      "attributionEnd": null,
+      "toolsUsed": [],
+      "finalStatus": "complete",
+      "insufficiencyReasons": [],
+      "retraction": null,
+      "equipmentEvidence": {
+        "site-071:line2:station3": {
+          "unknownActivityPeriods": 0,
+          "sessionGaps": 0,
+          "status": "complete"
+        }
+      }
+    }
+  ],
+  "sampleFiles": [
+    "expected-samples/0000.json",
+    "expected-samples/0001.json",
+    "expected-samples/0002.json",
+    "expected-samples/0003.json",
+    "expected-samples/0004.json",
+    "expected-samples/0005.json",
+    "expected-samples/0006.json"
+  ],
+  "samplesPerFile": 20000,
+  "sampleCount": 125974,
+  "dispositions": {
+    "{\"atSeq\":1,\"bdSeq\":0,\"birthPublishTs\":1794832942848,\"device\":\"site-071:line2:station1\",\"edge\":\"line2-station1\",\"kind\":\"session-up\"}": {
+      "topic": "ot.sessions",
+      "parts": {
+        "event": {
+          "disposition": "accepted",
+          "reason": "accepted"
+        }
+      }
+    },
+    "{\"atSeq\":1,\"bdSeq\":0,\"birthPublishTs\":1794832943344,\"device\":\"site-071:line2:station1:nutrunner1\",\"edge\":\"line2-station1-nutrunner1\",\"kind\":\"session-up\"}": {
+      "topic": "ot.sessions",
+      "parts": {
+        "event": {
+          "disposition": "accepted",
+          "reason": "accepted"
+        }
+      }
+    },
+    "{\"atSeq\":1,\"bdSeq\":0,\"birthPublishTs\":1794832943880,\"device\":\"site-071:line2:station1:nutrunner2\",\"edge\":\"line2-station1-nutrunner2\",\"kind\":\"session-up\"}": {
+      "topic": "ot.sessions",
+      "parts": {
+        "event": {
+          "disposition": "accepted",
+          "reason": "accepted"
+        }
+      }
+    },
+    "{\"atSeq\":1,\"bdSeq\":0,\"birthPublishTs\":1794832944390,\"device\":\"site-071:line2:station2\",\"edge\":\"line2-station2\",\"kind\":\"session-up\"}": {
+      "topic": "ot.sessions",
+      "parts": {
+        "event": {
+          "disposition": "accepted",
+          "reason": "accepted"
+        }
+      }
+    },
+    "{\"atSeq\":1,\"bdSeq\":0,\"birthPublishTs\":1794832944923,\"device\":\"site-071:line2:station3\",\"edge\":\"line2-station3\",\"kind\":\"session-up\"}": {
+      "topic": "ot.sessions",
+      "parts": {
+        "event": {
+          "disposition": "accepted",
+          "reason": "accepted"
+        }
+      }
+    },
+    "{\"eventId\":\"S1-V1-arrive\",\"source\":\"mes-line2\"}": {
+      "topic": "mfg.occupancy",
+      "deliveries": 1,
+      "parts": {
+        "event": {
+          "disposition": "accepted",
+          "reason": "accepted"
+        }
+      }
+    },
+    "{\"eventId\":\"S1-V1-depart\",\"source\":\"mes-line2\"}": {
+      "topic": "mfg.occupancy",
+      "deliveries": 1,
+      "parts": {
+        "event": {
+          "disposition": "accepted",
+          "reason": "accepted"
+        }
+      }
+    },
+    "{\"eventId\":\"S1-V2-arrive\",\"source\":\"mes-line2\"}": {
+      "topic": "mfg.occupancy",
+      "deliveries": 1,
+      "parts": {
+        "event": {
+          "disposition": "accepted",
+          "reason": "accepted"
+        }
+      }
+    },
+    "{\"eventId\":\"S1-V2-depart\",\"source\":\"mes-line2\"}": {
+      "topic": "mfg.occupancy",
+      "deliveries": 1,
+      "parts": {
+        "event": {
+          "disposition": "accepted",
+          "reason": "accepted"
+        }
+      }
+    },
+    "{\"eventId\":\"S1-V3-arrive\",\"source\":\"mes-line2\"}": {
+      "topic": "mfg.occupancy",
+      "deliveries": 1,
+      "parts": {
+        "event": {
+          "disposition": "accepted",
+          "reason": "accepted"
+        }
+      }
+    },
+    "{\"eventId\":\"S1-V3-depart\",\"source\":\"mes-line2\"}": {
+      "topic": "mfg.occupancy",
+      "deliveries": 1,
+      "parts": {
+        "event": {
+          "disposition": "accepted",
+          "reason": "accepted"
+        }
+      }
+    },
+    "{\"eventId\":\"S1-V4-arrive\",\"source\":\"mes-line2\"}": {
+      "topic": "mfg.occupancy",
+      "deliveries": 1,
+      "parts": {
+        "event": {
+          "disposition": "accepted",
+          "reason": "accepted"
+        }
+      }
+    },
+    "{\"eventId\":\"S1-V4-depart\",\"source\":\"mes-line2\"}": {
+      "topic": "mfg.occupancy",
+      "deliveries": 1,
+      "parts": {
+        "event": {
+          "disposition": "accepted",
+          "reason": "accepted"
+        }
+      }
+    },
+    "{\"eventId\":\"S2-V1-arrive\",\"source\":\"mes-line2\"}": {
+      "topic": "mfg.occupancy",
+      "deliveries": 1,
+      "parts": {
+        "event": {
+          "disposition": "accepted",
+          "reason": "accepted"
+        }
+      }
+    },
+    "{\"eventId\":\"S2-V1-depart\",\"source\":\"mes-line2\"}": {
+      "topic": "mfg.occupancy",
+      "deliveries": 1,
+      "parts": {
+        "event": {
+          "disposition": "accepted",
+          "reason": "accepted"
+        }
+      }
+    },
+    "{\"eventId\":\"S2-V2-arrive\",\"source\":\"mes-line2\"}": {
+      "topic": "mfg.occupancy",
+      "deliveries": 1,
+      "parts": {
+        "event": {
+          "disposition": "accepted",
+          "reason": "accepted"
+        }
+      }
+    },
+    "{\"eventId\":\"S2-V2-depart\",\"source\":\"mes-line2\"}": {
+      "topic": "mfg.occupancy",
+      "deliveries": 1,
+      "parts": {
+        "event": {
+          "disposition": "accepted",
+          "reason": "accepted"
+        }
+      }
+    },
+    "{\"eventId\":\"S3-V1-arrive\",\"source\":\"mes-line2\"}": {
+      "topic": "mfg.occupancy",
+      "deliveries": 1,
+      "parts": {
+        "event": {
+          "disposition": "accepted",
+          "reason": "accepted"
+        }
+      }
+    },
+    "{\"eventId\":\"S3-V1-depart\",\"source\":\"mes-line2\"}": {
+      "topic": "mfg.occupancy",
+      "deliveries": 1,
+      "parts": {
+        "event": {
+          "disposition": "accepted",
+          "reason": "accepted"
+        }
+      }
+    },
+    "{\"eventId\":\"S3-V2-arrive\",\"source\":\"mes-line2\"}": {
+      "topic": "mfg.occupancy",
+      "deliveries": 1,
+      "parts": {
+        "event": {
+          "disposition": "accepted",
+          "reason": "accepted"
+        }
+      }
+    },
+    "{\"eventId\":\"S3-V2-depart\",\"source\":\"mes-line2\"}": {
+      "topic": "mfg.occupancy",
+      "deliveries": 1,
+      "parts": {
+        "event": {
+          "disposition": "accepted",
+          "reason": "accepted"
+        }
+      }
+    }
+  },
+  "messageMemberDispositions": {
+    "topic": "ot.messages",
+    "part": "member:<metric>",
+    "disposition": "accepted",
+    "reason": "accepted",
+    "appliesTo": "every sampleId of samples{} not listed in dispositions{}; a message of a device outside the rule's catalog is listed by its message identity, part message"
+  },
+  "incidents": {},
+  "transitions": [
+    {
+      "assertion": "visit-settlement",
+      "station": "site-071:line2:station1",
+      "ref": "S1-V1",
+      "at": 1794833788382,
+      "cutA": 14,
+      "cutB": 15,
+      "w1A": 1794833788377,
+      "w1B": 1794833788872,
+      "atA": "provisional",
+      "atB": "complete"
+    },
+    {
+      "assertion": "visit-settlement",
+      "station": "site-071:line2:station2",
+      "ref": "S2-V1",
+      "at": 1794833878379,
+      "cutA": 18,
+      "cutB": 19,
+      "w1A": 1794833878370,
+      "w1B": 1794833878881,
+      "atA": "provisional",
+      "atB": "complete"
+    },
+    {
+      "assertion": "visit-settlement",
+      "station": "site-071:line2:station1",
+      "ref": "S1-V2",
+      "at": 1794833968378,
+      "cutA": 21,
+      "cutB": 22,
+      "w1A": 1794833968371,
+      "w1B": 1794833968872,
+      "atA": "provisional",
+      "atB": "complete"
+    },
+    {
+      "assertion": "visit-settlement",
+      "station": "site-071:line2:station3",
+      "ref": "S3-V1",
+      "at": 1794833968378,
+      "cutA": 23,
+      "cutB": 24,
+      "w1A": 1794833968371,
+      "w1B": 1794833968872,
+      "atA": "provisional",
+      "atB": "complete"
+    },
+    {
+      "assertion": "visit-settlement",
+      "station": "site-071:line2:station2",
+      "ref": "S2-V2",
+      "at": 1794834058378,
+      "cutA": 27,
+      "cutB": 28,
+      "w1A": 1794834058372,
+      "w1B": 1794834058870,
+      "atA": "provisional",
+      "atB": "complete"
+    },
+    {
+      "assertion": "visit-settlement",
+      "station": "site-071:line2:station1",
+      "ref": "S1-V3",
+      "at": 1794834148382,
+      "cutA": 30,
+      "cutB": 31,
+      "w1A": 1794834148375,
+      "w1B": 1794834148873,
+      "atA": "provisional",
+      "atB": "complete"
+    },
+    {
+      "assertion": "visit-settlement",
+      "station": "site-071:line2:station3",
+      "ref": "S3-V2",
+      "at": 1794834148382,
+      "cutA": 30,
+      "cutB": 31,
+      "w1A": 1794834148375,
+      "w1B": 1794834148873,
+      "atA": "provisional",
+      "atB": "complete"
+    },
+    {
+      "assertion": "visit-settlement",
+      "station": "site-071:line2:station1",
+      "ref": "S1-V4",
+      "at": 1794834328377,
+      "cutA": 35,
+      "cutB": 36,
+      "w1A": 1794834327877,
+      "w1B": 1794834328377,
+      "atA": "provisional",
+      "atB": "complete"
+    }
+  ],
+  "settleTargetW": 1794834328377,
+  "settledCut": 36
+}
