@@ -11,6 +11,7 @@ import java.nio.file.*;
 import java.util.*;
 import java.util.stream.Stream;
 import yggdrasil.forseti.cli.recording.CaptureTruth;
+import yggdrasil.forseti.cli.recording.ExpectedFiles;
 import yggdrasil.forseti.cli.recording.Recording;
 import yggdrasil.forseti.cli.recording.ReplayRecording;
 import yggdrasil.forseti.cli.recording.RoutingManifest;
@@ -25,7 +26,7 @@ import yggdrasil.forseti.core.input.InputParser;
  *  <p>What is written. {@code <topic>/<partition>.jsonl} for every subscribed partition of the four input topics, one line per record
  *  {@code {"offset","timestamp","key","headers","value"}} with the broker's offset and append time and the value bytes exactly as
  *  delivered (spliced into the line, never re-serialized); {@code routing.json}, the run's placement file byte for byte;
- *  {@code expected.json} from {@link CaptureTruth}; {@code manifest.json} with {@code synthetic: false}, the rule pin, the deployment's
+ *  {@code expected.json} from {@link CaptureTruth} in version 2 ({@link ExpectedFiles}: the samples in {@code expected-samples/}); {@code manifest.json} with {@code synthetic: false}, the rule pin, the deployment's
  *  definition pins, {@code T0}, {@code scanMs}, the evidence range of every device, the batches, the deadlines with their brackets,
  *  {@code settleTargetW}, {@code tailMs} ({@code L + O + P} of the rule) and the digests. The dead-letter topic is not an input: its
  *  records go to a side file next to the recording (raw values in base64), and so does the capture report.
@@ -300,7 +301,7 @@ public final class CaptureRecorder {
         TreeMap<String, byte[]> files = new TreeMap<>();
         for (Map.Entry<String, List<Rec>> e : parts.entrySet()) files.put(e.getKey() + ".jsonl", partitionBytes(e.getValue()));
         files.put(Recording.ROUTING, in.routing().clone());
-        files.put(Recording.EXPECTED, Json.pretty(expected));
+        files.putAll(ExpectedFiles.split(expected));   // version 2: expected.json and expected-samples/<iiii>.json
         ObjectNode manifest = Json.object();
         Json.putSafe(manifest, "recordingVersion", 1);
         manifest.put("name", in.name());

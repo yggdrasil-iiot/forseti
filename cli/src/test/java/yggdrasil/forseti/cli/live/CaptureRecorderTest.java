@@ -18,6 +18,7 @@ import yggdrasil.forseti.cli.recording.CaptureTruth;
 import yggdrasil.forseti.cli.recording.Recording;
 import yggdrasil.forseti.cli.recording.RoutingManifest;
 import yggdrasil.forseti.core.Json;
+import yggdrasil.forseti.core.canon.Canonical;
 import yggdrasil.forseti.core.input.InputParser;
 import yggdrasil.forseti.core.input.Inputs;
 
@@ -124,6 +125,7 @@ class CaptureRecorderTest {
         assertEquals("visit-1", expected.get("visits").get(0).get("visitRef").asText());
         assertEquals("complete", expected.get("visits").get(0).get("finalStatus").asText());
         assertEquals(5684, expected.get("samples").size());
+        assertEquals(1, expected.get("expectedVersion").intValue(), "read back in the version-1 form");
         JsonNode t = expected.get("transitions").get(0);
         assertTrue(t.get("w1A").asLong() < d.at() && d.at() <= t.get("w1B").asLong());
         // the side files sit next to the recording, not in it
@@ -159,13 +161,54 @@ class CaptureRecorderTest {
         oracleReads(out, 4060, 5);
     }
 
+    /** A capture writes {@code expected.json} version 2: the samples in {@code expected-samples/}, each chunk in the manifest's digests
+     *  and the lock, so a changed chunk byte is caught as a changed {@code expected.json} byte is. */
+    @Test
+    void aCaptureWritesExpectedVersionTwoAndItsLockCoversTheChunks() throws Exception {
+        Path out = record(source(SMOKE, v -> v), inputs(SMOKE, occupancy(SMOKE)), "v2-capture");
+        String chunk = "expected-samples/0000.json";
+        JsonNode head = Json.read(out.resolve(Recording.EXPECTED));
+        assertEquals(2, head.get("expectedVersion").intValue());
+        assertFalse(head.has("samples"));
+        assertEquals("[\"" + chunk + "\"]", head.get("sampleFiles").toString());
+        assertEquals(5684, head.get("sampleCount").longValue());
+        Recording cap = Recording.open(out);
+        assertTrue(cap.digests().containsKey(chunk));
+        assertEquals(5684, cap.expected().get("samples").size());
+        assertEquals(List.of(), CaptureLock.check(out));
+        ObjectNode lock = CaptureLock.lock(out);
+        assertTrue(lock.path("files").has(chunk));
+        byte[] committed = Json.pretty(lock);
+
+        // one byte of the chunk changed: the digest check fails; with the manifest's digest rewritten, the lock still differs
+        Path file = out.resolve(chunk);
+        byte[] original = Files.readAllBytes(file);
+        String text = new String(original, StandardCharsets.UTF_8);
+        int at = text.indexOf("\"visit-1\"");
+        assertTrue(at > 0);
+        byte[] tampered = original.clone();
+        tampered[at + 7] = (byte) '2';
+        Files.write(file, tampered);
+        assertTrue(String.join("|", CaptureLock.check(out)).contains("digest mismatch: " + chunk), CaptureLock.check(out).toString());
+        ObjectNode manifest = (ObjectNode) Json.read(out.resolve(Recording.MANIFEST));
+        ((ObjectNode) manifest.get("digests")).put(chunk, Canonical.digestOf(tampered));
+        Files.write(out.resolve(Recording.MANIFEST), Json.pretty(manifest));
+        List<String> diff = CaptureLock.compare(CaptureLock.lock(out), committed);
+        assertTrue(diff.stream().anyMatch(d -> d.startsWith("file " + chunk + ":")), diff.toString());
+
+        // the chunk missing: refused by the digest check and by the reader
+        Files.delete(file);
+        assertTrue(String.join("|", CaptureLock.check(out)).contains("differ from the manifest's digests"), CaptureLock.check(out).toString());
+        assertThrows(IllegalArgumentException.class, () -> Recording.open(out).expected());
+    }
+
     /** The oracle's recording reader opens the capture, verifies its digests, reads every partition, and its input reader accepts
      *  every message and session event; prints the message count and the distinct edges. */
     void oracleReads(Path recording, long messages, int edges) throws Exception {
         Path script = tmp.resolve("read_capture.py");
         Files.writeString(script, String.join("\n",
             "import json, sys",
-            "from forseti_oracle import inputs, recording",
+            "from forseti_oracle import canon, inputs, recording",
             "rec = recording.open_recording(sys.argv[1])",
             "rec.verify_digests()",
             "n, edges, bad = 0, set(), 0",
@@ -182,7 +225,7 @@ class CaptureRecorderTest {
             "                if not x.rejected:",
             "                    edges.add(x.parsed.edge)",
             "                    n += 1 if topic == 'ot.messages' else 0",
-            "json.dump({'messages': n, 'edges': len(edges), 'rejected': bad}, sys.stdout)", ""), StandardCharsets.UTF_8);
+            "json.dump({'messages': n, 'edges': len(edges), 'rejected': bad, 'expected': canon.digest(rec.expected())}, sys.stdout)", ""), StandardCharsets.UTF_8);
         Process p = new ProcessBuilder(PYTHON, "-I", script.toString(), recording.toAbsolutePath().toString()).start();
         byte[] stdout = p.getInputStream().readAllBytes();
         String stderr = new String(p.getErrorStream().readAllBytes(), StandardCharsets.UTF_8);
@@ -192,6 +235,7 @@ class CaptureRecorderTest {
         assertEquals(messages, o.get("messages").asLong());
         assertEquals(edges, o.get("edges").asInt());
         assertEquals(0, o.get("rejected").asInt());
+        assertEquals(Canonical.digest(Recording.open(recording).expected()), o.get("expected").asText(), "the oracle reads the same truth");
     }
 
     static int main(String... args) {

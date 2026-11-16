@@ -114,7 +114,7 @@ bash scripts/run-full-loop-gate.sh --placement dedicated --scenario fixtures/liv
 - `pins.json`, `deployment.tsv`, `preflight.txt`, `drive.jsonl`, `injections.log` (when injecting).
 - `bridge-run.json` (bridge run record: input stages with the held and releasing frames, D3 stages), `bridge-frames.jsonl` (raw MQTT
   frames, in wire order).
-- `recording/` (step-3 format), `recording.capture-report.json` (rates, `lastBusinessEvent`, tails),
+- `recording/` (step-3 format; `expected.json` version 2, the samples in `expected-samples/`), `recording.capture-report.json` (rates, `lastBusinessEvent`, tails),
   `recording.dead-letter.jsonl`, `recording.capture-lock.json`.
 - `state/`, `generation.json`, `core/` (harness journals, `cuts.json`, `run.json`), `core-run.json`, `oracle/`.
 - `compare/` (its own state, harness run, `diffs/` on a difference, `compare-report.json`), `recording.compare-report.json`.

@@ -13,6 +13,7 @@ from forseti_oracle import canon
 MAX_SAFE = 9007199254740991
 TOPICS = ("ot.messages", "ot.sessions", "mfg.occupancy", "quality.incidents")
 MANIFEST, ROUTING, EXPECTED = "manifest.json", "routing.json", "expected.json"
+SAMPLE_DIR = "expected-samples"
 
 
 class Malformed(ValueError):
@@ -182,6 +183,10 @@ class Recording:
             out.append(Record(offset, ts, d["key"], d["headers"], d["value"]))
         return out
 
+    def expected(self) -> dict:
+        """The ground truth in the version-1 form, from either layout (see ``read_expected``)."""
+        return read_expected(self.path)
+
     def verify_digests(self) -> None:
         listed = dict(self.manifest["digests"])
         present = sorted(p.relative_to(self.path).as_posix() for p in self.path.rglob("*") if p.is_file())
@@ -192,6 +197,69 @@ class Recording:
             actual = hashlib.sha256((self.path / name).read_bytes()).hexdigest()
             if actual != sha:
                 raise Malformed(f"digest mismatch: {name}")
+
+
+def chunk_name(i: int) -> str:
+    return f"{SAMPLE_DIR}/{i:04d}.json"
+
+
+def read_expected(path) -> dict:
+    """``expected.json`` of a recording in the version-1 form. Version 1 is returned as read. Version 2 keeps every field but
+    ``samples``; ``sampleFiles`` lists ``expected-samples/0000.json, 0001.json, ...``, each ``{"chunk": i, "samples": {...}}``,
+    every chunk but the last holding ``samplesPerFile`` samples, the last 1 to ``samplesPerFile``, ``sampleCount`` in all; the
+    chunks are joined in order into ``samples`` at the place of ``sampleFiles``. Anything else is ``Malformed``."""
+    path = Path(path)
+    e = canon.loads((path / EXPECTED).read_text(encoding="utf-8"))
+    if not isinstance(e, dict):
+        raise Malformed("expected.json is not an object")
+    version = e.get("expectedVersion")
+    if version == 1 and not isinstance(version, bool):
+        if (path / SAMPLE_DIR).exists():
+            raise Malformed(f"a version-1 expected.json with {SAMPLE_DIR}/ present")
+        return e
+    if version != 2 or isinstance(version, bool):
+        raise Malformed(f"expectedVersion {version!r}")
+    if "samples" in e or "samplesEncoding" in e:
+        raise Malformed("version 2 carries samples or samplesEncoding inline")
+    names = e.get("sampleFiles")
+    if not isinstance(names, list):
+        raise Malformed("sampleFiles is not an array")
+    per = non_negative(e.get("samplesPerFile"), "samplesPerFile")
+    count = non_negative(e.get("sampleCount"), "sampleCount")
+    if per < 1:
+        raise Malformed("samplesPerFile 0")
+    for i, n in enumerate(names):
+        if n != chunk_name(i):
+            raise Malformed(f"sampleFiles[{i}] is {n!r}, not {chunk_name(i)}")
+    sd = path / SAMPLE_DIR
+    present = sorted(p.relative_to(path).as_posix() for p in sd.rglob("*")) if sd.exists() else []
+    if present != sorted(names):
+        raise Malformed(f"sample files present {present} differ from sampleFiles {names}")
+    samples: dict = {}
+    for i, n in enumerate(names):
+        c = canon.loads((path / n).read_text(encoding="utf-8"))
+        if not isinstance(c, dict) or set(c) != {"chunk", "samples"} or not isinstance(c["samples"], dict):
+            raise Malformed(f"{n} is not {{chunk, samples}}")
+        if non_negative(c["chunk"], "chunk") != i:
+            raise Malformed(f"{n} says chunk {c['chunk']}, out of order")
+        k = len(c["samples"])
+        if (not 1 <= k <= per) if i == len(names) - 1 else k != per:
+            raise Malformed(f"{n} holds {k} samples ({per} per file)")
+        for key, value in c["samples"].items():
+            if key in samples:
+                raise Malformed(f"{n} repeats sample {key}")
+            samples[key] = value
+    if len(samples) != count:
+        raise Malformed(f"the sample files hold {len(samples)} samples, sampleCount {count}")
+    out: dict = {}
+    for f, v in e.items():
+        if f == "expectedVersion":
+            out[f] = 1
+        elif f == "sampleFiles":
+            out["samples"] = samples
+        elif f not in ("samplesPerFile", "sampleCount"):
+            out[f] = v
+    return out
 
 
 def open_recording(path) -> Recording:
