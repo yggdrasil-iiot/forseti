@@ -95,7 +95,8 @@ class RecordingCompareTest {
         Path registry = ROOT.resolve("fixtures/live/registry");
         for (Path d : dirs) {
             long t = System.nanoTime();
-            Ran v = forseti("recordings", "verify-capture", d.resolve("recording").toString(), "--lock", d.resolve("recording.capture-lock.json").toString());
+            Ran v = forseti("recordings", "verify-capture", d.resolve("recording").toString(), "--lock", d.resolve("recording.capture-lock.json").toString(),
+                "--registry", registry.toString());
             assertEquals(0, v.exit(), d.getFileName() + " verify-capture: " + v.err());
             long verifyMs = (System.nanoTime() - t) / 1_000_000;
             t = System.nanoTime();

@@ -95,8 +95,16 @@ public final class CaptureRecorder {
 
     private record Rec(String topic, int partition, Raw raw, ReplayRecording.Timing timing) {}
 
-    /** The device of a timed {@code ot.messages} record (its timing has a station, so it parsed as a process message). */
-    private static String device(Rec r) { return Json.read(r.raw().value()).path("device").asText(); }
+    /** The W1 rule of the harness (the gate's {@code J-W1-FORMULA}), shared by the recorder and {@link CaptureLock} so the two cannot
+     *  drift: an {@code ot.messages} record with timing {@code t} and value bytes {@code value} advances the W1 of {@code t}'s station to
+     *  {@code maxTs - O - 1} only when its device carries a member of the rule ({@link CaptureTruth.Temporal#memberEquipment}); null when
+     *  it advances no W1 (no station, or a routed device without a rule member). */
+    static Long w1Step(ReplayRecording.Timing t, byte[] value, CaptureTruth.Temporal temporal) {
+        if (t == null || t.station() == null) return null;
+        // the timing has a station, so the value parsed as a process message
+        if (!temporal.memberEquipment().contains(Json.read(value).path("device").asText())) return null;
+        return t.maxTs() - temporal.outOfOrdernessMs() - 1;
+    }
 
     public static Result record(Source src, String prefix, Inputs in, Path out, Path reportFile, Path deadLetterFile) {
         RoutingManifest routing = RoutingManifest.read(Json.read(in.routing()));
@@ -210,12 +218,13 @@ public final class CaptureRecorder {
         Map<String, long[]> w1At = new TreeMap<>();
         for (String s : stations) { long[] a = new long[order.size()]; Arrays.fill(a, ReplayRecording.NO_TELEMETRY); w1At.put(s, a); }
         // as the harness: a message advances W1 only when its device carries a member of the rule
-        for (int p : routing.subscribed(InputParser.MESSAGES)) for (Rec r : parts.get(InputParser.MESSAGES + "/" + p))
-            if (r.timing().station() != null && temporal.memberEquipment().contains(device(r))) {
-                long[] a = w1At.get(r.timing().station());
-                int i = at.get(r.raw().timestamp());
-                a[i] = Math.max(a[i], r.timing().maxTs() - temporal.outOfOrdernessMs() - 1);
-            }
+        for (int p : routing.subscribed(InputParser.MESSAGES)) for (Rec r : parts.get(InputParser.MESSAGES + "/" + p)) {
+            Long w = w1Step(r.timing(), r.raw().value(), temporal);
+            if (w == null) continue;
+            long[] a = w1At.get(r.timing().station());
+            int i = at.get(r.raw().timestamp());
+            a[i] = Math.max(a[i], w);
+        }
         for (long[] a : w1At.values()) for (int i = 1; i < a.length; i++) a[i] = Math.max(a[i], a[i - 1]);
 
         List<CaptureTruth.Input> undated = inputs(parts, null);

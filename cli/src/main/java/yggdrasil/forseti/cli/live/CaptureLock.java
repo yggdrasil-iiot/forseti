@@ -6,6 +6,7 @@ import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.nio.file.*;
 import java.util.*;
+import yggdrasil.forseti.cli.recording.CaptureTruth;
 import yggdrasil.forseti.cli.recording.Recording;
 import yggdrasil.forseti.cli.recording.ReplayRecording;
 import yggdrasil.forseti.cli.recording.RoutingManifest;
@@ -21,8 +22,9 @@ import yggdrasil.forseti.core.input.InputParser;
  *  an append timestamp on every line that never goes back); every file's digest is the manifest's and no file is missing or extra;
  *  the through-offsets stay inside the records and the last batch includes them all; the first batch carries telemetry on every
  *  subscribed raw partition; and every deadline is bracketed again from the records, on the watermark the harness computes
- *  ({@link ReplayRecording#timing}, {@code O} from {@code source.capture.outOfOrdernessMs}), at the station and with the values the
- *  ground truth's transitions name; and the tail of spec 628 holds on every subscribed raw partition, station and routed device
+ *  ({@link ReplayRecording#timing}; the rule resolved from the manifest's {@code rule} pin in the registry, its {@code O} equal
+ *  to the manifest's {@code source.capture.outOfOrdernessMs}, and only the telemetry of equipment carrying a member of the rule counted:
+ *  {@link CaptureRecorder#w1Step}, the recorder's own rule), at the station and with the values the ground truth's transitions name; and the tail of spec 628 holds on every subscribed raw partition, station and routed device
  *  (the recorder's rule, with the manifest's {@code tailMs}). {@link #lock} then pins the counts, the records per partition and every file's SHA-256, the
  *  manifest's included; {@link #compare} reports how a computed lock differs from a committed one. A truncated, corrupted or missing
  *  partition file, or one whose tail lost records, fails one of these even when its manifest digests were rewritten, because the
@@ -30,8 +32,8 @@ import yggdrasil.forseti.core.input.InputParser;
 public final class CaptureLock {
     private CaptureLock() {}
 
-    /** The problems of a capture (empty: it is sound). */
-    public static List<String> check(Path dir) {
+    /** The problems of a capture (empty: it is sound); {@code registry} resolves the manifest's rule pin. */
+    public static List<String> check(Path dir, Path registry) {
         List<String> problems = new ArrayList<>();
         Recording rec;
         try { rec = Recording.open(dir); } catch (RuntimeException e) { problems.add(e.getMessage()); return problems; }
@@ -40,6 +42,11 @@ public final class CaptureLock {
         if (!CaptureRecorder.GENERATOR.equals(m.path("source").path("generator").asText())) problems.add("manifest: source.generator is not " + CaptureRecorder.GENERATOR);
         JsonNode oo = m.path("source").path("capture").path("outOfOrdernessMs");
         if (!oo.isIntegralNumber()) { problems.add("manifest: no source.capture.outOfOrdernessMs"); return problems; }
+        CaptureTruth.Temporal temporal;
+        try { temporal = CaptureTruth.temporal(registry, m.path("rule")); }
+        catch (RuntimeException e) { problems.add("manifest: rule " + m.path("rule") + " does not resolve in " + registry + ": " + e.getMessage()); return problems; }
+        if (oo.longValue() != temporal.outOfOrdernessMs())
+            problems.add("manifest: source.capture.outOfOrdernessMs " + oo.longValue() + " is not the rule's " + temporal.outOfOrdernessMs());
         RoutingManifest routing = rec.routing();
         try {
             for (String topic : RoutingManifest.TOPICS) for (int p : routing.subscribed(topic)) try (Recording.Reader r = rec.reader(topic, p)) {
@@ -57,7 +64,7 @@ public final class CaptureLock {
         Recording.Batch first = rec.batches().get(0);
         for (int p : routing.subscribed(InputParser.MESSAGES))
             if (first.through(InputParser.MESSAGES, p) < 0) problems.add("the first batch carries no telemetry on raw partition " + p + " (spec 406)");
-        problems.addAll(brackets(rec, oo.longValue()));
+        problems.addAll(brackets(rec, temporal));
         problems.addAll(tail(rec));
         return problems;
     }
@@ -80,36 +87,40 @@ public final class CaptureLock {
         return t.problems(routing, rec.tailMs());
     }
 
-    /** W1 of every station at every cut, recomputed from the records; every deadline at its station and values. */
-    private static List<String> brackets(Recording rec, long oo) {
+    /** W1 of every station at every cut, recomputed from the records with the recorder's rule ({@link CaptureRecorder#w1Step}: only the
+     *  telemetry of equipment carrying a member of the rule advances it); every deadline at its station and values. */
+    private static List<String> brackets(Recording rec, CaptureTruth.Temporal temporal) {
         List<String> problems = new ArrayList<>();
         RoutingManifest routing = rec.routing();
         JsonNode definitions = rec.manifest().path("definitions");
         List<Recording.Batch> batches = rec.batches();
-        Map<String, Long> max = new HashMap<>();
+        Map<String, Long> w1Now = new HashMap<>();
         Map<Long, Map<String, Long>> w1 = new HashMap<>();
-        Map<Integer, List<ReplayRecording.Timing>> timings = new TreeMap<>();
+        // per raw partition and offset: the station whose W1 the message advances and the W1 it advances to (null: none)
+        Map<Integer, List<Map.Entry<String, Long>>> steps = new TreeMap<>();
         for (int p : routing.subscribed(InputParser.MESSAGES)) {
-            List<ReplayRecording.Timing> l = new ArrayList<>();
+            List<Map.Entry<String, Long>> l = new ArrayList<>();
             try (Recording.Reader r = rec.reader(InputParser.MESSAGES, p)) {
-                for (Recording.Line x; (x = r.next()) != null;)
-                    l.add(ReplayRecording.timing(InputParser.MESSAGES, p, x.record().offset(), x.record().key(), Recording.valueBytes(x.bytes()), routing, definitions));
+                for (Recording.Line x; (x = r.next()) != null;) {
+                    byte[] v = Recording.valueBytes(x.bytes());
+                    ReplayRecording.Timing t = ReplayRecording.timing(InputParser.MESSAGES, p, x.record().offset(), x.record().key(), v, routing, definitions);
+                    Long w = CaptureRecorder.w1Step(t, v, temporal);
+                    l.add(w == null ? null : Map.entry(t.station(), w));
+                }
             }
-            timings.put(p, l);
+            steps.put(p, l);
         }
         Map<Integer, Integer> at = new HashMap<>();
         for (Recording.Batch b : batches) {
-            for (Map.Entry<Integer, List<ReplayRecording.Timing>> e : timings.entrySet()) {
+            for (Map.Entry<Integer, List<Map.Entry<String, Long>>> e : steps.entrySet()) {
                 int i = at.getOrDefault(e.getKey(), 0);
                 for (; i <= b.through(InputParser.MESSAGES, e.getKey()); i++) {
-                    ReplayRecording.Timing t = e.getValue().get(i);
-                    if (t.station() != null) max.merge(t.station(), t.maxTs(), Math::max);
+                    Map.Entry<String, Long> s = e.getValue().get(i);
+                    if (s != null) w1Now.merge(s.getKey(), s.getValue(), Math::max);
                 }
                 at.put(e.getKey(), i);
             }
-            Map<String, Long> w = new HashMap<>();
-            max.forEach((s, v) -> w.put(s, v - oo - 1));
-            w1.put(b.cutId(), w);
+            w1.put(b.cutId(), new HashMap<>(w1Now));
         }
         List<JsonNode> transitions = new ArrayList<>();
         try { rec.expected().path("transitions").forEach(transitions::add); } catch (RuntimeException e) { problems.add("expected.json: " + e.getMessage()); return problems; }
