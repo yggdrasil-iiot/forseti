@@ -97,7 +97,7 @@ class CaptureRecorderTest {
         Recording orig = Recording.open(SMOKE), cap = Recording.open(out);
         cap.verifyDigests();
         cap.verifyBatches();
-        assertEquals(List.of(), CaptureLock.check(out));
+        assertEquals(List.of(), CaptureLock.check(out, REGISTRY));
         assertFalse(cap.manifest().get("synthetic").booleanValue());
         assertEquals(orig.manifest().get("definitions"), cap.manifest().get("definitions"));
         for (String topic : RoutingManifest.TOPICS) for (int p : orig.routing().subscribed(topic)) {
@@ -156,7 +156,7 @@ class CaptureRecorderTest {
                 }
             }
         assertEquals(5, edges.size(), edges.toString());
-        assertEquals(List.of(), CaptureLock.check(out));
+        assertEquals(List.of(), CaptureLock.check(out, REGISTRY));
         assertTrue(cap.expected().get("samples").fieldNames().next().contains("\"edge\":\"edge-line2-"));
         oracleReads(out, 4060, 5);
     }
@@ -175,7 +175,7 @@ class CaptureRecorderTest {
         Recording cap = Recording.open(out);
         assertTrue(cap.digests().containsKey(chunk));
         assertEquals(5684, cap.expected().get("samples").size());
-        assertEquals(List.of(), CaptureLock.check(out));
+        assertEquals(List.of(), CaptureLock.check(out, REGISTRY));
         ObjectNode lock = CaptureLock.lock(out);
         assertTrue(lock.path("files").has(chunk));
         byte[] committed = Json.pretty(lock);
@@ -189,7 +189,7 @@ class CaptureRecorderTest {
         byte[] tampered = original.clone();
         tampered[at + 7] = (byte) '2';
         Files.write(file, tampered);
-        assertTrue(String.join("|", CaptureLock.check(out)).contains("digest mismatch: " + chunk), CaptureLock.check(out).toString());
+        assertTrue(String.join("|", CaptureLock.check(out, REGISTRY)).contains("digest mismatch: " + chunk), CaptureLock.check(out, REGISTRY).toString());
         ObjectNode manifest = (ObjectNode) Json.read(out.resolve(Recording.MANIFEST));
         ((ObjectNode) manifest.get("digests")).put(chunk, Canonical.digestOf(tampered));
         Files.write(out.resolve(Recording.MANIFEST), Json.pretty(manifest));
@@ -198,7 +198,7 @@ class CaptureRecorderTest {
 
         // the chunk missing: refused by the digest check and by the reader
         Files.delete(file);
-        assertTrue(String.join("|", CaptureLock.check(out)).contains("differ from the manifest's digests"), CaptureLock.check(out).toString());
+        assertTrue(String.join("|", CaptureLock.check(out, REGISTRY)).contains("differ from the manifest's digests"), CaptureLock.check(out, REGISTRY).toString());
         assertThrows(IllegalArgumentException.class, () -> Recording.open(out).expected());
     }
 
@@ -263,11 +263,13 @@ class CaptureRecorderTest {
     void verifyCaptureLocksAFreshCaptureAndRefusesDamage() throws Exception {
         Path out = record(source(SMOKE, v -> v), inputs(SMOKE, occupancy(SMOKE)), "capture");
         Path lock = tmp.resolve("capture.lock.json");
-        assertEquals(1, main("recordings", "verify-capture", out.toString(), "--lock", lock.toString()), "no lock yet");
-        assertEquals(0, main("recordings", "verify-capture", out.toString(), "--lock", lock.toString(), "--write-lock"));
-        assertEquals(0, main("recordings", "verify-capture", out.toString(), "--lock", lock.toString()));
+        assertEquals(1, main("recordings", "verify-capture", out.toString(), "--lock", lock.toString(), "--registry", REGISTRY.toString()), "no lock yet");
+        assertEquals(0, main("recordings", "verify-capture", out.toString(), "--lock", lock.toString(), "--registry", REGISTRY.toString(), "--write-lock"));
+        assertEquals(0, main("recordings", "verify-capture", out.toString(), "--lock", lock.toString(), "--registry", REGISTRY.toString()));
         assertEquals(4060, Json.read(lock).path("counts").path("ot.messages").asLong());
-        assertEquals(2, main("recordings", "verify-capture", "--lock", lock.toString()));
+        assertEquals(2, main("recordings", "verify-capture", "--lock", lock.toString(), "--registry", REGISTRY.toString()));
+        assertEquals(2, main("recordings", "verify-capture", out.toString(), "--lock", lock.toString()), "--registry is required");
+        assertEquals(2, main("recordings", "verify-capture", out.toString(), "--lock", lock.toString(), "--registry", REGISTRY.toString(), "--bogus", "x"));
 
         String part = "ot.messages/1.jsonl";
         byte[] bytes = Files.readAllBytes(out.resolve(part));
@@ -276,9 +278,9 @@ class CaptureRecorderTest {
         Path truncated = tmp.resolve("truncated");
         copy(out, truncated);
         Files.write(truncated.resolve(part), Arrays.copyOf(bytes, lastLf + 1));   // the last whole line gone
-        assertEquals(1, main("recordings", "verify-capture", truncated.toString(), "--lock", lock.toString()));
+        assertEquals(1, main("recordings", "verify-capture", truncated.toString(), "--lock", lock.toString(), "--registry", REGISTRY.toString()));
         redigest(truncated, part);   // even with the manifest's digest rewritten: the lock pins the manifest and the record count
-        assertEquals(1, main("recordings", "verify-capture", truncated.toString(), "--lock", lock.toString()));
+        assertEquals(1, main("recordings", "verify-capture", truncated.toString(), "--lock", lock.toString(), "--registry", REGISTRY.toString()));
         assertFalse(CaptureLock.compare(CaptureLock.lock(truncated), Files.readAllBytes(lock)).isEmpty());
 
         Path corrupt = tmp.resolve("corrupt");
@@ -286,22 +288,22 @@ class CaptureRecorderTest {
         byte[] c = bytes.clone();
         c[lastLf + 20] = (byte) (c[lastLf + 20] == '1' ? '2' : '1');
         Files.write(corrupt.resolve(part), c);
-        assertEquals(1, main("recordings", "verify-capture", corrupt.toString(), "--lock", lock.toString()));
-        assertFalse(CaptureLock.check(corrupt).isEmpty());
+        assertEquals(1, main("recordings", "verify-capture", corrupt.toString(), "--lock", lock.toString(), "--registry", REGISTRY.toString()));
+        assertFalse(CaptureLock.check(corrupt, REGISTRY).isEmpty());
 
         Path missing = tmp.resolve("missing");
         copy(out, missing);
         Files.delete(missing.resolve("ot.sessions/2.jsonl"));
-        assertEquals(1, main("recordings", "verify-capture", missing.toString(), "--lock", lock.toString()));
-        assertTrue(CaptureLock.check(missing).stream().anyMatch(p -> p.contains("ot.sessions/2")), CaptureLock.check(missing).toString());
+        assertEquals(1, main("recordings", "verify-capture", missing.toString(), "--lock", lock.toString(), "--registry", REGISTRY.toString()));
+        assertTrue(CaptureLock.check(missing, REGISTRY).stream().anyMatch(p -> p.contains("ot.sessions/2")), CaptureLock.check(missing, REGISTRY).toString());
 
         Path tail = tmp.resolve("tail");
         copy(out, tail);
         Files.write(tail.resolve(part), Arrays.copyOf(bytes, bytes.length - 7));   // a partial last line, no LF
         redigest(tail, part);
-        List<String> problems = CaptureLock.check(tail);
+        List<String> problems = CaptureLock.check(tail, REGISTRY);
         assertTrue(problems.stream().anyMatch(p -> p.contains("does not end with LF")), problems.toString());
-        assertEquals(1, main("recordings", "verify-capture", tail.toString(), "--lock", lock.toString()));
+        assertEquals(1, main("recordings", "verify-capture", tail.toString(), "--lock", lock.toString(), "--registry", REGISTRY.toString()));
     }
 
     static int lastIndexOf(byte[] b, byte x, int from) {
@@ -410,7 +412,7 @@ class CaptureRecorderTest {
         sl.add(new CaptureRecorder.Raw(sl.size(), T0 + 620120, "LogAppendTime", NR2, Map.of(), down.getBytes(StandardCharsets.UTF_8)));
         sl.add(new CaptureRecorder.Raw(sl.size(), T0 + 650120, "LogAppendTime", NR2, Map.of(), up.getBytes(StandardCharsets.UTF_8)));
         Path out = record(restarted, inputs(SMOKE, occupancy(SMOKE)), "restarted");
-        assertEquals(List.of(), CaptureLock.check(out));
+        assertEquals(List.of(), CaptureLock.check(out, REGISTRY));
         assertEquals(T0 + 1411000, Recording.open(out).evidenceRange().get(NR2).to());
     }
 
@@ -420,7 +422,7 @@ class CaptureRecorderTest {
         ObjectNode m = (ObjectNode) Json.read(out.resolve(Recording.MANIFEST));
         Json.putSafe(m, "tailMs", 760_000);   // the manifest is not in its own digests
         Files.write(out.resolve(Recording.MANIFEST), Json.pretty(m));
-        List<String> problems = CaptureLock.check(out);
+        List<String> problems = CaptureLock.check(out, REGISTRY);
         assertTrue(problems.stream().anyMatch(p -> p.contains("the tail of raw partition") && p.contains("spec 628")), problems.toString());
         assertTrue(problems.stream().anyMatch(p -> p.contains("the tail of device " + NR2)), problems.toString());
     }
@@ -489,5 +491,67 @@ class CaptureRecorderTest {
                 CaptureTruth.temporal(live, oj).memberEquipment(), placement);
             assertEquals(Set.of(s + "station1", s + "station1:nutrunner1"), CaptureTruth.temporal(live, plc).memberEquipment(), placement + " plc");
         }
+    }
+
+    /** The capture check recounts W1 with the recorder's rule ({@link CaptureRecorder#w1Step}): a routed device without a rule member
+     *  does not advance its station's W1. On the plc-stamped smoke rule, station1's nutrunner2 carries no member; its sourceTs moved
+     *  ahead of the station's members makes the unfiltered W1 overshoot the settlement deadline at {@code cutA}, as a live plc-stamped
+     *  capture once did ("W1 ... at cut 20, ... at cut 21 do not bracket it"), and the check still finds the bracket the recorder
+     *  planned. */
+    @Test
+    void theCaptureCheckCountsOnlyEquipmentThatCarriesARuleMemberTowardW1() throws Exception {
+        Path smokePlc = FIXTURES.resolve("recordings").resolve("smoke-plc");
+        long ahead = 60_000;
+        UnaryOperator<String> nr2Ahead = v -> {
+            ObjectNode o = (ObjectNode) Json.read(v.getBytes(StandardCharsets.UTF_8));
+            if (!NR2.equals(o.path("device").asText()) || !o.has("members")) return v;
+            for (JsonNode x : o.get("members")) if (x.has("sourceTs")) ((ObjectNode) x).put("sourceTs", x.get("sourceTs").longValue() + ahead);
+            try { return Json.JSON.writeValueAsString(o); } catch (Exception e) { throw new IllegalStateException(e); }
+        };
+        CaptureRecorder.Inputs base = inputs(smokePlc, occupancy(smokePlc));
+        CaptureRecorder.Inputs in = new CaptureRecorder.Inputs("smoke-plc-capture", base.registry(), base.rulePin(), base.definitions(), base.routing(), base.t0(),
+            base.scanMs(), base.batchMs(), base.occupancySource(), Map.of("V1", new CaptureTruth.Visit("V1", null, List.of(NR1))), base.sent(), base.source());
+        Path out = record(source(smokePlc, nr2Ahead), in, "smoke-plc-capture");
+        Recording cap = Recording.open(out);
+        CaptureTruth.Temporal temporal = CaptureTruth.temporal(REGISTRY, cap.manifest().get("rule"));
+        assertFalse(temporal.memberEquipment().contains(NR2), temporal.memberEquipment().toString());
+        assertTrue(temporal.memberEquipment().contains(NR1), temporal.memberEquipment().toString());
+
+        assertEquals(1, cap.deadlines().size());
+        Recording.Deadline d = cap.deadlines().get(0);
+        JsonNode t = cap.expected().get("transitions").get(0);
+        assertEquals(S1, t.get("station").asText());
+        // W1 of station1 at cutA and cutB: with the rule's members only (the recorder's and the fixed check's) and with every routed device
+        long[] member = new long[2], all = new long[2];
+        long[] cuts = {d.cutA(), d.cutB()};
+        for (int k = 0; k < 2; k++) {
+            Recording.Batch b = cap.batches().get((int) cuts[k] - 1);
+            long m = Long.MIN_VALUE, u = Long.MIN_VALUE;
+            for (int p : cap.routing().subscribed(InputParser.MESSAGES)) try (Recording.Reader r = cap.reader(InputParser.MESSAGES, p)) {
+                for (Recording.Line l; (l = r.next()) != null && l.record().offset() <= b.through(InputParser.MESSAGES, p);) {
+                    byte[] v = Recording.valueBytes(l.bytes());
+                    yggdrasil.forseti.cli.recording.ReplayRecording.Timing tm = yggdrasil.forseti.cli.recording.ReplayRecording.timing(InputParser.MESSAGES, p,
+                        l.record().offset(), l.record().key(), v, cap.routing(), cap.manifest().get("definitions"));
+                    if (!S1.equals(tm.station())) continue;
+                    u = Math.max(u, tm.maxTs() - temporal.outOfOrdernessMs() - 1);
+                    Long w = CaptureRecorder.w1Step(tm, v, temporal);
+                    if (w != null) m = Math.max(m, w);
+                }
+            }
+            member[k] = m;
+            all[k] = u;
+        }
+        assertTrue(member[0] < d.at() && d.at() <= member[1], "the members' W1 brackets the deadline: " + Arrays.toString(member) + " " + d.at());
+        assertEquals(t.get("w1A").asLong(), member[0]);
+        assertEquals(t.get("w1B").asLong(), member[1]);
+        assertTrue(all[0] >= d.at(), "the unfiltered W1 at cutA overshoots the deadline (the old check's failure): " + Arrays.toString(all) + " " + d.at());
+
+        assertEquals(List.of(), CaptureLock.check(out, REGISTRY));
+        Path lock = tmp.resolve("smoke-plc.lock.json");
+        assertEquals(0, main("recordings", "verify-capture", out.toString(), "--lock", lock.toString(), "--registry", REGISTRY.toString(), "--write-lock"));
+        assertEquals(0, main("recordings", "verify-capture", out.toString(), "--lock", lock.toString(), "--registry", REGISTRY.toString()));
+        // a registry without the manifest's rule: a problem, not a pass
+        List<String> problems = CaptureLock.check(out, tmp.resolve("no-registry"));
+        assertTrue(problems.stream().anyMatch(p -> p.contains("does not resolve")), problems.toString());
     }
 }

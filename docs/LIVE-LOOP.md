@@ -90,7 +90,9 @@ bash scripts/run-full-loop-gate.sh --placement dedicated --scenario fixtures/liv
   12. `stop-publishers`: the Muninns, then the sim.
   13. `record`: `forseti-loop record` (refuses a capture it cannot prove); the runner's injections are declared in the manifest
       (`source.injections`, with the scenario's bad statuses).
-  14. `verify-capture`: `forseti recordings verify-capture <recording> --lock <lock> --write-lock`, then with `--lock`.
+  14. `verify-capture`: `forseti recordings verify-capture <recording> --lock <lock> --registry <registry> --write-lock`, then with
+      `--lock` (the registry resolves the manifest's rule pin; only equipment carrying a member of the rule advances a station's W1,
+      as in the recorder).
   15. `core`: `forseti generation new` on `<out>/state`, then `forseti run --engine core`.
   16. `oracle`: `python -I -m forseti_oracle.cli all ... --check-journals <out>/core`.
   17. `compare`: `forseti recordings compare <recording> --out <out>/compare`, the core gate's per-cut comparison on this one

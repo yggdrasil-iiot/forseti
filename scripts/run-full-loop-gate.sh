@@ -305,9 +305,9 @@ java "${JLOG[@]}" -Xmx2g -jar "$LOOP" record --kafka "$KAFKA" --prefix "$PREFIX"
 grep -v '^[0-9][0-9]:' "$OUT/logs/record.log" | tail -1
 
 step verify-capture
-java -jar "$FORSETI" recordings verify-capture "$REC" --lock "$OUT/recording.capture-lock.json" --write-lock > "$OUT/logs/verify-capture.log" 2>&1 \
+java -jar "$FORSETI" recordings verify-capture "$REC" --lock "$OUT/recording.capture-lock.json" --registry "$REGISTRY" --write-lock > "$OUT/logs/verify-capture.log" 2>&1 \
   || { cat "$OUT/logs/verify-capture.log" >&2; fail "verify-capture --write-lock"; }
-java -jar "$FORSETI" recordings verify-capture "$REC" --lock "$OUT/recording.capture-lock.json" >> "$OUT/logs/verify-capture.log" 2>&1 \
+java -jar "$FORSETI" recordings verify-capture "$REC" --lock "$OUT/recording.capture-lock.json" --registry "$REGISTRY" >> "$OUT/logs/verify-capture.log" 2>&1 \
   || { cat "$OUT/logs/verify-capture.log" >&2; fail "verify-capture --lock"; }
 tail -1 "$OUT/logs/verify-capture.log"
 

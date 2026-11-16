@@ -55,9 +55,9 @@ public final class Main {
         if (args[0].equals("recordings") && args[1].equals("verify-capture")) {
             if (args.length < 3 || args[2].startsWith("--")) { err.println("recordings verify-capture needs a recording directory"); return usage(err); }
             Args flags;
-            try { flags = Args.parse(args, 3, Set.of("write-lock")).only(Set.of("lock", "write-lock")); flags.required("lock"); }
+            try { flags = Args.parse(args, 3, Set.of("write-lock")).only(Set.of("lock", "write-lock", "registry")); flags.required("lock"); flags.required("registry"); }
             catch (IllegalArgumentException e) { err.println(e.getMessage()); return usage(err); }
-            return verifyCapture(Path.of(args[2]), Path.of(flags.required("lock")), flags.has("write-lock"), out, err);
+            return verifyCapture(Path.of(args[2]), Path.of(flags.required("lock")), Path.of(flags.required("registry")), flags.has("write-lock"), out, err);
         }
         if (args[0].equals("recordings") && args[1].equals("engine-scenarios")) {
             Args flags;
@@ -97,7 +97,7 @@ public final class Main {
         err.println("       forseti recordings synth --scenario <synthetic scenario file> --out <dir> --registry <dir> [--lock]");
         err.println("       forseti recordings verify --scenario <file> --out <dir> [--registry <dir>]");
         err.println("       forseti recordings replay --recording <dir> --out-of-orderness-ms <n> --out <dir> [--lock <file>]");
-        err.println("       forseti recordings verify-capture <recording> --lock <capture lock> [--write-lock]");
+        err.println("       forseti recordings verify-capture <recording> --lock <capture lock> --registry <dir> [--write-lock]");
         err.println("       forseti recordings compare <recording> [--registry <dir>] [--trusted-keys <file>] [--python <interpreter>] [--out <dir>]");
         err.println("       forseti recordings engine-scenarios --fixtures <dir> --out <engine-fixtures dir> [--check]");
         err.println("       forseti recordings check-engine --scenario <file> --registry <dir> --trusted-keys <file> --python <interpreter> --out <dir>");
@@ -183,12 +183,12 @@ public final class Main {
         }
     }
 
-    /** {@code recordings verify-capture <recording> --lock <file> [--write-lock]}: a captured (step-5) recording checked without a
-     *  rebuild ({@link CaptureLock#check}), then its lock compared with {@code --lock}, or with {@code --write-lock} written there for a
+    /** {@code recordings verify-capture <recording> --lock <file> --registry <dir> [--write-lock]}: a captured (step-5) recording
+     *  checked without a rebuild ({@link CaptureLock#check}, the manifest's rule pin resolved in {@code --registry}), then its lock compared with {@code --lock}, or with {@code --write-lock} written there for a
      *  fresh capture. Exit 0 verified (or locked), 1 a problem (each printed), 2 an input error. */
-    private static int verifyCapture(Path dir, Path lockFile, boolean write, PrintStream out, PrintStream err) {
+    private static int verifyCapture(Path dir, Path lockFile, Path registry, boolean write, PrintStream out, PrintStream err) {
         try {
-            List<String> problems = new ArrayList<>(CaptureLock.check(dir));
+            List<String> problems = new ArrayList<>(CaptureLock.check(dir, registry));
             ObjectNode lock = null;
             if (problems.isEmpty()) {
                 lock = CaptureLock.lock(dir);
