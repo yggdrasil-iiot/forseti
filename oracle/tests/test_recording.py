@@ -147,3 +147,124 @@ def test_a_replay_recording_is_read_like_any_recording(tmp_path):
     (copy / "manifest.json").write_text(json.dumps(m, indent=2), encoding="utf-8", newline="\n")
     with pytest.raises(Malformed, match="source.replayOf"):
         recording.open_recording(copy)
+
+
+# --- expected.json version 2 (samples in expected-samples/<iiii>.json) ---------------------------------------------------------
+
+def _truth(n):
+    samples = {}
+    for i in range(n):
+        key = canon.canonical_bytes({"edge": "edge-line2", "device": f"dev:{i % 3}", "birthPublishTs": 1000, "metric": "Torque",
+                                     "bdSeq": 0, "seq": 2000 - i, "publishTs": 5000 + i}).decode("utf-8")
+        samples[key] = {"attributedTo": "visit-1" if i % 2 == 0 else None, "state": "settled", "reason": "accepted"}
+    return {"expectedVersion": 1, "scope": "full", "mode": "occupancy-join", "visits": [{"visitRef": "visit-1"}], "samples": samples,
+            "dispositions": {}, "incidents": {}, "transitions": [], "settleTargetW": 42, "settledCut": None}
+
+
+def _write(path, obj):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(obj, indent=2) + "\n", encoding="utf-8", newline="\n")
+
+
+def _write_v2(d, truth, per):
+    """The version-2 layout of ``truth`` as the Java recorder writes it (field order and chunking; bytes are not compared here)."""
+    items = list(truth["samples"].items())
+    names = []
+    for i in range(0, len(items), per):
+        name = recording.chunk_name(len(names))
+        _write(d / name, {"chunk": len(names), "samples": dict(items[i:i + per])})
+        names.append(name)
+    head = {}
+    for f, v in truth.items():
+        if f == "expectedVersion":
+            head[f] = 2
+        elif f == "samples":
+            head.update({"sampleFiles": names, "samplesPerFile": per, "sampleCount": len(items)})
+        else:
+            head[f] = v
+    _write(d / "expected.json", head)
+    return d
+
+
+@pytest.mark.parametrize("n,chunks", [(0, 0), (5, 1), (6, 2), (11, 3)])
+def test_expected_version_two_reads_as_version_one(tmp_path, n, chunks):
+    truth = _truth(n)
+    v1 = tmp_path / "v1"
+    _write(v1 / "expected.json", truth)
+    v2 = _write_v2(tmp_path / "v2", truth, 5)
+    if chunks:
+        assert len(list((v2 / "expected-samples").glob("*.json"))) == chunks
+    else:
+        assert not (v2 / "expected-samples").exists()
+    a, b = recording.read_expected(v1), recording.read_expected(v2)
+    assert a == b == truth
+    assert list(a) == list(b) and list(a["samples"]) == list(b["samples"])
+
+
+def _refused(d, text):
+    with pytest.raises(Malformed, match=text):
+        recording.read_expected(d)
+
+
+def test_expected_version_two_refusals(tmp_path):
+    missing = _write_v2(tmp_path / "missing", _truth(11), 5)
+    (missing / "expected-samples" / "0001.json").unlink()
+    _refused(missing, "differ from sampleFiles")
+
+    extra = _write_v2(tmp_path / "extra", _truth(11), 5)
+    shutil.copyfile(extra / "expected-samples" / "0002.json", extra / "expected-samples" / "0003.json")
+    _refused(extra, "differ from sampleFiles")
+
+    swapped = _write_v2(tmp_path / "swapped", _truth(10), 5)
+    a, b = (swapped / "expected-samples" / "0000.json").read_bytes(), (swapped / "expected-samples" / "0001.json").read_bytes()
+    (swapped / "expected-samples" / "0000.json").write_bytes(b)
+    (swapped / "expected-samples" / "0001.json").write_bytes(a)
+    _refused(swapped, "out of order")
+
+    overlap = _write_v2(tmp_path / "overlap", _truth(10), 5)
+    c0 = json.loads((overlap / "expected-samples" / "0000.json").read_text(encoding="utf-8"))
+    c1 = json.loads((overlap / "expected-samples" / "0001.json").read_text(encoding="utf-8"))
+    first = next(iter(c0["samples"]))
+    del c1["samples"][next(iter(c1["samples"]))]
+    c1["samples"][first] = c0["samples"][first]
+    _write(overlap / "expected-samples" / "0001.json", c1)
+    _refused(overlap, "repeats sample")
+
+    short = _write_v2(tmp_path / "short", _truth(10), 5)
+    c0 = json.loads((short / "expected-samples" / "0000.json").read_text(encoding="utf-8"))
+    del c0["samples"][next(iter(c0["samples"]))]
+    _write(short / "expected-samples" / "0000.json", c0)
+    _refused(short, "holds 4 samples")
+
+    malformed = _write_v2(tmp_path / "malformed", _truth(3), 5)
+    _write(malformed / "expected-samples" / "0000.json", [])
+    _refused(malformed, "is not")
+
+    renamed = _write_v2(tmp_path / "renamed", _truth(10), 5)
+    head = json.loads((renamed / "expected.json").read_text(encoding="utf-8"))
+    head["sampleFiles"][0] = "expected-samples/0001.json"
+    _write(renamed / "expected.json", head)
+    _refused(renamed, r"sampleFiles\[0\]")
+
+    count = _write_v2(tmp_path / "count", _truth(3), 5)
+    head = json.loads((count / "expected.json").read_text(encoding="utf-8"))
+    head["sampleCount"] = 4
+    _write(count / "expected.json", head)
+    _refused(count, "sampleCount 4")
+
+    v1_with = tmp_path / "v1-with"
+    _write(v1_with / "expected.json", _truth(2))
+    _write(v1_with / "expected-samples" / "0000.json", {})
+    _refused(v1_with, "version-1 expected.json with expected-samples/")
+
+    v3 = _write_v2(tmp_path / "v3", _truth(1), 5)
+    head = json.loads((v3 / "expected.json").read_text(encoding="utf-8"))
+    head["expectedVersion"] = 3
+    _write(v3 / "expected.json", head)
+    _refused(v3, "expectedVersion 3")
+
+
+@pytest.mark.parametrize("name", sorted(COUNTS))
+def test_committed_recordings_read_expected_version_one(name):
+    rec = recording.open_recording(RECORDINGS / name)
+    assert rec.expected() == json.loads((RECORDINGS / name / "expected.json").read_text(encoding="utf-8"))

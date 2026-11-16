@@ -311,5 +311,6 @@ public final class Recording {
     public List<Batch> batches() { return Collections.unmodifiableList(batches); }
     public List<Deadline> deadlines() { return Collections.unmodifiableList(deadlines); }
     public Map<String, String> digests() { return Collections.unmodifiableMap(digests); }
-    public JsonNode expected() { return Json.read(dir.resolve(EXPECTED)); }
+    /** The ground truth in the version-1 form, from either layout ({@link ExpectedFiles#read}). */
+    public JsonNode expected() { return ExpectedFiles.read(dir); }
 }
