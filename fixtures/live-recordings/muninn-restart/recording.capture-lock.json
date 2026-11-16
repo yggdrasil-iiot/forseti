@@ -1,0 +1,73 @@
+{
+  "lockVersion": 1,
+  "recording": "baseline",
+  "generator": "forseti capture 0.1.0",
+  "counts": {
+    "ot.messages": 28555,
+    "ot.sessions": 7,
+    "mfg.occupancy": 16,
+    "quality.incidents": 0,
+    "cuts": 38,
+    "deadlines": 8
+  },
+  "records": {
+    "ot.messages": {
+      "1": 5731,
+      "2": 5724,
+      "3": 5728,
+      "4": 5726,
+      "5": 5646
+    },
+    "ot.sessions": {
+      "1": 1,
+      "2": 1,
+      "3": 1,
+      "4": 1,
+      "5": 3
+    },
+    "mfg.occupancy": {
+      "0": 8,
+      "1": 4,
+      "2": 4
+    },
+    "quality.incidents": {
+      "0": 0,
+      "1": 0,
+      "2": 0,
+      "3": 0,
+      "4": 0,
+      "5": 0
+    }
+  },
+  "files": {
+    "expected-samples/0000.json": "0a89dffb097046b831dde8f40d89371053586b34ca8ccc2cc8e77426017d25a7",
+    "expected-samples/0001.json": "348fb5b3c3e3a898130bf19d4380573543cedd8b4d09e93f35a07880a6e1870a",
+    "expected-samples/0002.json": "9afa18f2047896590f98a3f1db029195f57be71e6e68944bd7e54d1df850ada3",
+    "expected-samples/0003.json": "fe4b0ee8576f535d3fc1a94b7ba4601323fa9b9e43ae4fdc1573d156dbe3edfa",
+    "expected-samples/0004.json": "e0d3f842a73e04ebb4d2510a145ff2117a360b471169ececd7d0b0b638fee0e0",
+    "expected-samples/0005.json": "d9065f52bb989f23785c9776018f5e5fe7899ba896fda5f6e97140729f91bd8e",
+    "expected-samples/0006.json": "f3de37da2f2c544a62ee6cb5cdbf66ec08b779b4d74c303c5f67c3d633056048",
+    "expected.json": "7d013e254df2766c5dd8c271f633024d695a2ce7ec672f3ebc98ff0800430e31",
+    "manifest.json": "8713e4f8158393fd25c195c02afb23c454e877bdb057b5773438a70186fed9d0",
+    "mfg.occupancy/0.jsonl": "7224c818062532441056cadb910b329a9c519c2a9336265fee2a7a6f53aec101",
+    "mfg.occupancy/1.jsonl": "53bf8d1578cb9195a46ea5d3a4a929893ced1be0b8c9e813a052a6911bd23e8d",
+    "mfg.occupancy/2.jsonl": "f78d88f5c3d9d305268db70e4779090961ff95f89f99834d74b16403efefcf54",
+    "ot.messages/1.jsonl": "4c96584ccc448d7499f95caef59b5d29fcd3fd1f0a171826a91eee755966f423",
+    "ot.messages/2.jsonl": "6c4d19c9ca4b6ab38822c7b6789f3820894a1ff69ff561662b0a0485f55ab201",
+    "ot.messages/3.jsonl": "01a091b01aad153d7856b46ee7eabdf3c930ad7c877ce625ba588f001701b161",
+    "ot.messages/4.jsonl": "7a503b2a94f7c6dda21bbfc6a6f725fc48a93413b5082cac14c304e94fbaa761",
+    "ot.messages/5.jsonl": "2d3a888244f5cca55282dd3d3b2d59c2811d13f30c0317190de6e367b31a5464",
+    "ot.sessions/1.jsonl": "c284ade148b6321f864d50e87387e5e709919f57774bc7cb55790746ecc17d05",
+    "ot.sessions/2.jsonl": "b8eb5549f2a72f3bf9011709aa02b0cb3cbafbf170111406956adf374321afea",
+    "ot.sessions/3.jsonl": "4faa03349db3e5b443e5e609ccc1d5a4f7528cc2b85644c055872251e7a41f2e",
+    "ot.sessions/4.jsonl": "1c455b33e3e1fd7525a393248e2f109c828d0923d956f71edea652a2d0ede2ba",
+    "ot.sessions/5.jsonl": "f12f220d76868145b0cfe122c043fcec43e85a191bfb1d7bd531fb4703a0884e",
+    "quality.incidents/0.jsonl": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "quality.incidents/1.jsonl": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "quality.incidents/2.jsonl": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "quality.incidents/3.jsonl": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "quality.incidents/4.jsonl": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "quality.incidents/5.jsonl": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "routing.json": "9e43db53b63a7be391c237e1c0c709edf218e6be98d6bfbe9cc62b6577ea34c5"
+  }
+}

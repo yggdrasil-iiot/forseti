@@ -1,0 +1,26 @@
+{
+  "kind" : "forseti-bridge-run",
+  "inputStages" : [ ],
+  "stages" : [ {
+    "stage" : "hold-and-release",
+    "injection" : "1",
+    "startOffsetMs" : 60000,
+    "holdMs" : 600000,
+    "windowStart" : 1794833002968,
+    "windowEnd" : 1794833602968,
+    "held" : 12000,
+    "releasedAt" : 1794833603061,
+    "releasedBy" : "window-end",
+    "completed" : true
+  } ],
+  "frames" : 28645,
+  "written" : {
+    "run-20261116t124205z.ot.messages" : 28630,
+    "run-20261116t124205z.ot.sessions" : 5
+  },
+  "deadLetters" : { },
+  "routing" : true,
+  "unpinnedDevices" : [ ],
+  "outcome" : "stopped",
+  "failure" : null
+}

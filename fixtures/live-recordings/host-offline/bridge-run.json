@@ -1,0 +1,35 @@
+{
+  "kind" : "forseti-bridge-run",
+  "inputStages" : [ {
+    "stage" : "death-after-birth",
+    "injection" : "25(a)",
+    "edge" : "line2-station1-nutrunner1",
+    "held" : {
+      "topic" : "spBv1.0/line2/NDEATH/line2-station1-nutrunner1",
+      "edge" : "line2-station1-nutrunner1",
+      "bdSeq" : 0,
+      "timestamp" : 1794805432175,
+      "receivedAt" : 1794805432180
+    },
+    "releasedAfter" : {
+      "topic" : "spBv1.0/line2/NBIRTH/line2-station1-nutrunner1",
+      "edge" : "line2-station1-nutrunner1",
+      "bdSeq" : 1,
+      "timestamp" : 1794805451928,
+      "receivedAt" : 1794805451932
+    },
+    "releasedBy" : "next-birth",
+    "completed" : true
+  } ],
+  "stages" : [ ],
+  "frames" : 28619,
+  "written" : {
+    "run-20261116t045603z.ot.messages" : 28599,
+    "run-20261116t045603z.ot.sessions" : 7
+  },
+  "deadLetters" : { },
+  "routing" : true,
+  "unpinnedDevices" : [ ],
+  "outcome" : "stopped",
+  "failure" : null
+}

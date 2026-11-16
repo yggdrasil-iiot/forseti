@@ -1,0 +1,21 @@
+{
+  "kind" : "forseti-bridge-run",
+  "inputStages" : [ ],
+  "stages" : [ {
+    "stage" : "source-offset",
+    "injection" : "9",
+    "offsetMs" : 30000,
+    "messages" : 28670,
+    "membersShifted" : 126151
+  } ],
+  "frames" : 28685,
+  "written" : {
+    "run-20261116t042548z.ot.messages" : 28670,
+    "run-20261116t042548z.ot.sessions" : 5
+  },
+  "deadLetters" : { },
+  "routing" : true,
+  "unpinnedDevices" : [ ],
+  "outcome" : "stopped",
+  "failure" : null
+}

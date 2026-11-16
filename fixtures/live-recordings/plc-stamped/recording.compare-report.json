@@ -1,0 +1,83 @@
+{
+  "kind": "forseti-recording-compare",
+  "compareReportVersion": 1,
+  "recording": "baseline",
+  "stream": "line2-dedicated-plc",
+  "manifestSha256": "f179356e62a714e0a30bd5a778f9b6705c495a086dc19d8a5f5db6dff5a6cac9",
+  "outcome": "equal",
+  "accepted": true,
+  "generation": 1,
+  "rulesDigest": "b69411ed89688b5211d24a0e69227bd1a9bd4cd7bf64f28b4b57a729e2936bc0",
+  "cuts": 32,
+  "cutsCompared": 32,
+  "rowsCompared": 979359,
+  "dispositionsCompared": 1305786,
+  "differences": 0,
+  "oracleDigestMismatches": 0,
+  "differencesByTopic": {},
+  "keysAtLastCut": {
+    "forseti.affected": 0,
+    "forseti.affected-sets": 0,
+    "forseti.dispositions-stage1": 68753,
+    "forseti.dispositions-stage2": 0,
+    "forseti.samples": 51560,
+    "forseti.work-records": 4
+  },
+  "differenceExamples": [],
+  "dispositionCoverage": {
+    "deliveries": 28651,
+    "inputsWithoutDisposition": 0
+  },
+  "lateness": {
+    "longestAcceptedMs": -30001,
+    "acceptedLateSamples": 0
+  },
+  "findings": {},
+  "groundTruth": {
+    "scope": "full",
+    "ok": true,
+    "visits": 4,
+    "samples": 51560,
+    "identityParts": 68753,
+    "incidentSets": 0,
+    "transitions": 4,
+    "problems": 0,
+    "problemExamples": []
+  },
+  "acceptance": {
+    "applies": true,
+    "problems": [],
+    "injections": [],
+    "visits": [
+      {
+        "visit": "S1-V1",
+        "station": "site-071:line2:station1",
+        "status": "complete",
+        "reasons": [],
+        "touchedBy": []
+      },
+      {
+        "visit": "S1-V2",
+        "station": "site-071:line2:station1",
+        "status": "complete",
+        "reasons": [],
+        "touchedBy": []
+      },
+      {
+        "visit": "S1-V3",
+        "station": "site-071:line2:station1",
+        "status": "complete",
+        "reasons": [],
+        "touchedBy": []
+      },
+      {
+        "visit": "S1-V4",
+        "station": "site-071:line2:station1",
+        "status": "complete",
+        "reasons": [],
+        "touchedBy": []
+      }
+    ],
+    "ok": true
+  }
+}
