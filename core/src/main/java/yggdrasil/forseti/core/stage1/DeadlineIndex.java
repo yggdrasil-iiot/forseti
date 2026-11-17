@@ -26,15 +26,22 @@ public final class DeadlineIndex {
 
     private static String id(JsonNode key, String purpose) { return Canonical.utf8(Canonical.bytes(key)) + "\u0000" + purpose; }
 
+    private java.util.function.LongConsumer listener;
+    /** Told the deadline of every registration that was added or removed (a move reports both deadlines; a cancel or removal the one it
+     *  removed); not of registering again what is registered already. The segmented state store follows the index through it. */
+    public void onChange(java.util.function.LongConsumer l) { this.listener = l; }
+    private void changed(long deadline) { if (listener != null) listener.accept(deadline); }
+
     public void register(long deadline, JsonNode key, String purpose) {
         Entry e = new Entry(new Deadline(deadline, key.deepCopy(), purpose), Canonical.bytes(key));
         Entry old = byKeyAndPurpose.put(id(key, purpose), e);
         if (old != null) ordered.remove(old);
         ordered.add(e);
+        if (old == null || old.d().deadline() != deadline) { if (old != null) changed(old.d().deadline()); changed(deadline); }
     }
     public void cancel(JsonNode key, String purpose) {
         Entry old = byKeyAndPurpose.remove(id(key, purpose));
-        if (old != null) ordered.remove(old);
+        if (old != null) { ordered.remove(old); changed(old.d().deadline()); }
     }
     public void cancelAll(JsonNode key) { for (String p : List.of(SETTLE, MISSING_DEPARTURE, EXPIRY)) cancel(key, p); }
     public Optional<Deadline> registered(JsonNode key, String purpose) {
@@ -54,14 +61,20 @@ public final class DeadlineIndex {
         if (e == null || e.d().deadline() != deadline) return false;
         byKeyAndPurpose.remove(id);
         ordered.remove(e);
+        changed(deadline);
         return true;
     }
     public List<Deadline> all() { List<Deadline> l = new ArrayList<>(); ordered.forEach(e -> l.add(e.d())); return l; }
     public int size() { return ordered.size(); }
 
-    public ArrayNode toJson() {
+    public ArrayNode toJson() { return toJson(ordered); }
+    /** The registrations with {@code from <= deadline < to}, as {@link #toJson} writes them. */
+    public ArrayNode toJson(long from, long to) {
+        return toJson(ordered.subSet(new Entry(new Deadline(from, null, ""), new byte[0]), true, new Entry(new Deadline(to, null, ""), new byte[0]), false));
+    }
+    private static ArrayNode toJson(SortedSet<Entry> entries) {
         ArrayNode a = Json.JSON.createArrayNode();
-        for (Entry e : ordered) {
+        for (Entry e : entries) {
             ObjectNode n = Json.putSafe(a.addObject(), "deadline", e.d().deadline());
             n.set("key", e.d().key());
             n.put("purpose", e.d().purpose());

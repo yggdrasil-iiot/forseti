@@ -20,6 +20,7 @@ import yggdrasil.forseti.core.journal.Disposition;
 import yggdrasil.forseti.core.journal.Progress;
 import yggdrasil.forseti.core.journal.Row;
 import yggdrasil.forseti.core.rules.RuleSet;
+import yggdrasil.forseti.core.segment.SegmentShadow;
 
 /** A tiny in-test driver of one station: routes inputs (S1), keeps a cut's inputs, applies them in contract order, computes W1 (S10)
  *  unless a test sets it, fires due timers in index order and closes the cut. It folds the outputs for the assertions. */
@@ -46,6 +47,12 @@ final class Driver {
     long cutId;
     /** When set, the state is serialized and read back after every cut (the adapters' store round trip). */
     boolean roundTrip;
+    /** The segment store kept from drainChanged() after every decide step and checked against the live state (null: off). */
+    SegmentShadow<Stage1State> shadow = shadow();
+    /** Whether the shadow is checked after every step (else at every cut close). */
+    boolean shadowEveryStep = true;
+
+    static SegmentShadow<Stage1State> shadow() { return new SegmentShadow<>(Stage1State::drainChanged, Stage1State::segments, Stage1State::fromSegments, Stage1State::toJson); }
 
     Driver(RuleSet rules, String station) { this(rules, station, NegativeControls.NONE); }
     Driver(RuleSet rules, String station, NegativeControls controls) {
@@ -81,6 +88,7 @@ final class Driver {
         Stage1.Result res = stage1.decide(state, new Events.Admit(r, Events.kindRank(r.origin().topic())), state.admissionW());
         state = res.state();
         outputs.addAll(res.outputs());
+        if (shadow != null) shadow.step(state);
         return res.outputs();
     }
 
@@ -110,10 +118,12 @@ final class Driver {
         Stage1.Result res = stage1.decide(state, e, watermark);
         state = res.state();
         outputs.addAll(res.outputs());
+        if (shadow != null) shadow.step(state, shadowEveryStep || e instanceof Events.CutClose);
     }
 
     /** Feeds a recording directory cut by cut (its manifest batches), every topic but incidents. */
     void runRecording(Path dir) {
+        shadowEveryStep = false;   // thousands of steps: the shadow is checked at each cut close
         JsonNode manifest = Json.read(dir.resolve("manifest.json"));
         Map<String, Map<Integer, List<JsonNode>>> records = new TreeMap<>();
         for (String topic : List.of(InputParser.MESSAGES, InputParser.SESSIONS, InputParser.OCCUPANCY)) {

@@ -3,6 +3,7 @@ package yggdrasil.forseti.core.stage1;
 import java.util.*;
 import java.util.function.BiConsumer;
 import java.util.function.Predicate;
+import yggdrasil.forseti.core.segment.TrackedMap;
 
 /** The stored snapshots of rule sheet P1 ({@code plc-stamped}), by message key, with an index of the valid ones per equipment that
  *  {@link PlcStamped#derive} reads instead of sorting every stored snapshot again for every message. The index orders an equipment's
@@ -40,14 +41,19 @@ final class Snapshots {
         }
     }
 
-    private final TreeMap<String, Stage1State.Snapshot> byKey = new TreeMap<>();
+    private final TrackedMap<Stage1State.Snapshot> byKey;
     private final TreeMap<String, Device> devices = new TreeMap<>();
+
+    /** {@code byKey}: the stored snapshots (empty), bucketed into the state's segments. */
+    Snapshots(TrackedMap<Stage1State.Snapshot> byKey) { if (!byKey.isEmpty()) throw new IllegalArgumentException("not empty"); this.byKey = byKey; }
 
     Stage1State.Snapshot get(String key) { return byKey.get(key); }
     boolean containsKey(String key) { return byKey.containsKey(key); }
-    Collection<Stage1State.Snapshot> values() { return Collections.unmodifiableCollection(byKey.values()); }
+    Collection<Stage1State.Snapshot> values() { return byKey.values(); }
     void forEach(BiConsumer<String, Stage1State.Snapshot> f) { byKey.forEach(f); }
     int size() { return byKey.size(); }
+    Set<String> segmentIds() { return byKey.segmentIds(); }
+    SortedMap<String, Stage1State.Snapshot> entries(String segment) { return byKey.entries(segment); }
 
     void put(String key, Stage1State.Snapshot x) {
         Stage1State.Snapshot old = byKey.put(key, x);
@@ -56,15 +62,11 @@ final class Snapshots {
     }
 
     void removeIf(Predicate<Stage1State.Snapshot> p) {
-        Iterator<Map.Entry<String, Stage1State.Snapshot>> it = byKey.entrySet().iterator();
-        while (it.hasNext()) {
-            Map.Entry<String, Stage1State.Snapshot> e = it.next();
-            String key = e.getKey();
-            Stage1State.Snapshot x = e.getValue();   // read before remove: TreeMap may move the successor into the removed entry
-            if (!p.test(x)) continue;
-            it.remove();
+        byKey.removeIf((key, x) -> {
+            if (!p.test(x)) return false;
             unindex(key, x);
-        }
+            return true;
+        });
     }
 
     private void unindex(String key, Stage1State.Snapshot x) {
