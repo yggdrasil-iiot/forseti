@@ -236,6 +236,7 @@ public final class Stage1 {
             for (Stage1State.OccDelivery d : occ.list) if (!VisitClaim.text(d.content).equals(ct)) differs = true;
             if (differs) {   // (a) identity conflict: every variant
                 occ.list.add(nd);
+                s.deliveries.touch(idKey);
                 for (Stage1State.OccDelivery d : occ.list) {
                     ObjectNode refs = c.quarantine(d.origin, d.raw, Disposition.Reason.IDENTITY_CONFLICT, d.quarantined);
                     d.quarantined = true;
@@ -255,6 +256,7 @@ public final class Stage1 {
             for (Stage1State.OccDelivery d : occ.list) if (d.declaration != null) otherDeclaration = true;
             if (dt != null && otherDeclaration) {   // (d) two different declarations: both correction-conflict
                 occ.list.add(nd);
+                s.deliveries.touch(idKey);
                 for (Stage1State.OccDelivery d : occ.list) {
                     if (d.declaration == null) continue;
                     ObjectNode refs = c.quarantine(d.origin, d.raw, Disposition.Reason.CORRECTION_CONFLICT, d.quarantined);
@@ -264,11 +266,9 @@ public final class Stage1 {
                 recompute(c, s.lastW1, null);
                 return;
             }
-        } else {
-            occ = new Stage1State.Occupancy(o.source(), o.eventId());
-            s.deliveries.put(idKey, occ);
-        }
+        } else occ = new Stage1State.Occupancy(o.source(), o.eventId());
         occ.list.add(nd);   // (c) or a first delivery: accepted
+        if (s.deliveries.containsKey(idKey)) s.deliveries.touch(idKey); else s.deliveries.put(idKey, occ);   // stored with its first delivery
         boolean late = committed != null && committed.leave() != null && aw >= committed.leave() + L;   // S4: settled at admission
         c.disposition(r.origin(), part, kind, identity, digest, rule, late ? Disposition.Reason.LATE_AFTER_SETTLEMENT : Disposition.Reason.ACCEPTED, null);
         recompute(c, s.lastW1, null);
@@ -285,8 +285,8 @@ public final class Stage1 {
         Stage1State.SessionDelivery nd = new Stage1State.SessionDelivery(r.origin(), ev.payload(), content, digest, rule, raw(r));
         if (x == null) {
             x = new Stage1State.Session(identity, ev.device(), Sessions.sessionKey(ev.edge(), ev.device(), ev.birthPublishTs(), ev.bdSeq()), ev.kind());
-            s.sessions.put(key, x);
             x.list.add(nd);
+            s.sessions.put(key, x);
             c.disposition(r.origin(), Disposition.Part.EVENT, "session", identity, digest, rule, Disposition.Reason.ACCEPTED, null);
         } else {
             for (Stage1State.SessionDelivery d : x.list) if (d.content().equals(content)) {
@@ -294,10 +294,11 @@ public final class Stage1 {
                 return;
             }
             x.list.add(nd);
+            s.sessions.touch(key);
             for (Stage1State.SessionDelivery d : x.list) {
                 String ok = Stage1State.originKey(d.origin());
-                ObjectNode refs = c.quarantine(d.origin(), d.raw(), Disposition.Reason.IDENTITY_CONFLICT, s.quarantined.contains(ok));
-                s.quarantined.add(ok);
+                ObjectNode refs = c.quarantine(d.origin(), d.raw(), Disposition.Reason.IDENTITY_CONFLICT, s.quarantined.containsKey(ok));
+                s.quarantine(ok);
                 c.disposition(d.origin(), Disposition.Part.EVENT, "session", identity, d.payloadDigest(), d.digestRule(), Disposition.Reason.IDENTITY_CONFLICT, refs);
             }
         }
@@ -350,11 +351,12 @@ public final class Stage1 {
             if (old != null) {
                 if (old.memberKey.equals(memberKey)) { c.disposition(r.origin(), part, kind, sampleId, digest, rule, Disposition.Reason.IDENTICAL_REDELIVERY, null); continue; }
                 old.idConflict = true;   // one sampleId, two contents: both identity-conflict, the sample withdrawn
+                s.samples.touch(key);
                 s.messages.putIfAbsent(originKey, raw(r));
                 for (Inputs.Origin o : List.of(old.origin, r.origin())) {
                     String ok = Stage1State.originKey(o);
-                    ObjectNode refs = c.quarantine(o, s.messages.get(ok), Disposition.Reason.IDENTITY_CONFLICT, s.quarantined.contains(ok));
-                    s.quarantined.add(ok);
+                    ObjectNode refs = c.quarantine(o, s.messages.get(ok), Disposition.Reason.IDENTITY_CONFLICT, s.quarantined.containsKey(ok));
+                    s.quarantine(ok);
                     boolean mine = o.equals(r.origin());
                     c.disposition(o, part, kind, sampleId, mine ? digest : old.payloadDigest, mine ? rule : old.digestRule, Disposition.Reason.IDENTITY_CONFLICT, refs);
                 }
@@ -374,13 +376,14 @@ public final class Stage1 {
                     k -> new Stage1State.Measurement(m.device(), x.metric(), x.sourceTs()));
                 Set<String> variants = variants(s, meas);
                 meas.sampleKeys.add(key);
+                s.measurements.touch(measurementKey(m.device(), x.metric(), x.sourceTs()));
                 if (!variants.isEmpty() && !(variants.size() == 1 && variants.contains(variantKey(smp)))) {   // measurement conflict
                     for (String k : meas.sampleKeys) {
                         Stage1State.Sample y = s.samples.get(k);
                         if (y.idConflict) continue;
                         String ok = Stage1State.originKey(y.origin);
-                        ObjectNode refs = c.quarantine(y.origin, s.messages.get(ok), Disposition.Reason.MEASUREMENT_CONFLICT, s.quarantined.contains(ok));
-                        s.quarantined.add(ok);
+                        ObjectNode refs = c.quarantine(y.origin, s.messages.get(ok), Disposition.Reason.MEASUREMENT_CONFLICT, s.quarantined.containsKey(ok));
+                        s.quarantine(ok);
                         c.disposition(y.origin, Disposition.Part.member(y.metric), kind, y.sampleId, y.payloadDigest, y.digestRule, Disposition.Reason.MEASUREMENT_CONFLICT, refs);
                     }
                     full = true;
@@ -402,7 +405,7 @@ public final class Stage1 {
     // ===================================================================================================== timers and cuts
 
     private void timer(Stage1State s, Events.Timer t, long w, List<Object> out) {
-        if (s.lastW1 == null || w > s.lastW1) s.lastW1 = w;
+        if (s.lastW1 == null || w > s.lastW1) { s.lastW1 = w; s.touchHead(); }
         if (!s.deadlines.remove(t.deadline(), t.key(), t.purpose())) return;   // cancelled or replaced meanwhile
         ObjectNode cause = Envelope.timerCause(causeKind, t.deadline());
         Ctx c = new Ctx(s, out, cause, null, w);
@@ -418,7 +421,7 @@ public final class Stage1 {
         if (v == null) return;
         s.expired.put(key, new Stage1State.Expired(v.visitRef, v.enter, v.leave, v.leave == null ? v.attributionEnd : null, v.retracted(), v.onlineExpiresAt(H, L)));
         String arrivalId = v.arrivalEventId, source = v.source;
-        s.deliveries.values().removeIf(o -> o.source.equals(source) && (o.eventId.equals(arrivalId)
+        s.deliveries.removeIf((k, o) -> o.source.equals(source) && (o.eventId.equals(arrivalId)
             || o.list.stream().allMatch(d -> !d.arriving() && arrivalId.equals(d.content.path("arrivalEventId").asText()))));
         s.deadlines.cancelAll(visitRef);
         dropSamples(s, x -> {
@@ -451,12 +454,12 @@ public final class Stage1 {
             if (x.sourceTs == null) continue;
             String mk = measurementKey(x.device, x.metric, x.sourceTs);
             Stage1State.Measurement m = s.measurements.get(mk);
-            if (m != null) { m.sampleKeys.remove(k); if (m.sampleKeys.isEmpty()) s.measurements.remove(mk); }
+            if (m != null) { m.sampleKeys.remove(k); s.measurements.touch(mk); if (m.sampleKeys.isEmpty()) s.measurements.remove(mk); }
         }
         if (gone.isEmpty()) return;
         Set<String> live = new HashSet<>();
         s.samples.values().forEach(x -> live.add(Stage1State.originKey(x.origin)));
-        s.messages.keySet().removeIf(k -> !live.contains(k));
+        s.messages.removeIf((k, raw) -> !live.contains(k));
     }
 
     private void cutClose(Stage1State s, Events.CutClose cc, List<Object> out) {
@@ -477,14 +480,17 @@ public final class Stage1 {
             refs.add(new Progress.BarrierRef(Json.safeLong(b.get("cutId"), "barrierRefs.cutId", Json.NON_NEGATIVE),
                 new Progress.Origin(Json.text(b.path("origin"), "topic"), (int) Json.safeLong(b.path("origin").get("partition"), "barrierRefs.origin.partition", 0, Integer.MAX_VALUE)),
                 Json.safeLong(b.get("throughOffset"), "barrierRefs.throughOffset", Json.THROUGH)));
-        s.admissionVisits.clear();
-        for (VisitClaim v : VisitClaim.derive(s, controls.firstWins())) s.admissionVisits.put(v.source + "\u0000" + v.arrivalEventId, new Stage1State.Admitted(v.leave, v.onlineExpiresAt(H, L)));
+        Map<String, Stage1State.Admitted> admitted = new HashMap<>();
+        for (VisitClaim v : VisitClaim.derive(s, controls.firstWins())) admitted.put(v.source + "\u0000" + v.arrivalEventId, new Stage1State.Admitted(v.leave, v.onlineExpiresAt(H, L)));
+        s.admissionVisits.removeIf((k, x) -> !admitted.containsKey(k));   // replaced as a whole; an unchanged visit is not rewritten
+        admitted.forEach(s.admissionVisits::put);
         Progress.InitEvidence init = s.pendingInit;
         s.pendingInit = null;
         out.add(new Progress.Stage1(s.generation, s.station, cc.cutId(), 0, w, admissionBefore, refs, cc.restartEpoch(), cc.recoveryRef(), cc.mergedCutIds(), init));
         out.add(new Progress.Ledger(s.generation, 1, s.partition, s.station, cc.cutId(), 0, refs, cc.mergedCutIds(), cc.restartEpoch(), cc.recoveryRef(), init));
         s.admissionW = w;
         s.progressCount++;
+        s.touchHead();
     }
 
     /** Under plc-stamped, at the cut close: snapshots of no online visit leave with their unclaimed samples (same bound), and the
@@ -498,7 +504,7 @@ public final class Stage1 {
         for (VisitClaim v : VisitClaim.derive(s, controls.firstWins())) if (v.online() && v.onlineExpiresAt(H, L) <= w) gone.add(v.source + "\u0000" + v.arrivalEventId);
         Set<String> arrivals = new HashSet<>();
         s.deliveries.values().forEach(o -> { if (o.hasArrivingVariant()) arrivals.add(o.source + "\u0000" + o.eventId); });
-        s.deliveries.values().removeIf(o -> {
+        s.deliveries.removeIf((k, o) -> {
             if (gone.contains(o.source + "\u0000" + o.eventId)) return true;
             for (Stage1State.OccDelivery d : o.list) {
                 if (d.arriving()) return false;
@@ -539,7 +545,7 @@ public final class Stage1 {
                 }
             }
             ObjectNode row = SampleRow.body(x.sourceTs, o, x.active);
-            if (!row.equals(x.row)) { c.row(SAMPLES, x.sampleId, row, s.sampleRows); x.row = row; }
+            if (!row.equals(x.row)) { c.row(SAMPLES, x.sampleId, row, s.sampleRows); x.row = row; s.samples.touch(k); }
         }
         // S2, S6: an observation delivered more than once is one observation; it counts for the visit any of its samples counts for, so a
         // later delivery that contributes nothing (an incoherent snapshot, say) does not take an earlier delivery's contribution away
@@ -554,7 +560,7 @@ public final class Stage1 {
                 SampleRow.Outcome o = outcomes.computeIfAbsent(k, z -> classify(s, y, att, frame, occupants, view));
                 if (o.coverageVisit() != null) { visit = o.coverageVisit(); break; }
             }
-            if (usable) m.coverageVisit = visit;
+            if (usable && !Objects.equals(m.coverageVisit, visit)) { m.coverageVisit = visit; s.measurements.touch(mk); }
         }
         for (VisitClaim v : visits) {
             if (!v.online() || (affected != null && !affected.contains(v.key))) continue;
@@ -569,8 +575,8 @@ public final class Stage1 {
         Stage1State s = c.s;
         for (List<Stage1State.Snapshot> l : frame.conflicting.values()) for (Stage1State.Snapshot x : l) {
             String ok = Stage1State.originKey(x.origin());
-            ObjectNode refs = c.quarantine(x.origin(), s.messages.get(ok), Disposition.Reason.IDENTITY_CONFLICT, s.quarantined.contains(ok));
-            if (s.messages.containsKey(ok)) s.quarantined.add(ok);
+            ObjectNode refs = c.quarantine(x.origin(), s.messages.get(ok), Disposition.Reason.IDENTITY_CONFLICT, s.quarantined.containsKey(ok));
+            if (s.messages.containsKey(ok)) s.quarantine(ok);
             for (Iterator<Map.Entry<String, JsonNode>> it = x.identitySamples().fields(); it.hasNext();) {
                 Map.Entry<String, JsonNode> e = it.next();
                 c.disposition(x.origin(), Disposition.Part.member(e.getKey()), "message", e.getValue(), x.payloadDigest(), x.digestRule(), Disposition.Reason.IDENTITY_CONFLICT, refs);

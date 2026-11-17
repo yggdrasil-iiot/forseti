@@ -19,6 +19,15 @@ public final class Revisions {
 
     private final Map<Long, Map<String, State>> byGeneration = new HashMap<>();
 
+    /** Told of every key whose state changed (an emission or a delete), with its canonical text and its logical key; never of an
+     *  unchanged body. The segmented state store follows a chain through it. */
+    @FunctionalInterface public interface Listener { void changed(long generation, String key, JsonNode logicalKey); }
+    private Listener listener;
+
+    /** Sets the one listener of this chain (null: none). */
+    public void listen(Listener l) { this.listener = l; }
+    private void changed(long generation, String key, JsonNode logicalKey) { if (listener != null) listener.changed(generation, key, logicalKey); }
+
     private Map<String, State> generation(long g) { return byGeneration.computeIfAbsent(g, k -> new HashMap<>()); }
     static String keyOf(JsonNode logicalKey) { return Canonical.utf8(Canonical.bytes(logicalKey)); }
 
@@ -31,6 +40,7 @@ public final class Revisions {
         if (s != null && bodyDigest.equals(s.lastDigest())) return Optional.empty();
         long revision = s == null ? 1 : s.lastRevision() + 1;
         g.put(k, new State(revision, bodyDigest));
+        changed(generation, k, logicalKey);
         return Optional.of(new Emission(revision, s == null ? null : s.lastDigest()));
     }
 
@@ -41,6 +51,7 @@ public final class Revisions {
         State s = g.get(k);
         if (s == null || s.lastDigest() == null) throw new IllegalStateException("no live row to delete: " + k);
         g.put(k, new State(s.lastRevision() + 1, null));
+        changed(generation, k, logicalKey);
         return new Emission(s.lastRevision() + 1, s.lastDigest());
     }
 
@@ -50,13 +61,23 @@ public final class Revisions {
         ObjectNode n = Json.object();
         new TreeMap<>(byGeneration).forEach((g, keys) -> {
             ObjectNode gn = n.putObject(Long.toString(g));
-            new TreeMap<>(keys).forEach((k, st) -> {
-                ObjectNode e = Json.putSafe(gn.putObject(k), "revision", st.lastRevision());
-                e.put("digest", st.lastDigest());
-            });
+            new TreeMap<>(keys).forEach((k, st) -> gn.set(k, entryJson(st)));
         });
         return n;
     }
+
+    private static ObjectNode entryJson(State st) {
+        ObjectNode e = Json.putSafe(Json.object(), "revision", st.lastRevision());
+        return e.put("digest", st.lastDigest());
+    }
+    /** One key's entry as {@link #toJson} writes it: {@code {revision, digest}}. */
+    public ObjectNode entryJson(long generation, String key) {
+        State st = byGeneration.getOrDefault(generation, Map.of()).get(key);
+        if (st == null) throw new IllegalArgumentException("no revision state of " + key + " in generation " + generation);
+        return entryJson(st);
+    }
+    /** Every (generation, canonical key) with a state, in no particular order. */
+    public void forEachKey(java.util.function.BiConsumer<Long, String> f) { byGeneration.forEach((g, keys) -> keys.keySet().forEach(k -> f.accept(g, k))); }
 
     public static Revisions fromJson(JsonNode n) {
         Revisions r = new Revisions();

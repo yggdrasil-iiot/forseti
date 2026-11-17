@@ -115,6 +115,8 @@ public final class CutAssembler<T> {
     private final Map<Progress.Origin, Long> lastBarrier = new HashMap<>();
     private final TreeMap<Long, Map<Progress.Origin, Barrier>> barriers = new TreeMap<>();
     private final TreeMap<Long, List<T>> held = new TreeMap<>();
+    /** Whether the protocol state changed since the last {@link #drainChanged} (true until the first). */
+    private boolean changed = true;
 
     /** A writer at its first start in the generation: no progress, {@code admissionW} null. {@code writer} is the station a
      *  {@code starved} declaration names (null for a reject collector); {@code required} its required barrier set, in the order its
@@ -136,6 +138,7 @@ public final class CutAssembler<T> {
     public void reinitialize(Declaration declaration) {
         recovering = true;
         epoch = declaration.targetEpoch();
+        changed = true;
     }
 
     public String writer() { return writer; }
@@ -154,6 +157,7 @@ public final class CutAssembler<T> {
     public void input(Progress.Origin origin, T item) {
         if (!required.contains(origin)) throw new IllegalArgumentException(writer + ": an input on " + origin + ", which is not a required barrier channel");
         held.computeIfAbsent(lastBarrier.getOrDefault(origin, lastProgress) + 1, k -> new ArrayList<>()).add(item);
+        changed = true;
     }
 
     /** One barrier received. {@code control} is read only when a recovering writer meets a barrier above its epoch. */
@@ -164,6 +168,7 @@ public final class CutAssembler<T> {
             throw new ProtocolError("barrier-order", writer + ": barrier of cut " + b.cutId() + " on " + b.origin() + " after cut " + last);
         if (b.cutId() <= lastProgress) return;   // a cut already committed (a replay after a restore): never applied twice
         lastBarrier.put(b.origin(), b.cutId());
+        changed = true;
         if (recovering && b.restartEpoch() > epoch) {
             Declaration d = control.latest();
             if (d == null || d.targetEpoch() < b.restartEpoch())
@@ -222,6 +227,7 @@ public final class CutAssembler<T> {
         lastProgress = r;
         if (nativeTime != null) lastW1 = nativeTime;
         recovering = false;
+        changed = true;
         return Optional.of(closed);
     }
 
@@ -275,6 +281,29 @@ public final class CutAssembler<T> {
             for (JsonNode x : h.path("inputs")) l.add(decode.apply(x));
             a.held.put(c, l);
         }
+        return a;
+    }
+
+    // --- the segmented form -------------------------------------------------------------------------------------------------------
+
+    /** The assembler is one segment of its writer's segmented state (plan step 6): its protocol state and held inputs. */
+    public static final String SEGMENT = "assembler";
+
+    /** Whether the assembler changed since the last call (an input held, a barrier recorded, a cut closed, a reinitialization); true
+     *  at the first call. An engine writes {@link #segment} when it is. */
+    public boolean drainChanged() { boolean c = changed; changed = false; return c; }
+
+    /** The segment {@value #SEGMENT}: the JCS form of {@code {"segmentVersion": 1, "segment": "assembler", "assembler": toJson}}. */
+    public byte[] segment(Function<T, JsonNode> encode) {
+        ObjectNode n = yggdrasil.forseti.core.segment.Segments.header(SEGMENT);
+        n.set("assembler", toJson(encode));
+        return yggdrasil.forseti.core.segment.Segments.bytes(n);
+    }
+
+    /** The assembler a {@link #segment} holds; unchanged until its next change. */
+    public static <T> CutAssembler<T> fromSegment(byte[] segment, Function<JsonNode, T> decode) {
+        CutAssembler<T> a = fromJson(yggdrasil.forseti.core.segment.Segments.read(SEGMENT, segment).get("assembler"), decode);
+        a.changed = false;
         return a;
     }
 

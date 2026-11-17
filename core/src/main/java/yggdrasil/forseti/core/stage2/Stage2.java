@@ -173,10 +173,11 @@ public final class Stage2 {
         String device = key.path("device").asText(), metric = key.path("metric").asText();
         if (!body.path("sourceTs").isIntegralNumber()) return;
         long t = body.path("sourceTs").longValue();
-        s.lastObservation.merge(device, t, Math::max);
+        Long last = s.lastObservation.get(device);
+        if (last == null || t > last) s.lastObservation.put(device, t);
         Optional<MemberCatalog.Resolved> act = catalog.activityOf(device);
         if (act.isEmpty() || !act.get().metric().equals(metric)) return;
-        s.activity.computeIfAbsent(device, k -> new TreeMap<>()).put(text(key),
+        s.activity.put(Stage2State.activityKey(device, text(key)),
             new SetCoverage.ActivityRow(t, body.path("state").asText(), body.path("reason").isTextual() ? body.path("reason").textValue() : null, body.path("active").deepCopy()));
     }
 
@@ -208,6 +209,7 @@ public final class Stage2 {
                 return;
             }
             stored.add(nv);
+            s.incidents.touch(key);
             for (Stage2State.Variant v : stored) c.disposition(v, identity, Disposition.Reason.IDENTITY_CONFLICT, null);
             judge(c, key);
             return;
@@ -224,6 +226,7 @@ public final class Stage2 {
         if (inc.stationRef == null) inc.stationRef = i.stationRef();
         Inputs.IncidentEvent current = inc.current();
         inc.revisions.put(i.revision(), new ArrayList<>(List.of(nv)));
+        s.incidents.touch(key);
         boolean superseded = current != null && i.revision() < current.revision();
         c.disposition(nv, identity, superseded ? Disposition.Reason.SUPERSEDED : Disposition.Reason.ACCEPTED, null);
         judge(c, key);
@@ -232,7 +235,7 @@ public final class Stage2 {
     // ===================================================================================================== timers and cuts
 
     private void timer(Stage2State s, Events2.Timer t, long w, List<Object> out) {
-        if (s.lastW2 == null || w > s.lastW2) s.lastW2 = w;
+        if (s.lastW2 == null || w > s.lastW2) { s.lastW2 = w; s.touchHead(); }
         if (!s.deadlines.remove(t.deadline(), t.key(), t.purpose())) return;   // cancelled or replaced meanwhile
         if (RETENTION.equals(t.purpose())) { s.bases.remove(text(t.key())); return; }   // T9: evidence leaves stage-2 state, no re-judgement
         Ctx c = new Ctx(s, out, Envelope.timerCause(causeKind, t.deadline()), null, w);
@@ -245,14 +248,14 @@ public final class Stage2 {
         s.lastW2 = w;
         Ctx c = new Ctx(s, out, Envelope.timerCause(causeKind, w), null, w);
         for (String k : new ArrayList<>(s.incidents.keySet())) judge(c, k);
-        for (TreeMap<String, SetCoverage.ActivityRow> rows : s.activity.values()) rows.values().removeIf(x -> x.sourceTs() + workRecordsMs < w);
-        s.activity.values().removeIf(Map::isEmpty);
+        s.activity.removeIf((k, x) -> x.sourceTs() + workRecordsMs < w);
         List<Progress.BarrierRef> refs = new ArrayList<>();
         for (Progress.IncidentOffset o : cc.incidentOffsets())
             refs.add(new Progress.BarrierRef(o.cutId(), new Progress.Origin(yggdrasil.forseti.core.input.InputParser.INCIDENTS, o.partition()), o.throughOffset()));
         out.add(new Progress.Stage2(s.generation, s.station, cc.cutId(), 0, w, cc.stage1ProgressRefs(), cc.incidentOffsets(), cc.mergedCutIds()));
         out.add(new Progress.Ledger(s.generation, 2, s.partition, s.station, cc.cutId(), 0, refs, cc.mergedCutIds(), 0, null, null));
         s.progressCount++;
+        s.touchHead();
     }
 
     // ===================================================================================================== judgement
@@ -294,18 +297,20 @@ public final class Stage2 {
             }
             ObjectNode body = Assessment.body(d, snapshot.deepCopy(), judged, rulesDigest);
             String digest = c.row(AFFECTED, Incidents.assessmentKey(inc.source, inc.incidentId, unit), body, s.assessments, basisRevisions);
-            live.put(unit, new AffectedSet.Unit(d.status(), d.reason(), digest));
+            AffectedSet.Unit u = new AffectedSet.Unit(d.status(), d.reason(), digest);
+            if (!u.equals(live.put(unit, u))) s.units.touch(key);
         }
         for (String unit : new ArrayList<>(live.keySet())) if (!rowSet.contains(unit)) {
             c.delete(Incidents.assessmentKey(inc.source, inc.incidentId, unit));
             live.remove(unit);
+            s.units.touch(key);
         }
         List<SetCoverage.Unit> units = new ArrayList<>();
         live.values().forEach(u -> units.add(new SetCoverage.Unit(u.status(), u.reason())));
         List<String> scoped = List.of("station-visit".equals(match) ? cur.stationRef() : cur.equipmentRef());
         Map<String, List<SetCoverage.ActivityRow>> activity = new TreeMap<>();
-        for (String d : scoped) activity.put(d, new ArrayList<>(s.activity.getOrDefault(d, new TreeMap<>()).values()));
-        ObjectNode coverage = SetCoverage.compute(cur, scoped, new SetCoverage.Evidence(activity, s.lastObservation, s.evidenceRanges), c.w2, P, L, workRecordsMs,
+        for (String d : scoped) activity.put(d, new ArrayList<>(s.activityOf(d)));
+        ObjectNode coverage = SetCoverage.compute(cur, scoped, new SetCoverage.Evidence(activity, s.lastObservation.asMap(), s.evidenceRanges.asMap()), c.w2, P, L, workRecordsMs,
             units, gapOverlaps, ambiguous);
         boolean withdrawn = "withdrawn".equals(cur.status());
         c.row(AFFECTED_SETS, Incidents.setKey(inc.source, inc.incidentId), AffectedSet.body(snapshot, live, withdrawn, coverage), s.sets, Json.JSON.createArrayNode());

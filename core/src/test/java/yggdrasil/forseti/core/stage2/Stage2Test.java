@@ -1,5 +1,6 @@
 package yggdrasil.forseti.core.stage2;
 
+import yggdrasil.forseti.core.segment.SegmentShadow;
 import static org.junit.jupiter.api.Assertions.*;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
@@ -144,6 +145,9 @@ class Stage2Test {
         final Map<String, Long> basisRevisions = new HashMap<>(), sampleRevisions = new HashMap<>();
         long incidentOffset, cutId;
         boolean roundTrip;
+        /** The segment store kept from drainChanged() after every decide step and checked against the live state (null: off). */
+        SegmentShadow<Stage2State> shadow = shadow();
+        static SegmentShadow<Stage2State> shadow() { return new SegmentShadow<>(Stage2State::drainChanged, Stage2State::segments, Stage2State::fromSegments, Stage2State::toJson); }
 
         Bench(RuleSet rules) {
             stage2 = new Stage2(rules, NegativeControls.NONE);
@@ -158,6 +162,7 @@ class Stage2Test {
             Stage2.Result r = stage2.decide(state, e, w2);
             state = r.state();
             outputs.addAll(r.outputs());
+            if (shadow != null) shadow.step(state);
             return r.outputs();
         }
         static Envelope envelope(long revision) {
