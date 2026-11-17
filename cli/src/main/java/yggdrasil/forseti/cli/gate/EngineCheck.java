@@ -89,11 +89,17 @@ public final class EngineCheck {
      *  scenario run ({@link Comparison}, {@link RunFold}): {@code run} holds {@code journals/}, {@code cuts.json} and {@code run.json}
      *  (its {@code subscribed}); the oracle reads {@code rec} and writes under {@code oracle}, its standard error to {@code log}. Any
      *  harness that writes those files is compared this way (the step-6 Kafka test driver included). */
-    record Compared(Comparison.Tally tally, List<Long> cutIds, String broken, int exit, String findings) {
-        boolean equal() { return broken == null && exit == 0 && tally.equal() && tally.cuts == cutIds.size() && findings == null; }
+    public record Compared(Comparison.Tally tally, List<Long> cutIds, String broken, int exit, String findings) {
+        public boolean equal() { return broken == null && exit == 0 && tally.equal() && tally.cuts == cutIds.size() && findings == null; }
+        /** The comparison's counts and description, for a harness outside this package (an engine provider). */
+        public long cutsCompared() { return tally.cuts; }
+        public long rowsCompared() { return tally.rowsCompared; }
+        public long dispositionsCompared() { return tally.dispositionsCompared; }
+        public long differences() { return tally.differences; }
+        public String describe() { return tally.describe(); }
     }
 
-    static Compared compare(Path rec, Path run, JsonNode scenario, Path registry, String python, Path root, Path oracle, Path log, String rulesDigest)
+    public static Compared compare(Path rec, Path run, JsonNode scenario, Path registry, String python, Path root, Path oracle, Path log, String rulesDigest)
             throws IOException, InterruptedException {
         JsonNode rule = scenario.path("rule");
         JsonNode cutLog = Json.read(run.resolve("cuts.json")), runJson = Json.read(run.resolve("run.json"));

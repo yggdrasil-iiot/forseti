@@ -1,0 +1,55 @@
+{
+  "engine": "flink",
+  "assertions": [
+    {
+      "id": "FL-SMOKE-DEDICATED-RUN",
+      "pr": 4,
+      "description": "engine-fixtures/scenarios/dedicated/smoke.json on Flink: the recording equals its lock, the run's topics are the plan, both jobs (each its own application-mode cluster: one JobManager JVM, one TaskManager JVM) and all their tasks are RUNNING before the first batch, every batch's cut completes from the committed progress records, and both clusters stop on cancel"
+    },
+    {
+      "id": "FL-SMOKE-DEDICATED-OUTPUT",
+      "pr": 4,
+      "description": "the dedicated smoke run's output journals, dumped with read_committed: every record carries the run's forseti-generation header and RFC 8785 key and value bytes, every writer's journal is present, and every consumer of the run (harness clients and job sources) reads with isolation.level=read_committed"
+    },
+    {
+      "id": "FL-SMOKE-DEDICATED-INIT",
+      "pr": 4,
+      "description": "the first progress of every stage-1 progress writer of the dedicated smoke run (work records, samples, the station ledgers and the stage-1 reject collector) carries initEvidence naming the run's recovery declaration, the control end offset H read in initializeState and the Flink restore evidence of a first start; no later progress and no stage-2 progress carries one"
+    },
+    {
+      "id": "FL-SMOKE-DEDICATED-ORACLE",
+      "pr": 4,
+      "description": "the oracle, unchanged, equals the dedicated smoke run's journals at every cut the run reported (Comparison and JournalFold as the core gate runs them): every cut compared, no difference, no finding, rows and dispositions compared"
+    },
+    {
+      "id": "FL-SMOKE-DEDICATED-RECONCILE",
+      "pr": 4,
+      "description": "the shared identity-bound reconciliation of the dedicated smoke run's ledgers and row triggers with its recording holds at every completed cut and at the end"
+    },
+    {
+      "id": "FL-SMOKE-SHARED-RUN",
+      "pr": 4,
+      "description": "engine-fixtures/scenarios/shared/smoke.json (raw partition 0 carries two stations) on Flink: the recording equals its lock, the run's topics are the plan, both jobs and all their tasks are RUNNING before the first batch, every batch's cut completes, and both clusters stop on cancel"
+    },
+    {
+      "id": "FL-SMOKE-SHARED-OUTPUT",
+      "pr": 4,
+      "description": "the shared smoke run's output journals, dumped with read_committed: every record carries the run's forseti-generation header and RFC 8785 bytes, every writer's journal is present, and every consumer of the run reads with isolation.level=read_committed"
+    },
+    {
+      "id": "FL-SMOKE-SHARED-INIT",
+      "pr": 4,
+      "description": "the first progress of every stage-1 progress writer of the shared smoke run carries initEvidence naming the run's recovery declaration, H and the Flink restore evidence of a first start; no later progress and no stage-2 progress carries one"
+    },
+    {
+      "id": "FL-SMOKE-SHARED-ORACLE",
+      "pr": 4,
+      "description": "the oracle, unchanged, equals the shared smoke run's journals at every cut the run reported: every cut compared, no difference, no finding, rows and dispositions compared"
+    },
+    {
+      "id": "FL-SMOKE-SHARED-RECONCILE",
+      "pr": 4,
+      "description": "the shared identity-bound reconciliation of the shared smoke run's ledgers and row triggers with its recording holds at every completed cut and at the end"
+    }
+  ]
+}

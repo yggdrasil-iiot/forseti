@@ -1,7 +1,12 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!-- The Flink engine of step 6 (plan D1): the stage-1 and stage-2 jobs over forseti-core, on Flink 2.2.1 with the Kafka connector
-     5.0.0-2.2. This is the only module that may carry Flink (scripts/check-dependency-closure.sh). kafka-clients is declared at 4.2.2,
-     the client line of the whole repository, so it wins by nearest-wins over the connector's own 4.2.0. The tests under
+     5.0.0-2.2, and the `flink` engine provider of `forseti gate|run` with engine flink. This is the only module that may carry Flink
+     (scripts/check-dependency-closure.sh). kafka-clients is declared at 4.2.2, the client line of the whole repository, so it wins by
+     nearest-wins over the connector's own 4.2.0. forseti-cli gives the wire codecs (cut-barrier record, output records) and the
+     comparison; forseti-replay-kafka the Kafka side of the replay harness (stores, batch and barrier writer, completion reader, dump).
+     flink-clients carries the application-mode cluster entry point, flink-statebackend-rocksdb the state backend of spec line 588.
+     `package` lays out target/engine/: this module's jar and its whole runtime class path, the directory the engine path names
+     (the forseti.engine.path system property) and the class path of the JobManager and TaskManager JVMs it starts. The tests under
      yggdrasil.forseti.engine.flink.spike confirm the engine assumptions of spec line 762 on the pinned versions
      (docs/ENGINE-ASSUMPTIONS.md) and stay as regression tests. -->
 <project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
@@ -13,12 +18,45 @@
     <flink.version>2.2.1</flink.version>
     <flink-connector-kafka.version>5.0.0-2.2</flink-connector-kafka.version>
     <kafka.version>4.2.2</kafka.version>
+    <maven-dependency-plugin.version>3.7.0</maven-dependency-plugin.version>
   </properties>
   <dependencies>
     <dependency><groupId>yggdrasil.forseti</groupId><artifactId>forseti-core</artifactId><version>${project.version}</version></dependency>
+    <dependency><groupId>yggdrasil.forseti</groupId><artifactId>forseti-cli</artifactId><version>${project.version}</version></dependency>
+    <dependency><groupId>yggdrasil.forseti</groupId><artifactId>forseti-replay-kafka</artifactId><version>${project.version}</version></dependency>
     <dependency><groupId>org.apache.flink</groupId><artifactId>flink-streaming-java</artifactId><version>${flink.version}</version></dependency>
+    <dependency><groupId>org.apache.flink</groupId><artifactId>flink-clients</artifactId><version>${flink.version}</version></dependency>
+    <dependency><groupId>org.apache.flink</groupId><artifactId>flink-statebackend-rocksdb</artifactId><version>${flink.version}</version></dependency>
+    <dependency><groupId>org.apache.flink</groupId><artifactId>flink-connector-base</artifactId><version>${flink.version}</version></dependency>
     <dependency><groupId>org.apache.flink</groupId><artifactId>flink-connector-kafka</artifactId><version>${flink-connector-kafka.version}</version></dependency>
     <dependency><groupId>org.apache.kafka</groupId><artifactId>kafka-clients</artifactId><version>${kafka.version}</version></dependency>
+    <!-- the log binding of the JobManager and TaskManager JVMs (Flink logs through SLF4J 1.7; its distribution ships a binding, a
+         Maven build does not) -->
+    <dependency><groupId>org.slf4j</groupId><artifactId>slf4j-simple</artifactId><version>1.7.36</version><scope>runtime</scope></dependency>
     <dependency><groupId>org.junit.jupiter</groupId><artifactId>junit-jupiter</artifactId></dependency>
   </dependencies>
+  <build>
+    <plugins>
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId><artifactId>maven-dependency-plugin</artifactId><version>${maven-dependency-plugin.version}</version>
+        <executions><execution>
+          <id>engine-path</id><phase>package</phase><goals><goal>copy-dependencies</goal></goals>
+          <configuration>
+            <outputDirectory>${project.build.directory}/engine</outputDirectory>
+            <includeScope>runtime</includeScope>
+          </configuration>
+        </execution></executions>
+      </plugin>
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId><artifactId>maven-resources-plugin</artifactId>
+        <executions><execution>
+          <id>engine-path-jar</id><phase>package</phase><goals><goal>copy-resources</goal></goals>
+          <configuration>
+            <outputDirectory>${project.build.directory}/engine</outputDirectory>
+            <resources><resource><directory>${project.build.directory}</directory><includes><include>${project.build.finalName}.jar</include></includes><filtering>false</filtering></resource></resources>
+          </configuration>
+        </execution></executions>
+      </plugin>
+    </plugins>
+  </build>
 </project>
