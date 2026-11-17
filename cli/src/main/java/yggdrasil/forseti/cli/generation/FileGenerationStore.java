@@ -28,7 +28,7 @@ import yggdrasil.forseti.core.release.LockedFile;
  *  ({@code control-log-corrupt}); nothing is skipped or discarded. {@link #append} runs inside the {@link LockedFile} hold of
  *  {@code <stateDir>/generations.lock} ({@link #locked}, which a verb holds for its whole operation), checks that the history stays
  *  valid with the new row, appends it through one channel opened for append and forces it to disk. */
-public final class FileGenerationStore implements GenerationStore {
+public final class FileGenerationStore implements OperatorStore {
     public static final String FILE = "generations.jsonl", LOCK = "generations.lock", TOPIC = "forseti.generations", HEADER = "forseti-generation";
 
     /** Opens the channel an append writes through (a test substitutes a spy). */
@@ -55,7 +55,7 @@ public final class FileGenerationStore implements GenerationStore {
     public Path lockFile() { return stateDir.resolve(LOCK); }
 
     /** Runs {@code body} inside the hold of {@code generations.lock}; the hold is re-entrant for the holding thread. */
-    public <T> T locked(LockedFile.Body<T> body) {
+    @Override public <T> T locked(LockedFile.Body<T> body) {
         try { return LockedFile.with(lockFile(), body); } catch (IOException e) { throw new UncheckedIOException(e); }
     }
 
@@ -102,7 +102,7 @@ public final class FileGenerationStore implements GenerationStore {
      *  stay valid with every row ({@link IllegalArgumentException} otherwise, nothing written); the buffer is written at the end of the
      *  file by a loop that continues a short write until the buffer is drained, then {@code force(true)}; this returns only after
      *  {@code force} returned. Any I/O failure during the publication is {@link ControlLogIo} with the count of bytes appended. */
-    public void appendBatch(List<Entry> rows) {
+    @Override public void appendBatch(List<Entry> rows) {
         if (rows.isEmpty()) throw new IllegalArgumentException("an empty batch");
         locked(() -> {
             List<Entry> next = new ArrayList<>(all());
@@ -135,7 +135,7 @@ public final class FileGenerationStore implements GenerationStore {
     @Override public List<Entry> all() { return lines().stream().map(Line::entry).toList(); }
 
     /** The raw bytes of the whole log, after the same validation as every read. */
-    public byte[] bytes() {
+    @Override public byte[] bytes() {
         byte[] b = read();
         parse(b);
         return b;
@@ -143,7 +143,7 @@ public final class FileGenerationStore implements GenerationStore {
 
     /** {@code registeredRowSha256}: {@code Canonical.digest} of the transport record of the {@code registered} row of {@code n}, which is
      *  the raw SHA-256 of its stored line without the LF. */
-    public Optional<String> registeredRowSha256(long generation) {
+    @Override public Optional<String> registeredRowSha256(long generation) {
         for (Line l : lines())
             if (l.entry().row().generation() == generation)
                 return Generation.REGISTERED.equals(l.entry().row().status()) ? Optional.of(Canonical.digestOf(l.bytes())) : Optional.empty();

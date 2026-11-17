@@ -50,11 +50,11 @@ public final class GenerationCli {
         try {
             f = Args.parse(args, 1, Set.of(), Set.of("stream"));
             switch (args[0]) {
-                case "new" -> f.only(Set.of("state", "mappings", "trusted-keys", "stream", "rule", "recording", "definitions"));
-                case "retire" -> f.only(Set.of("state", "generation"));
-                case "promote" -> f.only(Set.of("state", "mappings", "trusted-keys", "generation", "registered-row-sha256", "run", "gate-report", "shards",
+                case "new" -> f.only(withStore("state", "mappings", "trusted-keys", "stream", "rule", "recording", "definitions"));
+                case "retire" -> f.only(withStore("state", "generation"));
+                case "promote" -> f.only(withStore("state", "mappings", "trusted-keys", "generation", "registered-row-sha256", "run", "gate-report", "shards",
                     "accept-scope"));
-                case "list" -> f.only(Set.of("state"));
+                case "list" -> f.only(withStore("state"));
                 default -> { return usage(err); }
             }
         } catch (IllegalArgumentException e) { err.println(e.getMessage()); return usage(err); }
@@ -86,6 +86,50 @@ public final class GenerationCli {
         }
     }
 
+    // ---------------------------------------------------------------------------------------------------------------- stores
+
+    static final String STORE = "store", FILE = "file", BOOTSTRAP = "bootstrap", GENERATIONS_TOPIC = "generations-topic";
+
+    private static Set<String> withStore(String... flags) {
+        Set<String> s = new HashSet<>(List.of(flags));
+        s.addAll(List.of(STORE, BOOTSTRAP, GENERATIONS_TOPIC));
+        return s;
+    }
+
+    private static boolean isFile(Args f) { return FILE.equals(f.get(STORE, FILE)); }
+
+    /** The verb's control store: {@code --store file} (the default) is the file store of {@code --state}; any other {@code --store <name>}
+     *  is opened by the {@link GenerationStoreProvider} of that name on the engine path with {@code --bootstrap} and
+     *  {@code --generations-topic}, and every call into it runs with the provider's loader as the thread context class loader. No such
+     *  provider is a usage error. {@code --state} stays the directory of the head floors and of the run's files in both cases. */
+    static OperatorStore openStore(Args f, Path state, boolean writer) {
+        String name = f.get(STORE, FILE);
+        if (FILE.equals(name)) {
+            if (f.has(BOOTSTRAP) || f.has(GENERATIONS_TOPIC)) throw new IllegalArgumentException("--bootstrap and --generations-topic belong to a transport --store");
+            return new FileGenerationStore(state);
+        }
+        Optional<yggdrasil.forseti.cli.replay.EngineProviders.Loaded<GenerationStoreProvider>> p = yggdrasil.forseti.cli.replay.EngineProviders.load(
+            GenerationStoreProvider.class, name, GenerationStoreProvider::name, yggdrasil.forseti.cli.replay.EngineProviders.enginePath());
+        if (p.isEmpty()) throw new IllegalArgumentException("--store " + name + ": no store provider of that name on the engine path " + yggdrasil.forseti.cli.replay.EngineProviders.enginePath());
+        Map<String, String> options = new TreeMap<>();
+        options.put(BOOTSTRAP, f.required(BOOTSTRAP));
+        options.put("topic", f.required(GENERATIONS_TOPIC));
+        options.put("mode", writer ? "writer" : "reader");
+        OperatorStore s = p.get().call(() -> p.get().provider().open(options));
+        return new LoaderStore(s, p.get());
+    }
+
+    /** A provider's store with every call inside the provider's loader. */
+    private record LoaderStore(OperatorStore s, yggdrasil.forseti.cli.replay.EngineProviders.Loaded<GenerationStoreProvider> p) implements OperatorStore {
+        @Override public <T> T locked(yggdrasil.forseti.core.release.LockedFile.Body<T> body) { return p.call(() -> s.locked(body)); }
+        @Override public void appendBatch(List<Entry> rows) { p.call(() -> { s.appendBatch(rows); return null; }); }
+        @Override public Optional<String> registeredRowSha256(long generation) { return p.call(() -> s.registeredRowSha256(generation)); }
+        @Override public byte[] bytes() { return p.call(s::bytes); }
+        @Override public void append(String scope, Generation row) { p.call(() -> { s.append(scope, row); return null; }); }
+        @Override public List<Entry> all() { return p.call(s::all); }
+        @Override public void close() { p.call(() -> { s.close(); return null; }); }
+    }
+
     public static int usage(PrintStream err) {
         err.println("usage: forseti generation new     --state <dir> --mappings <dir> --trusted-keys <file> --stream <s> [--stream <s2>] --rule <id>@<version>");
         err.println("                                  [--recording <dir>] [--definitions <file>]");
@@ -93,6 +137,8 @@ public final class GenerationCli {
         err.println("       forseti generation promote --state <dir> --mappings <dir> --trusted-keys <file> --generation <n> --registered-row-sha256 <hex>");
         err.println("                                  --run <run.json> --gate-report <report.json> [--shards <dir>] [--accept-scope core]");
         err.println("       forseti generation list    --state <dir>");
+        err.println("       every verb: [--store file | --store <name> --bootstrap <host:port> --generations-topic <topic>]  (file is the default;");
+        err.println("                   another store is a provider on the engine path, step 6: kafka)");
         return 2;
     }
 
@@ -117,8 +163,9 @@ public final class GenerationCli {
         TrustedKeys trusted;
         try { trusted = TrustedKeys.load(keys); } catch (IOException e) { throw new IllegalArgumentException("--trusted-keys " + keys + ": " + e.getMessage(), e); }
 
-        FileGenerationStore store = new FileGenerationStore(state);
-        ObjectNode printed = store.locked(() -> {
+        OperatorStore store = openStore(f, state, true);
+        ObjectNode printed;
+        try (store) { printed = store.locked(() -> {
             long highest = store.highest();   // reads and validates the whole log
             long now = clock.millis();
             FloorStore floors = new FloorStore(state);
@@ -162,7 +209,7 @@ public final class GenerationCli {
             store.append(scope, new Generation(n, Generation.REGISTERED, rules.rulesDigest(), inputs, replayFrom, head.headVersion(), evidence,
                 null, null, now));
             return printed(n, Generation.REGISTERED, scope, rules.rulesDigest(), store.registeredRowSha256(n).orElseThrow());
-        });
+        }); }
         out.println(Canonical.utf8(Canonical.bytes(printed)));
         return 0;
     }
@@ -181,8 +228,9 @@ public final class GenerationCli {
     private static int retire(Args f, PrintStream out, Clock clock) {
         Path state = Path.of(f.required("state"));
         long n = number(f.required("generation"));
-        FileGenerationStore store = new FileGenerationStore(state);
-        ObjectNode printed = store.locked(() -> {
+        OperatorStore store = openStore(f, state, true);
+        ObjectNode printed;
+        try (store) { printed = store.locked(() -> {
             Optional<GenerationStore.Entry> reg = store.registered(n);
             if (reg.isEmpty()) throw unregistered(n);
             String latest = store.latestStatus(n).orElseThrow();
@@ -192,7 +240,7 @@ public final class GenerationCli {
             store.append(reg.get().scope(), new Generation(n, Generation.RETIRED, r.rulesDigest(), r.inputReleases(), r.replayFrom(), r.headVersion(),
                 r.releaseEvidence(), null, null, clock.millis()));
             return printed(n, Generation.RETIRED, reg.get().scope(), r.rulesDigest(), store.registeredRowSha256(n).orElseThrow());
-        });
+        }); }
         out.println(Canonical.utf8(Canonical.bytes(printed)));
         return 0;
     }
@@ -228,8 +276,9 @@ public final class GenerationCli {
         try { trusted = TrustedKeys.load(keys); } catch (IOException e) { throw new IllegalArgumentException("--trusted-keys " + keys + ": " + e.getMessage(), e); }
         GateReportReader.Request request = new GateReportReader.Request(root, report, shards, state, n, digest, run, acceptCore);
         afterParse.run();
-        FileGenerationStore store = stores.apply(state);
-        ObjectNode printed = store.locked(() -> {
+        OperatorStore store = isFile(f) ? stores.apply(state) : openStore(f, state, true);
+        ObjectNode printed;
+        try (store) { printed = store.locked(() -> {
             insideHold.run();
             store.validate();                                                     // 1
             GateReportReader.Accepted accepted = GateReportReader.read(request, store);   // 2
@@ -256,7 +305,7 @@ public final class GenerationCli {
             o.set("run", accepted.run().deepCopy());
             if (previous.isPresent()) Json.putSafe(o, "retired", previous.get().row().generation()); else o.putNull("retired");
             return o;
-        });
+        }); }
         out.println(Canonical.utf8(Canonical.bytes(printed)));
         return 0;
     }
@@ -264,8 +313,8 @@ public final class GenerationCli {
     // ----------------------------------------------------------------------------------------------------------------- list
 
     private static int list(Args f, PrintStream out) {
-        FileGenerationStore store = new FileGenerationStore(Path.of(f.required("state")));
-        byte[] b = store.locked(store::bytes);
+        byte[] b;
+        try (OperatorStore store = openStore(f, Path.of(f.required("state")), false)) { b = store.locked(store::bytes); }
         out.write(b, 0, b.length);
         out.flush();
         return 0;
