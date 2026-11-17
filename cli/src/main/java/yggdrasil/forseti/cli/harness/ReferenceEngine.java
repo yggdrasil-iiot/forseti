@@ -62,7 +62,7 @@ public final class ReferenceEngine {
 
     public static final String ENGINE = "core-harness", ENGINE_VERSION = "0.1.0", RECOVERY_CONTROL = "recovery-control.jsonl";
     public static final long DEFAULT_SEED = 20261109L;
-    static final List<String> STAGE1_TOPICS = List.of(InputParser.MESSAGES, InputParser.SESSIONS, InputParser.OCCUPANCY);
+    public static final List<String> STAGE1_TOPICS = List.of(InputParser.MESSAGES, InputParser.SESSIONS, InputParser.OCCUPANCY);
 
     /** A start-up refusal: a code ({@code generation-unregistered}, {@code generation-rules-mismatch}, {@code generation-routing-mismatch}
      *  and {@code generation-transition} of the generation CLI, or a reader refusal such as {@code provenance-mismatch}) and its
@@ -383,7 +383,7 @@ public final class ReferenceEngine {
     /** A station's required barriers (spec 412, both forms of the harness): every subscribed raw telemetry partition, plus the session
      *  partitions of its devices and its occupancy partition when subscribed (the routing manifest fixes both), in the order its
      *  {@code barrierRefs} list them. */
-    static List<Progress.Origin> stationRequired(String station, RoutingManifest routing, Map<String, List<Integer>> subscribed) {
+    public static List<Progress.Origin> stationRequired(String station, RoutingManifest routing, Map<String, List<Integer>> subscribed) {
         Set<Integer> sessions = new TreeSet<>();
         for (String d : routing.devices()) if (routing.stationOf(d).equals(station)) sessions.add(routing.rawPartitionOf(d));
         Map<String, Set<Integer>> keep = Map.of(InputParser.MESSAGES, new TreeSet<>(subscribed.get(InputParser.MESSAGES)),
@@ -392,7 +392,7 @@ public final class ReferenceEngine {
     }
 
     /** Every subscribed stage-1 partition {@code keep} admits (all when null), by topic in input-topic order, then partition. */
-    static List<Progress.Origin> required(Map<String, List<Integer>> subscribed, Map<String, Set<Integer>> keep) {
+    public static List<Progress.Origin> required(Map<String, List<Integer>> subscribed, Map<String, Set<Integer>> keep) {
         List<Progress.Origin> l = new ArrayList<>();
         for (String t : STAGE1_TOPICS) for (int p : subscribed.get(t)) {
             if (keep != null && !keep.get(t).contains(p)) continue;
@@ -408,7 +408,7 @@ public final class ReferenceEngine {
     }
 
     /** The batch's {@code idleInputs[]}, read strictly. */
-    static List<CutAssembler.Idle> idleInputs(Recording.Batch b) {
+    public static List<CutAssembler.Idle> idleInputs(Recording.Batch b) {
         List<CutAssembler.Idle> l = new ArrayList<>();
         for (JsonNode x : b.idleInputs()) {
             try { l.add(CutAssembler.Idle.fromJson(x)); }
@@ -419,7 +419,7 @@ public final class ReferenceEngine {
 
     /** The head the generation pinned, rebuilt from {@code releaseEvidence.head}; nothing in it is verified here (that was
      *  {@code generation new}): {@link ReleaseReader#read} verifies the release against these digests. */
-    static HeadVerifier.Head head(JsonNode evidence) {
+    public static HeadVerifier.Head head(JsonNode evidence) {
         JsonNode h = evidence.path("head");
         if (!h.isObject()) throw new IllegalArgumentException("releaseEvidence.head is not an object");
         return new HeadVerifier.Head(Json.text(h, "stream"), Json.text(h, "releaseId"), Json.text(h, "version"), Json.text(h, "releaseSha256"),
@@ -481,7 +481,7 @@ public final class ReferenceEngine {
         return new Pins(rulesPins, pins.hierarchy(), pins.bindings(), pins.definitions(), pins.job());
     }
 
-    static Pins pins(RuleSet rules, JsonNode definitions, Pins.Job job) {
+    public static Pins pins(RuleSet rules, JsonNode definitions, Pins.Job job) {
         ObjectNode p = rules.pins();
         Map<String, Pins.Definition> defs = new TreeMap<>();
         definitions.fields().forEachRemaining(e -> defs.put(e.getKey(),
@@ -527,7 +527,7 @@ public final class ReferenceEngine {
         } catch (Exception e) { return "unpacked"; }
     }
 
-    static String jcsJava() {
+    public static String jcsJava() {
         try (java.io.InputStream in = ReferenceEngine.class.getResourceAsStream("/META-INF/maven/io.github.erdtman/java-json-canonicalization/pom.properties")) {
             if (in != null) { Properties pr = new Properties(); pr.load(in); String v = pr.getProperty("version"); if (v != null) return "io.github.erdtman:java-json-canonicalization:" + v; }
         } catch (IOException ignored) { /* fall through */ }

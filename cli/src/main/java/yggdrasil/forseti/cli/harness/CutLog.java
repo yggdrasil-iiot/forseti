@@ -13,9 +13,9 @@ import yggdrasil.forseti.core.Json;
  *  {@code w1Form} is present when the run reported the min-over-partitions form. The offset ranges are
  *  half-open ({@code [from, to)}, empty when equal), distinct from the inclusive through-offsets of barriers; {@code incidentOffsets} are
  *  the {@code quality.incidents} through-offsets of the cut as {@code {cutId, partition, throughOffset}}. */
-final class CutLog {
-    record Range(long from, long to) {
-        Range { if (from < 0 || to < from || to > Json.MAX_SAFE) throw new IllegalArgumentException("offset range [" + from + ", " + to + ")"); }
+public final class CutLog {
+    public record Range(long from, long to) {
+        public Range { if (from < 0 || to < from || to > Json.MAX_SAFE) throw new IllegalArgumentException("offset range [" + from + ", " + to + ")"); }
     }
     record StationCut(long w1, Long admissionW, long w2, List<Long> mergedCutIds, int onlineVisits) {}
 
@@ -49,7 +49,7 @@ final class CutLog {
         cuts.add(c);
     }
 
-    static ObjectNode ranges(Map<String, Map<Integer, Range>> offsetRanges) {
+    public static ObjectNode ranges(Map<String, Map<Integer, Range>> offsetRanges) {
         ObjectNode r = Json.object();
         offsetRanges.forEach((t, parts) -> {
             ObjectNode tn = r.putObject(t);

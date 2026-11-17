@@ -18,15 +18,15 @@ import yggdrasil.forseti.core.journal.Pins;
  *  {@code fixtureDigests} names the recording (raw SHA-256 of its manifest and the file digests it lists, all verified before the run) and
  *  the release (its {@code release.json} digest and the {@code rulesDigest}); {@code offsetRanges} are the half-open ranges the run consumed
  *  per subscribed partition ({@code {}} when the run had no topic input). No wall-clock time is recorded. */
-final class RunRecord {
+public final class RunRecord {
     private RunRecord() {}
 
-    record Facts(String runId, long generation, String registeredRowSha256, String scope, long seed, boolean shuffle, String replay,
+    public record Facts(String runId, long generation, String registeredRowSha256, String scope, long seed, boolean shuffle, String replay,
                  String originalRecordingManifestSha256, Pins pins, String recordingManifestSha256, JsonNode recordingDigests,
                  String releaseSha256, String rulesDigest, String jcsJava, Map<String, List<Integer>> subscribed,
                  Map<String, Map<Integer, CutLog.Range>> offsetRanges, int cuts, String command, String negativeControl) {}
 
-    static ObjectNode build(Facts f) {
+    public static ObjectNode build(Facts f) {
         ObjectNode n = Json.object().put("runId", f.runId());
         Pins.Job job = f.pins().job();
         n.put("engine", job.engine()).put("engineVersion", job.engineVersion()).put("artifactSha256", job.artifactSha256());
@@ -49,5 +49,5 @@ final class RunRecord {
         return n.put("negativeControl", f.negativeControl());
     }
 
-    static void write(Path out, ObjectNode record) { Json.write(out.resolve("run.json"), record); }
+    public static void write(Path out, ObjectNode record) { Json.write(out.resolve("run.json"), record); }
 }
