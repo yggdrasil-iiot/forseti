@@ -61,11 +61,44 @@ public final class EngineCheck {
         String rulesDigest = new FileGenerationStore(state).registered(1).orElseThrow().row().rulesDigest();
         ReferenceEngine.run(new ReferenceEngine.Options(rec, o.registry(), state, 1, run, ReferenceEngine.DEFAULT_SEED, false, Map.of(), null,
             "forseti recordings check-engine", null, null, null, form));
-        JsonNode cutLog = Json.read(run.resolve("cuts.json")), runJson = Json.read(run.resolve("run.json"));
 
         // (4) the oracle's stream against the journals, cut by cut
-        List<String> cmd = new ArrayList<>(List.of(o.python(), "-I", "-m", "forseti_oracle.cli", "all", "--recording", rec.toString(),
-            "--cuts", run.resolve("cuts.json").toString(), "--mappings", o.registry().resolve("mappings").toString(),
+        Compared c = compare(rec, run, scenario, o.registry(), o.python(), o.root(), oracle, o.out().resolve("oracle.log"), rulesDigest);
+        Comparison.Tally tally = c.tally();
+        String broken = c.broken(), findings = c.findings();
+        int exit = c.exit();
+        List<Long> cutIds = c.cutIds();
+        boolean equal = "equal".equals(lock) && broken == null && exit == 0 && tally.equal() && tally.cuts == cutIds.size() && findings == null;
+        ObjectNode n = Json.object().put("scenario", o.scenario().getParent().getFileName() + "/" + Json.text(scenario, "name")).put("w1Form", form.wire).put("lock", lock);
+        Json.putSafe(n, "cuts", built.cuts());
+        Json.putSafe(n, "reported", cutIds.size());
+        Json.putSafe(n, "compared", tally.cuts);
+        Json.putSafe(n, "rowsCompared", tally.rowsCompared);
+        Json.putSafe(n, "dispositionsCompared", tally.dispositionsCompared);
+        Json.putSafe(n, "differences", tally.differences);
+        n.put("oracle", broken != null ? broken : exit != 0 ? "exit " + exit : "ok");
+        n.put("findings", findings);
+        n.put("comparison", tally.describe());
+        n.put("equal", equal);
+        out.println(yggdrasil.forseti.core.canon.Canonical.utf8(yggdrasil.forseti.core.canon.Canonical.bytes(n)));
+        if (!equal) err.println(tally.describe());
+        return equal ? 0 : 1;
+    }
+
+    /** The oracle's cut stream compared with a run's journals at every cut its {@code cuts.json} reports, as the core gate compares a
+     *  scenario run ({@link Comparison}, {@link RunFold}): {@code run} holds {@code journals/}, {@code cuts.json} and {@code run.json}
+     *  (its {@code subscribed}); the oracle reads {@code rec} and writes under {@code oracle}, its standard error to {@code log}. Any
+     *  harness that writes those files is compared this way (the step-6 Kafka test driver included). */
+    record Compared(Comparison.Tally tally, List<Long> cutIds, String broken, int exit, String findings) {
+        boolean equal() { return broken == null && exit == 0 && tally.equal() && tally.cuts == cutIds.size() && findings == null; }
+    }
+
+    static Compared compare(Path rec, Path run, JsonNode scenario, Path registry, String python, Path root, Path oracle, Path log, String rulesDigest)
+            throws IOException, InterruptedException {
+        JsonNode rule = scenario.path("rule");
+        JsonNode cutLog = Json.read(run.resolve("cuts.json")), runJson = Json.read(run.resolve("run.json"));
+        List<String> cmd = new ArrayList<>(List.of(python, "-I", "-m", "forseti_oracle.cli", "all", "--recording", rec.toString(),
+            "--cuts", run.resolve("cuts.json").toString(), "--mappings", registry.resolve("mappings").toString(),
             "--release", Json.text(rule, "releaseId") + "@" + Json.text(rule, "version"),
             "--rule", Json.text(rule, "attributionRuleId") + "@" + Json.text(rule, "attributionRuleVersion"),
             "--definitions", rec.resolve(Recording.MANIFEST).toString(), "--out", oracle.toString(), "--stream"));
@@ -76,7 +109,6 @@ public final class EngineCheck {
             cmd.add(e.getKey() + "=" + String.join(",", ps));
         });
         Files.createDirectories(oracle);
-        Path log = o.out().resolve("oracle.log");
         Map<Long, JsonNode> entries = new HashMap<>();
         List<Long> cutIds = new ArrayList<>();
         for (JsonNode c : cutLog.path("cuts")) { entries.put(c.path("cutId").asLong(), c); cutIds.add(c.path("cutId").asLong()); }
@@ -84,7 +116,7 @@ public final class EngineCheck {
         Comparison.OracleFold of = new Comparison.OracleFold();
         List<String> trailing = new ArrayList<>();
         boolean synthetic = scenario.path("synthetic").asBoolean(false);
-        Process p = new ProcessBuilder(cmd).directory(o.root().toFile()).redirectError(log.toFile()).start();
+        Process p = new ProcessBuilder(cmd).directory(root.toFile()).redirectError(log.toFile()).start();
         String broken;
         String findings;
         int exit;
@@ -102,20 +134,6 @@ public final class EngineCheck {
         } finally {
             if (p.isAlive()) p.destroyForcibly();
         }
-        boolean equal = "equal".equals(lock) && broken == null && exit == 0 && tally.equal() && tally.cuts == cutIds.size() && findings == null;
-        ObjectNode n = Json.object().put("scenario", o.scenario().getParent().getFileName() + "/" + Json.text(scenario, "name")).put("w1Form", form.wire).put("lock", lock);
-        Json.putSafe(n, "cuts", built.cuts());
-        Json.putSafe(n, "reported", cutIds.size());
-        Json.putSafe(n, "compared", tally.cuts);
-        Json.putSafe(n, "rowsCompared", tally.rowsCompared);
-        Json.putSafe(n, "dispositionsCompared", tally.dispositionsCompared);
-        Json.putSafe(n, "differences", tally.differences);
-        n.put("oracle", broken != null ? broken : exit != 0 ? "exit " + exit : "ok");
-        n.put("findings", findings);
-        n.put("comparison", tally.describe());
-        n.put("equal", equal);
-        out.println(yggdrasil.forseti.core.canon.Canonical.utf8(yggdrasil.forseti.core.canon.Canonical.bytes(n)));
-        if (!equal) err.println(tally.describe());
-        return equal ? 0 : 1;
+        return new Compared(tally, List.copyOf(cutIds), broken, exit, findings);
     }
 }

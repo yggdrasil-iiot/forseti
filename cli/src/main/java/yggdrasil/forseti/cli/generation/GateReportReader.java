@@ -61,7 +61,7 @@ public final class GateReportReader {
     public record Accepted(String gateReportSha256, ObjectNode run, JsonNode generation, JsonNode runEntry) {}
 
     /** Reads and checks the report against {@code store}, the control store of {@code --state} as it is now (the caller holds its lock). */
-    public static Accepted read(Request q, FileGenerationStore store) {
+    public static Accepted read(Request q, OperatorStore store) {
         // 1. strict parse, required fields
         byte[] bytes;
         try { bytes = Files.readAllBytes(q.report()); } catch (IOException e) { throw refused(UNREADABLE, "cannot read " + q.report() + ": " + e.getMessage()); }

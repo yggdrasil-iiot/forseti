@@ -18,19 +18,33 @@ import yggdrasil.forseti.cli.recording.Recording;
 import yggdrasil.forseti.cli.recording.ReplayRecording;
 import yggdrasil.forseti.cli.recording.ScenarioBuilder;
 import yggdrasil.forseti.cli.recording.W1Form;
+import yggdrasil.forseti.cli.replay.EngineProvider;
+import yggdrasil.forseti.cli.replay.EngineProviders;
 import yggdrasil.forseti.core.Json;
 import yggdrasil.forseti.core.canon.Canonical;
 
 /** {@code forseti <command> <verb> [--flag value | --switch]...}. Exit codes: 0 done, 1 a check failed or a refusal, 2 usage or input
  *  error. Commands are dispatched by name; {@code gate} and {@code run} take their flags from the second argument on
  *  ({@code forseti gate --engine core ...}, {@code forseti run --engine core ...}); {@code generation <verb>} is {@link GenerationCli}'s,
- *  on the system clock. */
+ *  on the system clock. {@code --engine core} runs in-process; any other {@code --engine <name>} of {@code gate}, {@code run} and
+ *  {@code requirements} is the
+ *  {@link EngineProvider} of that name on the engine path ({@link EngineProviders}), which receives the whole command; no such provider
+ *  is a usage error (exit 2). */
 public final class Main {
     private Main() {}
 
     public static void main(String[] args) { System.exit(run(args, System.out, System.err)); }
 
     public static int run(String[] args, PrintStream out, PrintStream err) {
+        if (args.length >= 1 && (args[0].equals("gate") || args[0].equals("run") || args[0].equals("requirements"))) {
+            Optional<String> engine = EngineProviders.engineOf(args, 1);
+            if (engine.isPresent() && !engine.get().equals(EngineProviders.CORE)) return external(engine.get(), args, out, err);
+            if (args[0].equals("requirements")) {
+                err.println("forseti requirements runs injection 24 and comparison item 5 on an external engine (spec 705); --engine core has no"
+                    + " requirements run: the core gate covers its engine-independent subset (spec 748)");
+                return usage(err);
+            }
+        }
         if (args.length >= 1 && args[0].equals("gate")) {
             Args flags;
             try { flags = Args.parse(args, 1, Set.of()); } catch (IllegalArgumentException e) { err.println(e.getMessage()); return usage(err); }
@@ -92,6 +106,20 @@ public final class Main {
         }
     }
 
+    /** {@code gate}, {@code run} or {@code requirements} with an external engine: its provider on the engine path, or a usage error. */
+    private static int external(String engine, String[] args, PrintStream out, PrintStream err) {
+        List<Path> path = EngineProviders.enginePath();
+        Optional<EngineProviders.Loaded<EngineProvider>> p;
+        try { p = EngineProviders.find(engine, path); }
+        catch (IllegalStateException | IllegalArgumentException | UncheckedIOException e) { err.println(e.getMessage()); return usage(err); }
+        if (p.isEmpty()) {
+            err.println("--engine " + engine + ": no engine provider of that name on the engine path " + path + " (-D" + EngineProviders.PATH_PROPERTY
+                + ", " + EngineProviders.PATH_ENV + " or " + EngineProviders.DEFAULT_DIR + "/ beside the jar)");
+            return usage(err);
+        }
+        return EngineProviders.dispatch(p.get(), args, out, err);
+    }
+
     private static int usage(PrintStream err) {
         err.println("usage: forseti recordings build --scenario <file> --out <dir> [--registry <dir>] [--lock]");
         err.println("       forseti recordings synth --scenario <synthetic scenario file> --out <dir> --registry <dir> [--lock]");
@@ -102,6 +130,7 @@ public final class Main {
         err.println("       forseti recordings engine-scenarios --fixtures <dir> --out <engine-fixtures dir> [--check]");
         err.println("       forseti recordings check-engine --scenario <file> --registry <dir> --trusted-keys <file> --python <interpreter> --out <dir>");
         err.println("                   [--w1-form per-station|min-over-partitions]");
+        err.println("       forseti gate|run|requirements --engine <name> ...   (an engine provider on the engine path, -D" + EngineProviders.PATH_PROPERTY + " or " + EngineProviders.PATH_ENV + ")");
         err.println("       forseti gate --engine core [--out <dir>] [--python <interpreter>] [--negative-control <name>] [--seed <n>]");
         err.println("                    [--shard <name> | --aggregate <dir>] [--state <out>/state]");
         err.println("       forseti run --engine core --recording <dir> --registry <dir> --state <dir> --generation <n> --out <run dir>");
