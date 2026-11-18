@@ -20,6 +20,7 @@ import yggdrasil.forseti.cli.generation.FileGenerationStore;
 import yggdrasil.forseti.cli.generation.GenerationCli;
 import yggdrasil.forseti.cli.harness.ReferenceEngine;
 import yggdrasil.forseti.cli.recording.Recording;
+import yggdrasil.forseti.cli.recording.ReplayRecording;
 import yggdrasil.forseti.cli.recording.ScenarioBuilder;
 import yggdrasil.forseti.cli.recording.W1Form;
 import yggdrasil.forseti.core.Json;
@@ -30,7 +31,13 @@ import yggdrasil.forseti.core.Json;
  *  runs it in the scenario's W1 form ({@code --w1-form} overrides it), and the oracle's cut stream is compared with the harness journals
  *  at every cut the harness reported, exactly as the core gate compares a scenario run ({@link Comparison}, {@link RunFold}). Prints one
  *  JSON line {@code {scenario, w1Form, lock, cuts, compared, rowsCompared, dispositionsCompared, differences, findings, equal}}; exit 0
- *  when the lock holds, every cut equals the oracle and the fold found nothing, 1 otherwise. */
+ *  when the lock holds, every cut equals the oracle and the fold found nothing, 1 otherwise.
+ *
+ *  <p>A scenario with a replay lock beside it ({@link ReplayRecording#lockOf}, injection 23) is also run as the gate runs its event-time
+ *  replay: a generation on the original recording in another fresh store, the harness with {@code --replay event-time --replay-lock}
+ *  (the materialized replay recording compared byte for byte with the committed replay lock), the oracle on the replay recording at every
+ *  cut, and {@link ReplayRecording#checkRun} on the {@code W1} the run reported; the line then carries {@code replay} with the same
+ *  counts, {@code brackets} and its own {@code equal}, and the exit is 0 only when both hold. */
 public final class EngineCheck {
     private EngineCheck() {}
 
@@ -40,7 +47,8 @@ public final class EngineCheck {
         JsonNode scenario = Json.read(o.scenario());
         W1Form form = o.w1Form() != null ? o.w1Form() : W1Form.of(scenario.path("w1Form").isTextual() ? scenario.get("w1Form").textValue() : null);
         Path rec = o.out().resolve("recording"), state = o.out().resolve("state"), run = o.out().resolve("run"), oracle = o.out().resolve("oracle");
-        for (Path p : List.of(state, run, oracle)) if (Files.exists(p)) CoreGate.delete(p);
+        Path replayState = o.out().resolve("replay-state"), replayRun = o.out().resolve("replay-run"), replayOracle = o.out().resolve("replay-oracle");
+        for (Path p : List.of(state, run, oracle, replayState, replayRun, replayOracle)) if (Files.exists(p)) CoreGate.delete(p);
         Files.createDirectories(o.out());
 
         // (1) the recording and its lock
@@ -49,16 +57,7 @@ public final class EngineCheck {
         String lock = !Files.isRegularFile(lockFile) ? "missing" : Arrays.equals(Files.readAllBytes(lockFile), Json.pretty(built.lock())) ? "equal" : "differs";
 
         // (2) a generation on it, (3) the reference harness
-        JsonNode rule = scenario.path("rule");
-        ByteArrayOutputStream gout = new ByteArrayOutputStream(), gerr = new ByteArrayOutputStream();
-        int g = GenerationCli.run(new String[] {"new", "--state", state.toString(), "--mappings", o.registry().resolve("mappings").toString(),
-            "--trusted-keys", o.trustedKeys().toString(), "--stream", Json.text(rule, "stream"),
-            "--rule", Json.text(rule, "attributionRuleId") + "@" + Json.text(rule, "attributionRuleVersion"), "--recording", rec.toString()},
-            new PrintStream(gout, true, StandardCharsets.UTF_8), new PrintStream(gerr, true, StandardCharsets.UTF_8),
-            Clock.fixed(Instant.ofEpochMilli(GateSigner.now(o.registry().resolve("mappings"), Json.text(rule, "stream"))), ZoneOffset.UTC), o.root());
-        if (g != 0) throw new IllegalStateException("generation new exit " + g + ": " + gout.toString(StandardCharsets.UTF_8) + gerr.toString(StandardCharsets.UTF_8));
-        GenerationCli.prepareRun(state, 1, rec);
-        String rulesDigest = new FileGenerationStore(state).registered(1).orElseThrow().row().rulesDigest();
+        String rulesDigest = generation(o, scenario, rec, state);
         ReferenceEngine.run(new ReferenceEngine.Options(rec, o.registry(), state, 1, run, ReferenceEngine.DEFAULT_SEED, false, Map.of(), null,
             "forseti recordings check-engine", null, null, null, form));
 
@@ -69,6 +68,42 @@ public final class EngineCheck {
         int exit = c.exit();
         List<Long> cutIds = c.cutIds();
         boolean equal = "equal".equals(lock) && broken == null && exit == 0 && tally.equal() && tally.cuts == cutIds.size() && findings == null;
+        // (5) the event-time replay, when the scenario's replay recording is locked beside it
+        Path replayLock = ReplayRecording.lockOf(o.scenario());
+        ObjectNode replay = null;
+        if (Files.isRegularFile(replayLock)) {
+            replay = Json.object();
+            String replayDigest = generation(o, scenario, rec, replayState);
+            String replayLockState = "equal";
+            try {
+                ReferenceEngine.run(new ReferenceEngine.Options(rec, o.registry(), replayState, 1, replayRun, ReferenceEngine.DEFAULT_SEED, false, Map.of(), null,
+                    "forseti recordings check-engine", ReferenceEngine.EVENT_TIME, replayLock, null, form));
+            } catch (ReferenceEngine.Refused e) {
+                if (!"replay-lock-mismatch".equals(e.code)) throw e;
+                replayLockState = "differs";
+            }
+            replay.put("lock", replayLockState);
+            boolean replayEqual = false;
+            if (replayLockState.equals("equal")) {
+                Path replayRec = replayRun.resolve(ReferenceEngine.REPLAY_DIR);
+                Compared rc = compare(replayRec, replayRun, scenario, o.registry(), o.python(), o.root(), replayOracle, o.out().resolve("replay-oracle.log"), replayDigest);
+                List<String> brackets = ReplayRecording.checkRun(Recording.open(replayRec).manifest(), Json.read(replayRun.resolve("cuts.json")));
+                Json.putSafe(replay, "cuts", Recording.open(replayRec).batches().size());
+                Json.putSafe(replay, "reported", rc.cutIds().size());
+                Json.putSafe(replay, "compared", rc.tally().cuts);
+                Json.putSafe(replay, "rowsCompared", rc.tally().rowsCompared);
+                Json.putSafe(replay, "dispositionsCompared", rc.tally().dispositionsCompared);
+                Json.putSafe(replay, "differences", rc.tally().differences);
+                replay.put("oracle", rc.broken() != null ? rc.broken() : rc.exit() != 0 ? "exit " + rc.exit() : "ok");
+                replay.put("findings", rc.findings());
+                brackets.forEach(replay.putArray("brackets")::add);
+                replay.put("comparison", rc.tally().describe());
+                replayEqual = rc.equal() && brackets.isEmpty();
+                if (!replayEqual) err.println("replay: " + rc.tally().describe() + (brackets.isEmpty() ? "" : " brackets " + brackets));
+            }
+            replay.put("equal", replayEqual);
+            equal = equal && replayEqual;
+        }
         ObjectNode n = Json.object().put("scenario", o.scenario().getParent().getFileName() + "/" + Json.text(scenario, "name")).put("w1Form", form.wire).put("lock", lock);
         Json.putSafe(n, "cuts", built.cuts());
         Json.putSafe(n, "reported", cutIds.size());
@@ -79,10 +114,26 @@ public final class EngineCheck {
         n.put("oracle", broken != null ? broken : exit != 0 ? "exit " + exit : "ok");
         n.put("findings", findings);
         n.put("comparison", tally.describe());
+        if (replay != null) n.set("replay", replay);
         n.put("equal", equal);
         out.println(yggdrasil.forseti.core.canon.Canonical.utf8(yggdrasil.forseti.core.canon.Canonical.bytes(n)));
         if (!equal) err.println(tally.describe());
         return equal ? 0 : 1;
+    }
+
+    /** A generation registered on {@code rec} in a fresh store {@code state} (on the gate's clock of the head) and prepared for its first
+     *  run; returns its rules digest. */
+    private static String generation(Options o, JsonNode scenario, Path rec, Path state) throws IOException {
+        JsonNode rule = scenario.path("rule");
+        ByteArrayOutputStream gout = new ByteArrayOutputStream(), gerr = new ByteArrayOutputStream();
+        int g = GenerationCli.run(new String[] {"new", "--state", state.toString(), "--mappings", o.registry().resolve("mappings").toString(),
+            "--trusted-keys", o.trustedKeys().toString(), "--stream", Json.text(rule, "stream"),
+            "--rule", Json.text(rule, "attributionRuleId") + "@" + Json.text(rule, "attributionRuleVersion"), "--recording", rec.toString()},
+            new PrintStream(gout, true, StandardCharsets.UTF_8), new PrintStream(gerr, true, StandardCharsets.UTF_8),
+            Clock.fixed(Instant.ofEpochMilli(GateSigner.now(o.registry().resolve("mappings"), Json.text(rule, "stream"))), ZoneOffset.UTC), o.root());
+        if (g != 0) throw new IllegalStateException("generation new exit " + g + ": " + gout.toString(StandardCharsets.UTF_8) + gerr.toString(StandardCharsets.UTF_8));
+        GenerationCli.prepareRun(state, 1, rec);
+        return new FileGenerationStore(state).registered(1).orElseThrow().row().rulesDigest();
     }
 
     /** The oracle's cut stream compared with a run's journals at every cut its {@code cuts.json} reports, as the core gate compares a

@@ -7,14 +7,18 @@
       "stream": "line2-shared",
       "release": "line2-rules-shared",
       "plcStream": "line2-shared-plc",
-      "plcRelease": "line2-rules-shared-plc"
+      "plcRelease": "line2-rules-shared-plc",
+      "plcNocheckStream": "line2-shared-plc-nocheck",
+      "plcNocheckRelease": "line2-rules-shared-plc-nocheck"
     },
     "dedicated": {
       "site": "site-071",
       "stream": "line2-dedicated",
       "release": "line2-rules-dedicated",
       "plcStream": "line2-dedicated-plc",
-      "plcRelease": "line2-rules-dedicated-plc"
+      "plcRelease": "line2-rules-dedicated-plc",
+      "plcNocheckStream": "line2-dedicated-plc-nocheck",
+      "plcNocheckRelease": "line2-rules-dedicated-plc-nocheck"
     }
   },
   "registry": "fixtures/live/registry",
@@ -156,6 +160,24 @@
       "synthetic": false
     },
     {
+      "name": "plc-nocheck",
+      "placement": "shared",
+      "file": "scenarios/shared/plc-nocheck.json",
+      "lock": "scenarios/shared/plc-nocheck.lock.json",
+      "source": "fixtures/scenarios/plc-nocheck.json",
+      "kind": "semantic",
+      "synthetic": false
+    },
+    {
+      "name": "plc-held-back",
+      "placement": "shared",
+      "file": "scenarios/shared/plc-held-back.json",
+      "lock": "scenarios/shared/plc-held-back.lock.json",
+      "source": "fixtures/scenarios/plc-held-back.json",
+      "kind": "semantic",
+      "synthetic": false
+    },
+    {
       "name": "stage2",
       "placement": "shared",
       "file": "scenarios/shared/stage2.json",
@@ -214,6 +236,7 @@
       "placement": "shared",
       "file": "scenarios/shared/horizon-planned-late.json",
       "lock": "scenarios/shared/horizon-planned-late.lock.json",
+      "replayLock": "scenarios/shared/horizon-planned-late.replay.lock.json",
       "source": "fixtures/scenarios/horizon-planned-late.json",
       "kind": "semantic",
       "synthetic": true
@@ -327,8 +350,5 @@
       "synthetic": false
     }
   ],
-  "notRebuilt": {
-    "plc-nocheck": "its rule is the plc-stamped rule with crossCheck none (line2-rules-plc-nocheck 1.0.0); no release of that rule is published for the governed placements",
-    "plc-held-back": "its rule is the plc-stamped rule with crossCheck none (line2-rules-plc-nocheck 1.0.0); no release of that rule is published for the governed placements"
-  }
+  "notRebuilt": {}
 }

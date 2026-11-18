@@ -16,15 +16,21 @@ import yggdrasil.forseti.core.Json;
  *  ({@code site-071}), injection 24 on both (spec 681) and the baseline at batch interval x2 and x1/2 on both (item 5 (d)), all in the
  *  Flink W1 form ({@code w1Form: min-over-partitions}, spec 620, 622). A scenario is derived from its step-3 file by renaming the
  *  {@code synthetic-site} hierarchy root to the placement's site in every key and value, pinning the placement's published release
- *  ({@code fixtures/live/registry}) and setting the W1 form; nothing else changes, so the visits, overlays, timing and seeds are the
- *  step-3 scenario's.
+ *  ({@code fixtures/live/registry}: the step-3 release {@code line2-rules}, {@code line2-rules-plc} or {@code line2-rules-plc-nocheck} maps
+ *  to the placement's release of the same rule) and setting the W1 form; nothing else changes, so the visits, overlays, timing and seeds
+ *  are the step-3 scenario's.
  *
  *  <p>The derived files live under {@code engine-fixtures/scenarios/<placement>/}, outside the paths of the core-input key (the core gate
  *  never replays them), each beside its lock in the step-3 lock format ({@link ScenarioBuilder#lockOf}); {@code
  *  engine-fixtures/engine-scenarios.json} lists them with their source and the step-3 scenarios that are not rebuilt and why. The
  *  builder that turns them into recordings stays in the core key. {@link #write} writes every file; {@link #check} compares the
  *  committed scenario files and index with a fresh derivation (the locks are checked by rebuilding, {@code forseti recordings
- *  verify-engine}). */
+ *  check-engine}).
+ *
+ *  <p>Replay locks: a scenario of {@link #REPLAYED} (injection 23's event-time replay, spec 626) also carries the lock of its replay
+ *  recording, {@code <name>.replay.lock.json} ({@link ReplayRecording#lockOf}), a companion of its base lock: {@link #check} requires it
+ *  for exactly those scenarios and checks that it belongs to its base (same scenario and scenario digest, the original's cut count, the
+ *  replay generator, the lock's canonical bytes); {@code check-engine} rematerializes the replay and compares its bytes. */
 public final class EngineScenarios {
     private EngineScenarios() {}
 
@@ -32,10 +38,16 @@ public final class EngineScenarios {
     static final String STEP3_ROOT = "synthetic-site";
     public static final String INDEX = "engine-scenarios.json";
 
-    /** A governed placement: its site id and the published streams of its rules (occupancy-join and plc-stamped). */
-    public record Placement(String name, String site, String stream, String release, String plcStream, String plcRelease) {}
-    public static final Placement SHARED = new Placement("shared", "site-019", "line2-shared", "line2-rules-shared", "line2-shared-plc", "line2-rules-shared-plc");
-    public static final Placement DEDICATED = new Placement("dedicated", "site-071", "line2-dedicated", "line2-rules-dedicated", "line2-dedicated-plc", "line2-rules-dedicated-plc");
+    /** A governed placement: its site id and the published streams of its rules (occupancy-join, plc-stamped with crossCheck occupancy,
+     *  plc-stamped with crossCheck none). */
+    public record Placement(String name, String site, String stream, String release, String plcStream, String plcRelease,
+                            String plcNocheckStream, String plcNocheckRelease) {}
+    public static final Placement SHARED = new Placement("shared", "site-019", "line2-shared", "line2-rules-shared", "line2-shared-plc", "line2-rules-shared-plc",
+        "line2-shared-plc-nocheck", "line2-rules-shared-plc-nocheck");
+    public static final Placement DEDICATED = new Placement("dedicated", "site-071", "line2-dedicated", "line2-rules-dedicated", "line2-dedicated-plc", "line2-rules-dedicated-plc",
+        "line2-dedicated-plc-nocheck", "line2-rules-dedicated-plc-nocheck");
+    /** The step-3 releases, by rule. */
+    static final String STEP3_RELEASE = "line2-rules", STEP3_PLC_RELEASE = "line2-rules-plc", STEP3_PLC_NOCHECK_RELEASE = "line2-rules-plc-nocheck";
     public static final List<Placement> PLACEMENTS = List.of(SHARED, DEDICATED);
 
     /** The step-3 semantic scenarios, in the core gate's order (hand-made, horizon, smoke). */
@@ -44,13 +56,10 @@ public final class EngineScenarios {
         "plc-stamped", "plc-nocheck", "plc-held-back", "stage2", "stage2-early", "cascade",
         "horizon-no-departure", "horizon-reopened", "horizon-correction-beyond", "horizon-planned-late", "plc-horizon-no-end",
         "smoke", "smoke-plc", "smoke-incident");
-    /** Step-3 scenarios not rebuilt, with the reason. */
-    public static final Map<String, String> NOT_REBUILT = new LinkedHashMap<>();
-    static {
-        String noRelease = "its rule is the plc-stamped rule with crossCheck none (line2-rules-plc-nocheck 1.0.0); no release of that rule is published for the governed placements";
-        NOT_REBUILT.put("plc-nocheck", noRelease);
-        NOT_REBUILT.put("plc-held-back", noRelease);
-    }
+    /** Step-3 scenarios not rebuilt, with the reason (none: every step-3 scenario's rule has a release on the governed placements). */
+    public static final Map<String, String> NOT_REBUILT = Collections.unmodifiableMap(new LinkedHashMap<>());
+    /** The scenarios (on {@link #SHARED}) whose event-time replay recording is locked beside them: injection 23 (spec 626). */
+    public static final List<String> REPLAYED = List.of("horizon-planned-late");
     /** The scenarios also built on the dedicated placement. */
     public static final List<String> DEDICATED_TOO = List.of("baseline", "smoke");
 
@@ -63,6 +72,8 @@ public final class EngineScenarios {
     /** One derived scenario: its placement, name, step-3 source and kind. */
     public record Derived(Placement placement, String name, String source, String kind, ObjectNode scenario) {
         public String file() { return placement.name() + "/" + name + ".json"; }
+        /** Whether the scenario's event-time replay recording is locked beside it ({@link #REPLAYED}). */
+        public boolean replayed() { return placement == SHARED && kind.equals("semantic") && REPLAYED.contains(name); }
     }
 
     /** Every engine scenario derived from the step-3 scenarios under {@code fixtures/scenarios}. */
@@ -95,10 +106,13 @@ public final class EngineScenarios {
     static ObjectNode onPlacement(JsonNode step3, Placement p) {
         ObjectNode s = (ObjectNode) rename(step3, p.site());
         ObjectNode rule = (ObjectNode) s.get("rule");
-        boolean plc = Json.text(rule, "releaseId").equals("line2-rules-plc");
-        if (!plc && !Json.text(rule, "releaseId").equals("line2-rules")) throw new IllegalArgumentException("scenario " + Json.text(s, "name") + ": no governed release for " + Json.text(rule, "releaseId"));
-        rule.put("stream", plc ? p.plcStream() : p.stream());
-        rule.put("releaseId", plc ? p.plcRelease() : p.release());
+        String release = Json.text(rule, "releaseId");
+        switch (release) {
+            case STEP3_RELEASE -> { rule.put("stream", p.stream()); rule.put("releaseId", p.release()); }
+            case STEP3_PLC_RELEASE -> { rule.put("stream", p.plcStream()); rule.put("releaseId", p.plcRelease()); }
+            case STEP3_PLC_NOCHECK_RELEASE -> { rule.put("stream", p.plcNocheckStream()); rule.put("releaseId", p.plcNocheckRelease()); }
+            default -> throw new IllegalArgumentException("scenario " + Json.text(s, "name") + ": no governed release for " + release);
+        }
         s.put("w1Form", W1_FORM);
         return s;
     }
@@ -130,12 +144,15 @@ public final class EngineScenarios {
         ObjectNode n = Json.object().put("indexVersion", 1).put("w1Form", W1_FORM);
         ObjectNode ps = n.putObject("placements");
         for (Placement p : PLACEMENTS) ps.putObject(p.name()).put("site", p.site()).put("stream", p.stream()).put("release", p.release())
-            .put("plcStream", p.plcStream()).put("plcRelease", p.plcRelease());
+            .put("plcStream", p.plcStream()).put("plcRelease", p.plcRelease()).put("plcNocheckStream", p.plcNocheckStream()).put("plcNocheckRelease", p.plcNocheckRelease());
         n.put("registry", "fixtures/live/registry").put("trustedKeys", "fixtures/live/trusted-keys.jsonl");
         ArrayNode sc = n.putArray("scenarios");
-        for (Derived d : derived) sc.addObject().put("name", d.name()).put("placement", d.placement().name()).put("file", "scenarios/" + d.file())
-            .put("lock", "scenarios/" + d.placement().name() + "/" + d.name() + ".lock.json").put("source", "fixtures/scenarios/" + d.source() + ".json").put("kind", d.kind())
-            .put("synthetic", d.scenario().path("synthetic").asBoolean(false));
+        for (Derived d : derived) {
+            ObjectNode e = sc.addObject().put("name", d.name()).put("placement", d.placement().name()).put("file", "scenarios/" + d.file())
+                .put("lock", "scenarios/" + d.placement().name() + "/" + d.name() + ".lock.json");
+            if (d.replayed()) e.put("replayLock", "scenarios/" + d.placement().name() + "/" + d.name() + ".replay.lock.json");
+            e.put("source", "fixtures/scenarios/" + d.source() + ".json").put("kind", d.kind()).put("synthetic", d.scenario().path("synthetic").asBoolean(false));
+        }
         ObjectNode nr = n.putObject("notRebuilt");
         NOT_REBUILT.forEach(nr::put);
         return n;
@@ -160,6 +177,10 @@ public final class EngineScenarios {
             if (!Files.isRegularFile(f)) { problems.add("missing " + f); continue; }
             if (!Arrays.equals(bytes(f), Json.pretty(x.scenario()))) problems.add("differs from its derivation: " + f);
             if (!Files.isRegularFile(ScenarioBuilder.lockOf(f))) problems.add("no lock beside " + f);
+            else if (x.replayed()) {
+                want.add(x.placement().name() + "/" + x.name() + REPLAY_LOCK_SUFFIX);
+                problems.addAll(replayCompanion(f));
+            }
         }
         for (Placement p : PLACEMENTS) {
             Path dir = out.resolve("scenarios").resolve(p.name());
@@ -167,6 +188,11 @@ public final class EngineScenarios {
             try (var s = Files.list(dir)) {
                 for (Path f : s.toList()) {
                     String n = f.getFileName().toString();
+                    if (n.endsWith(REPLAY_LOCK_SUFFIX)) {
+                        // a replay lock is a companion of a base lock of REPLAYED; any other is refused
+                        if (!want.contains(p.name() + "/" + n)) problems.add("not the replay lock of an engine scenario of REPLAYED: " + f);
+                        continue;
+                    }
                     String scen = n.endsWith(".lock.json") ? n.substring(0, n.length() - ".lock.json".length()) + ".json" : n;
                     if (!want.contains(p.name() + "/" + scen)) problems.add("not an engine scenario: " + f);
                 }
@@ -174,6 +200,30 @@ public final class EngineScenarios {
         }
         Path idx = out.resolve(INDEX);
         if (!Files.isRegularFile(idx) || !Arrays.equals(bytes(idx), Json.pretty(index(d)))) problems.add("differs from its derivation: " + idx);
+        return problems;
+    }
+
+    static final String REPLAY_LOCK_SUFFIX = ".replay.lock.json";
+
+    /** The replay-companion rule: the replay lock beside {@code scenario} exists and belongs to its base lock, the same scenario name and
+     *  scenario digest, the original's cut count (a replay keeps the original's cut ids), the replay generator, a non-empty file table,
+     *  and the lock's canonical bytes. Its file digests are checked by rematerializing the replay ({@code check-engine}). */
+    static List<String> replayCompanion(Path scenario) {
+        List<String> problems = new ArrayList<>();
+        Path base = ScenarioBuilder.lockOf(scenario), replay = ReplayRecording.lockOf(scenario);
+        if (!Files.isRegularFile(replay)) { problems.add("no replay lock beside " + scenario); return problems; }
+        byte[] bytes = bytes(replay);
+        JsonNode r, b = Json.read(bytes(base));
+        try { r = Json.read(bytes); } catch (RuntimeException e) { problems.add("not a lock: " + replay + ": " + e.getMessage()); return problems; }
+        if (!r.isObject() || !Arrays.equals(bytes, Json.pretty(r))) { problems.add("not in the lock's canonical form: " + replay); return problems; }
+        if (r.path("lockVersion").asInt(-1) != b.path("lockVersion").asInt(-2)) problems.add("lockVersion differs from its base lock: " + replay);
+        for (String field : List.of("scenario", "scenarioSha256"))
+            if (!r.path(field).isTextual() || !r.get(field).equals(b.get(field))) problems.add(field + " differs from its base lock " + base.getFileName() + ": " + replay);
+        if (!r.path("counts").path("cuts").isIntegralNumber() || r.path("counts").path("cuts").longValue() != b.path("counts").path("cuts").longValue())
+            problems.add("counts.cuts differs from its base lock " + base.getFileName() + ": " + replay);
+        if (!ReplayRecording.GENERATOR.equals(r.path("generator").textValue())) problems.add("generator is not " + ReplayRecording.GENERATOR + ": " + replay);
+        if (!r.path("outOfOrdernessMs").isIntegralNumber()) problems.add("no outOfOrdernessMs: " + replay);
+        if (!r.path("files").isObject() || r.path("files").isEmpty()) problems.add("no files: " + replay);
         return problems;
     }
 
