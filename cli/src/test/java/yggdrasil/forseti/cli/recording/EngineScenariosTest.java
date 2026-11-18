@@ -14,7 +14,7 @@ import yggdrasil.forseti.core.Json;
 
 /** The engine scenarios (step-6 plan D11) and the builder's W1-form parameter (spec 622), the injection-24 overlay (spec 681) and the
  *  tail rule (spec 628). The committed scenario files must equal their derivation; the two smoke recordings are rebuilt to their locks
- *  (every other lock is checked by {@code forseti recordings check-engine}). */
+ *  (every other lock is checked by {@code forseti recordings check-engine}); a replay lock is a validated companion of its base lock. */
 class EngineScenariosTest {
     static final Path ROOT = Path.of("..").toAbsolutePath().normalize();
     static final Path FIXTURES = ROOT.resolve("fixtures"), STEP3 = FIXTURES.resolve("scenarios"), ENGINE = ROOT.resolve("engine-fixtures");
@@ -29,6 +29,77 @@ class EngineScenariosTest {
         assertEquals(EngineScenarios.STEP3.size() - EngineScenarios.NOT_REBUILT.size() + 3, shared, "every rebuilt step-3 scenario, injection 24 and the two speeds");
         assertEquals(EngineScenarios.DEDICATED_TOO.size() + 3, d.size() - shared);
     }
+
+    @Test void everyStep3ScenarioIsRebuiltOnTheSharedPlacementUnderItsRulesRelease() {
+        assertEquals(Map.of(), EngineScenarios.NOT_REBUILT);
+        Map<String, String> releases = new TreeMap<>();
+        for (EngineScenarios.Derived x : EngineScenarios.derive(STEP3))
+            if (x.placement() == EngineScenarios.SHARED && x.kind().equals("semantic")) releases.put(x.name(), x.scenario().path("rule").path("releaseId").asText());
+        assertEquals(new TreeSet<>(EngineScenarios.STEP3), releases.keySet());
+        // injection 11b: the plc-stamped rule with crossCheck none, on the shared placement's published release of that rule
+        for (String n : List.of("plc-nocheck", "plc-held-back")) {
+            JsonNode rule = EngineScenarios.derive(STEP3).stream().filter(x -> x.placement() == EngineScenarios.SHARED && x.name().equals(n)).findFirst().orElseThrow().scenario().get("rule");
+            assertEquals(EngineScenarios.SHARED.plcNocheckStream(), rule.path("stream").asText(), n);
+            assertEquals(EngineScenarios.SHARED.plcNocheckRelease(), rule.path("releaseId").asText(), n);
+            assertTrue(Files.isDirectory(LIVE.resolve("mappings/releases").resolve(rule.path("releaseId").asText()).resolve(rule.path("version").asText())), n + ": the release is published");
+        }
+        assertEquals("line2-rules-shared-plc", releases.get("plc-stamped"));
+        assertEquals("line2-rules-shared", releases.get("baseline"));
+    }
+
+    /** A copy of the committed engine fixtures, to break. */
+    Path engineCopy() throws IOException {
+        Path out = tmp.resolve("engine-fixtures");
+        try (var s = Files.walk(ENGINE)) {
+            for (Path f : s.toList()) {
+                Path t = out.resolve(ENGINE.relativize(f).toString());
+                if (Files.isDirectory(f)) Files.createDirectories(t); else Files.copy(f, t);
+            }
+        }
+        return out;
+    }
+
+    @Test void aReplayLockIsAValidatedCompanionOfItsBaseLock() throws IOException {
+        Path out = engineCopy();
+        assertEquals(List.of(), EngineScenarios.check(STEP3, out));
+        Path shared = out.resolve("scenarios/shared"), replay = shared.resolve("horizon-planned-late.replay.lock.json");
+        byte[] good = Files.readAllBytes(replay);
+        // missing
+        Files.delete(replay);
+        assertTrue(EngineScenarios.check(STEP3, out).stream().anyMatch(p -> p.startsWith("no replay lock beside")), "a missing replay lock");
+        // beside a scenario that is not replayed
+        Files.write(replay, good);
+        Path stray = shared.resolve("baseline.replay.lock.json");
+        Files.write(stray, good);
+        assertTrue(EngineScenarios.check(STEP3, out).stream().anyMatch(p -> p.startsWith("not the replay lock of an engine scenario")), "a stray replay lock");
+        Files.delete(stray);
+        // of another base
+        ObjectNode lock = (ObjectNode) Json.read(good);
+        lock.put("scenarioSha256", "00".repeat(32));
+        Files.write(replay, Json.pretty(lock));
+        assertTrue(EngineScenarios.check(STEP3, out).stream().anyMatch(p -> p.startsWith("scenarioSha256 differs from its base lock")), "another scenario digest");
+        lock = (ObjectNode) Json.read(good);
+        Json.putSafe((ObjectNode) lock.get("counts"), "cuts", lock.path("counts").path("cuts").longValue() + 1);
+        Files.write(replay, Json.pretty(lock));
+        assertTrue(EngineScenarios.check(STEP3, out).stream().anyMatch(p -> p.startsWith("counts.cuts differs")), "another cut count");
+        lock = (ObjectNode) Json.read(good);
+        lock.put("generator", "forseti recordings synth 0.1.0");
+        Files.write(replay, Json.pretty(lock));
+        assertTrue(EngineScenarios.check(STEP3, out).stream().anyMatch(p -> p.startsWith("generator is not")), "a base lock copied as the replay lock");
+        // not in the lock's canonical bytes
+        Files.write(replay, Canonical(good));
+        assertTrue(EngineScenarios.check(STEP3, out).stream().anyMatch(p -> p.startsWith("not in the lock's canonical form")), "other bytes of the same lock");
+        Files.write(replay, good);
+        assertEquals(List.of(), EngineScenarios.check(STEP3, out));
+        // the index names it
+        JsonNode entry = null;
+        for (JsonNode e : Json.read(ENGINE.resolve(EngineScenarios.INDEX)).path("scenarios"))
+            if (e.path("placement").asText().equals("shared") && e.path("name").asText().equals("horizon-planned-late")) entry = e;
+        assertEquals("scenarios/shared/horizon-planned-late.replay.lock.json", entry.path("replayLock").asText());
+    }
+
+    /** The same JSON on one line. */
+    static byte[] Canonical(byte[] pretty) { return yggdrasil.forseti.core.canon.Canonical.bytes(Json.read(pretty)); }
 
     @Test void aDerivedScenarioIsItsStep3ScenarioOnThePlacement() {
         for (EngineScenarios.Derived x : EngineScenarios.derive(STEP3)) {
