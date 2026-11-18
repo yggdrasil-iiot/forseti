@@ -196,10 +196,12 @@ final class FlinkRun {
       Files.createDirectories(out);
       Map<String, Long> dumped;
       ObjectNode dumpConsumer = Json.object();
+      com.fasterxml.jackson.databind.node.ArrayNode dumpStats;
       try (KafkaJournalDump dump = new KafkaJournalDump(bootstrap, plan, g.generation())) {
         evidence.client("journal-dump", dump.config());
         new TreeMap<>(dump.config()).forEach((k, v) -> dumpConsumer.put(k.toString(), v.toString()));
         dumped = dump.dump(out, writer.offsets());
+        dumpStats = dump.stats();
       }
       ObjectNode jobs = Json.object();
       if (Files.isDirectory(jobEvidence)) try (Stream<Path> s = Files.list(jobEvidence)) {
@@ -220,6 +222,7 @@ final class FlinkRun {
       RunRecord.write(out, JobSettingsRecord.insert(record, JobSettingsRecord.of(observed, jobs, dumpConsumer)));
       ObjectNode flinkEvidence = Json.object();
       flinkEvidence.set("clusters", clusterRecords);
+      flinkEvidence.set("journalDump", dumpStats);
       flinkEvidence.set("memory", memoryOut);
       flinkEvidence.set("checkpoints", checkpoints);
       flinkEvidence.set("observed", observed);
@@ -242,6 +245,9 @@ final class FlinkRun {
       Json.putSafe(summary, "wallMs", wall);
       Json.putSafe(summary, "firstBatchAfterMs", firstBatchAfterMs);
       Json.putSafe(summary, "dumpedRecords", dumped.values().stream().mapToLong(Long::longValue).sum());
+      Json.putSafe(summary, "dumpMs", dumpStats.findValues("elapsedMs").stream().mapToLong(JsonNode::asLong).sum());
+      ObjectNode starts = summary.putObject("clusterStarts");
+      clusterRecords.fields().forEachRemaining(e -> Json.putSafe(starts, e.getKey(), e.getValue().path("starts").asLong()));
       summary.set("memory", memoryOut);
       summary.set("checkpoints", checkpoints);
       summary.set("segments", segmentSizes(jobs));
