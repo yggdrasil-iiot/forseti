@@ -93,6 +93,8 @@ final class Summaries {
             Long want = r.manifest == null ? null : Injections.heldBackLateness(r.manifest, a.outOfOrdernessMs());
             if (want == null) o.putNull("heldBackWantMs"); else Json.putSafe(o, "heldBackWantMs", want);
         }
+        if (r.replay != null) o.set("replay", r.replay.deepCopy());
+        if (r.controlEvidence != null) o.set("controlStore", r.controlEvidence.deepCopy());
         boolean complete = r.failure == null && r.tally != null && r.fold != null && r.outcome != null;
         if (r.synthetic && complete) {
             try { o.set("afterHorizon", afterHorizon(r)); }
@@ -203,6 +205,13 @@ final class Summaries {
     }
 
     // --- what the aggregate assertions read ----------------------------------------------------------------------------------
+
+    /** Every summary of {@code m} named {@code name} (one per execution: an aggregate of a replay gate keys them by shard and run). */
+    static List<JsonNode> named(Map<String, JsonNode> m, String name) {
+        List<JsonNode> l = new ArrayList<>();
+        for (JsonNode r : m.values()) if (name.equals(r.path("name").asText(null))) l.add(r);
+        return l;
+    }
 
     static boolean failed(JsonNode run) { return !run.path("failure").isNull() && !run.path("failure").isMissingNode(); }
     static long findingCount(JsonNode run, String check) { return run.path("findings").path(check).path("count").asLong(0); }

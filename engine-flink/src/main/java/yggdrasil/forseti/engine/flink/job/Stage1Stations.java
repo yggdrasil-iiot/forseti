@@ -4,8 +4,9 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import java.util.*;
-import org.apache.flink.api.common.state.ValueState;
-import org.apache.flink.api.common.state.ValueStateDescriptor;
+import org.apache.flink.api.common.state.MapState;
+import org.apache.flink.api.common.state.MapStateDescriptor;
+import org.apache.flink.api.common.typeinfo.BasicTypeInfo;
 import org.apache.flink.api.common.typeinfo.PrimitiveArrayTypeInfo;
 import org.apache.flink.runtime.state.KeyGroupRange;
 import org.apache.flink.runtime.state.KeyGroupRangeAssignment;
@@ -40,6 +41,7 @@ import yggdrasil.forseti.core.stage1.Events;
 import yggdrasil.forseti.core.stage1.QuarantineRecord;
 import yggdrasil.forseti.core.stage1.Stage1;
 import yggdrasil.forseti.core.stage1.Stage1State;
+import yggdrasil.forseti.core.segment.Segments;
 
 /**
  * The stage-1 station writers (spec 412-418, plan D3-D5): a custom two-input keyed operator, keyed by station, with routed telemetry
@@ -58,9 +60,13 @@ import yggdrasil.forseti.core.stage1.Stage1State;
  * one Flink event-time timer; when it fires it only marks the deadline held. At a cut close the due deadlines are drained in the index's
  * order, so the firing order of Flink's timer queue never decides anything; a held mark is cleared once its deadline left the index.
  *
- * <p>State (plan D5). The writers of a subtask live in memory; at every checkpoint each changed station is written to keyed
- * {@link ValueState} (RocksDB) as versioned canonical bytes ({@value #STATE_VERSION}: the assembler with its held inputs, the core
- * state, the registered and the held deadlines). {@code initializeState} reads {@code forseti.recovery-control} up to its end offset H
+ * <p>State (plan D5, the segmented state of the core). The writers of a subtask live in memory; each station's state is a keyed
+ * {@link MapState} (RocksDB) of segment id to canonical bytes: {@value #ENGINE} (the engine head: the registered and the held deadlines
+ * and the delivery counter of the {@code processing-time} control, {@code stationStateVersion} {@value #STATE_VERSION}),
+ * {@value CutAssembler#SEGMENT} (the assembler with its held inputs, written when {@link CutAssembler#drainChanged} says it changed) and
+ * {@code state/<id>} for every segment of the core {@link Stage1State}; a checkpoint writes only what {@link Stage1State#drainChanged}
+ * and the assembler drained since the previous one, so no checkpoint serializes a whole station. A restore rebuilds the station with
+ * {@link Stage1State#fromSegments}. {@code initializeState} reads {@code forseti.recovery-control} up to its end offset H
  * with {@code read_committed}, fixes the epoch E of the latest declaration of the generation, and gives every writer its
  * {@code initEvidence} (the declaration's offset, H and the Flink restore evidence, {@link RestoreEvidence}); a restored or re-attempted
  * writer is reinitialized ({@link CutAssembler#reinitialize}). Nothing is committed from {@code snapshotState}: the transactional sink
@@ -69,17 +75,23 @@ import yggdrasil.forseti.core.stage1.Stage1State;
 public final class Stage1Stations extends AbstractStreamOperator<Out>
     implements TwoInputStreamOperator<Msg, Msg, Out>, Triggerable<String, VoidNamespace> {
   private static final long serialVersionUID = 1L;
-  public static final int STATE_VERSION = 1;
-  public static final String STATE_NAME = "forseti-stage1-station", TIMERS = "forseti-stage1-deadlines";
+  public static final int STATE_VERSION = 2;
+  public static final String STATE_NAME = "forseti-stage1-station-segments", TIMERS = "forseti-stage1-deadlines";
+  /** The engine head segment of a station and the prefix of its core state segments. */
+  public static final String ENGINE = "engine", STATE_PREFIX = "state/";
   /** {@code W1} of a station before any telemetry: the bottom of the JCS integer domain (the reference harness's bound). */
   public static final long NO_TELEMETRY = -Json.MAX_SAFE;
 
   private final JobSettings settings;
   private transient JobSettings.Runtime rt;
-  private transient ValueState<byte[]> stored;
+  private transient MapState<String, byte[]> stored;
   private transient InternalTimerService<VoidNamespace> timers;
   private transient Map<String, Station> stations;
-  private transient long firedTimers, heldDrained, closedCuts;
+  private transient long firedTimers, heldDrained, closedCuts, watermarkCloses, timerInvariantCloses, timerInvariantViolations, timerRegistrations, deadlinesSeen, headBytesMax, snapshots, segmentsWritten, segmentBytes, segmentBytesMax,
+      segmentsRemoved, fullDrains;
+  private transient ArrayNode timerInvariantExamples;
+  /** Per cut closed by this subtask: {station, cutId, onlineVisits} (the cut log's operator evidence, appended at each close). */
+  private transient ArrayNode cutEvidence;
   private transient ObjectNode initRecord;
 
   public Stage1Stations(JobSettings settings) { this.settings = settings; }
@@ -91,7 +103,11 @@ public final class Stage1Stations extends AbstractStreamOperator<Out>
     CutAssembler<Inputs.InputRecord> cuts;
     Stage1State state;
     final TreeSet<Long> timerAt = new TreeSet<>(), held = new TreeSet<>();
-    boolean dirty = true;
+    /** Inputs delivered to this station so far: the delivery sequence number of the {@code processing-time} control, kept in the
+     *  engine head segment so it is checkpointed with the station. */
+    long delivered;
+    /** Whether the engine head changed since the last checkpoint. */
+    boolean headDirty = true;
 
     Station(String name) {
       this.name = name;
@@ -101,26 +117,32 @@ public final class Stage1Stations extends AbstractStreamOperator<Out>
       if (state.partition() != partition) throw new IllegalStateException("station " + name + " partition " + state.partition() + " != routing " + partition);
     }
 
-    Station(JsonNode n) {
-      if (n.path("stationStateVersion").intValue() != STATE_VERSION) throw new IllegalArgumentException("stage-1 station state version " + n.path("stationStateVersion"));
-      this.name = Json.text(n, "station");
+    /** The station a stored segment map holds. */
+    Station(String name, Map<String, byte[]> stored) {
+      this.name = name;
       this.partition = rt.partitionOf(name);
-      this.cuts = CutAssembler.fromJson(n.get("assembler"), InputCodec::decode);
+      JsonNode head = Segments.read(ENGINE, Objects.requireNonNull(stored.get(ENGINE), "station " + name + " without an engine head"));
+      if (head.path("stationStateVersion").intValue() != STATE_VERSION) throw new IllegalArgumentException("stage-1 station state version " + head.path("stationStateVersion"));
+      if (!name.equals(head.path("station").asText())) throw new IllegalStateException("station " + name + " stored as " + head.path("station"));
+      head.path("timerAt").forEach(x -> timerAt.add(x.longValue()));
+      head.path("held").forEach(x -> held.add(x.longValue()));
+      this.delivered = head.path("delivered").longValue();
+      this.cuts = CutAssembler.fromSegment(Objects.requireNonNull(stored.get(CutAssembler.SEGMENT), "station " + name + " without an assembler"), InputCodec::decode);
       if (!cuts.required().equals(rt.required.get(name))) throw new IllegalStateException("station " + name + ": restored required barriers " + cuts.required() + " are not the routing's");
-      this.state = Stage1State.fromJson(n.get("state"));
-      n.path("timerAt").forEach(x -> timerAt.add(x.longValue()));
-      n.path("held").forEach(x -> held.add(x.longValue()));
+      Map<String, byte[]> core = new TreeMap<>();
+      stored.forEach((k, v) -> { if (k.startsWith(STATE_PREFIX)) core.put(k.substring(STATE_PREFIX.length()), v); });
+      this.state = Stage1State.fromSegments(core);
+      this.headDirty = false;
     }
 
-    byte[] bytes() {
-      ObjectNode n = Json.object().put("stationStateVersion", STATE_VERSION).put("station", name);
-      n.set("assembler", cuts.toJson(InputCodec::encode));
-      n.set("state", state.toJson());
+    byte[] head() {
+      ObjectNode n = Segments.header(ENGINE).put("stationStateVersion", STATE_VERSION).put("station", name);
       ArrayNode t = n.putArray("timerAt");
       timerAt.forEach(t::add);
       ArrayNode h = n.putArray("held");
       held.forEach(h::add);
-      return Canonical.bytes(n);
+      Json.putSafe(n, "delivered", delivered);
+      return Segments.bytes(n);
     }
   }
 
@@ -129,7 +151,9 @@ public final class Stage1Stations extends AbstractStreamOperator<Out>
   @Override public void initializeState(StateInitializationContext context) throws Exception {
     super.initializeState(context);
     rt = settings.runtime();
-    stored = context.getKeyedStateStore().getState(new ValueStateDescriptor<>(STATE_NAME, PrimitiveArrayTypeInfo.BYTE_PRIMITIVE_ARRAY_TYPE_INFO));
+    stored = context.getKeyedStateStore().getMapState(new MapStateDescriptor<>(STATE_NAME, BasicTypeInfo.STRING_TYPE_INFO, PrimitiveArrayTypeInfo.BYTE_PRIMITIVE_ARRAY_TYPE_INFO));
+    cutEvidence = Json.JSON.createArrayNode();
+    timerInvariantExamples = Json.JSON.createArrayNode();
     int attempt = getContainingTask().getEnvironment().getTaskInfo().getAttemptNumber();
     int subtask = getContainingTask().getEnvironment().getTaskInfo().getIndexOfThisSubtask();
     int parallelism = getContainingTask().getEnvironment().getTaskInfo().getNumberOfParallelSubtasks();
@@ -152,8 +176,9 @@ public final class Stage1Stations extends AbstractStreamOperator<Out>
       }
       for (String k : keys) {
         setCurrentKey(k);
-        byte[] b = stored.value();
-        if (b != null) { Station st = new Station(Json.read(b)); stations.put(st.name, st); }
+        Map<String, byte[]> segs = new TreeMap<>();
+        for (Map.Entry<String, byte[]> e : stored.entries()) segs.put(e.getKey(), e.getValue());
+        if (!segs.isEmpty()) stations.put(k, new Station(k, segs));
       }
     }
     ObjectNode keyGroups = Json.object();
@@ -166,16 +191,16 @@ public final class Stage1Stations extends AbstractStreamOperator<Out>
     for (Station st : stations.values()) {
       if (restore.reinitialized()) st.cuts.reinitialize(declaration);
       st.state.initialize(init);
-      st.dirty = true;
     }
     initRecord = Json.object().put("operator", "stage1-stations").put("subtask", subtask).put("parallelism", parallelism).put("maxParallelism", maxParallelism)
-        .put("attemptNumber", attempt);
+        .put("attemptNumber", attempt).put("negativeControl", settings.negativeControl());
     initRecord.putArray("keyGroupRange").add(range.getStartKeyGroup()).add(range.getEndKeyGroup());
     initRecord.set("stationKeyGroups", keyGroups);
     ArrayNode owned = initRecord.putArray("stations");
     stations.keySet().forEach(owned::add);
     initRecord.put("restore", restore.encode());
     initRecord.set("initEvidence", Writers.initJson(init));
+    initRecord.set("recoveryControlReader", Writers.controlReader(settings));
     Json.putSafe(initRecord, "epoch", declaration.targetEpoch());
     writeEvidence(subtask);
   }
@@ -196,14 +221,15 @@ public final class Stage1Stations extends AbstractStreamOperator<Out>
     if (st == null) throw new IllegalStateException("station " + m.station + " is not a writer of this subtask: key groups " + initRecord.get("keyGroupRange"));
     Progress.Origin origin = new Progress.Origin(m.topic, m.partition);
     if (m.kind == Msg.RECORD) {
-      st.cuts.input(origin, InputParser.read(new Inputs.Origin(m.topic, m.partition, m.offset), m.keyText(), m.value).record());
+      Inputs.InputRecord r = InputParser.read(new Inputs.Origin(m.topic, m.partition, m.offset), m.keyText(), m.value).record();
+      if (rt.controls.processingTime()) { r = Stage1.processingTime(r, ++st.delivered); st.headDirty = true; }   // the processing-time control, before decide
+      st.cuts.input(origin, r);
     } else if (m.kind == Msg.BARRIER) {
       CutAssembler.Barrier b = CutBarrierRecord.fromJson(Json.read(m.value)).barrier();
       if (!b.origin().equals(origin)) throw new IllegalStateException("barrier-origin: " + b.origin() + " delivered as " + origin);
       st.cuts.barrier(b, Writers.control(settings));
     } else throw new IllegalStateException("stage-1 station: element kind " + m.kind);
-    st.dirty = true;
-    close(st);
+    close(st, false);
   }
 
   /** Input 1 (telemetry): the watermark drives the timer service directly, bypassing the two-input combination. */
@@ -211,7 +237,7 @@ public final class Stage1Stations extends AbstractStreamOperator<Out>
     super.processWatermark(mark);
     for (Station st : stations.values()) {
       setCurrentKey(st.name);
-      close(st);
+      close(st, true);
     }
   }
 
@@ -229,8 +255,12 @@ public final class Stage1Stations extends AbstractStreamOperator<Out>
     if (st == null) throw new IllegalStateException("a timer of station " + timer.getKey() + " outside this subtask");
     if (st.timerAt.remove(timer.getTimestamp())) {
       st.held.add(timer.getTimestamp());
-      st.dirty = true;
+      st.headDirty = true;
       firedTimers++;
+    } else {
+      // a Flink timer the station did not register (or had deleted): Flink's registrations and the station's disagree
+      timerInvariantViolations++;
+      if (timerInvariantExamples.size() < 10) timerInvariantExamples.addObject().put("station", st.name).put("problem", "Flink fired an unregistered timer " + timer.getTimestamp());
     }
   }
 
@@ -246,12 +276,22 @@ public final class Stage1Stations extends AbstractStreamOperator<Out>
     return w < NO_TELEMETRY ? NO_TELEMETRY : w;
   }
 
-  private void close(Station st) {
+  /** Closes what the assembler closes now. The timer invariant (reviewer decision 4 of 2026-11-18) is checked at every close: the
+   *  close is evaluated at the operator watermark W1, and Flink fires every registered timer at or below a watermark when it processes
+   *  it, so every deadline registered before this close and at or below W1 must be held (its timer fired), and the registrations and
+   *  held marks must agree with the authoritative deadline index ({@link #reconcile}) and every timer Flink fires must be one the station
+   *  registered ({@link #onEventTime}); the evidence
+   *  counts the closes checked, those a watermark of input 1 triggered ({@code byWatermark}) and every violation. */
+  private void close(Station st, boolean byWatermark) {
     while (true) {
       long w = nativeTime();
       Optional<CutAssembler.Closed<Inputs.InputRecord>> c = st.cuts.poll(w);
       if (c.isEmpty()) return;
       CutAssembler.Closed<Inputs.InputRecord> closed = c.get();
+      if (byWatermark) watermarkCloses++;
+      timerInvariantCloses++;
+      for (Long d : st.timerAt.headSet(w, true)) violation(st, closed.cutId(), "registered deadline " + d + " at or below W1 " + w + " not held");
+      reconcile(st, closed.cutId(), w);
       Long admissionW = closed.admissionW();
       if (!Objects.equals(admissionW, st.state.admissionW()))
         throw new IllegalStateException("station " + st.name + ": the assembler's admissionW " + admissionW + " differs from the state's " + st.state.admissionW());
@@ -269,9 +309,13 @@ public final class Stage1Stations extends AbstractStreamOperator<Out>
       List<JsonNode> refs = new ArrayList<>();
       for (Progress.BarrierRef b : closed.barrierRefs()) refs.add(b.toJson());
       apply(st, new Events.CutClose(closed.cutId(), w, refs, closed.restartEpoch(), closed.recoveryRef(), closed.mergedCutIds()), w, raw);
-      for (Object o : raw) emit(st, o instanceof Row row ? Stage1.stamp(row, rt.pins, w) : o);
+      for (Object o : raw) emit(st, o instanceof Row row ? Stage1.stamp(row, rt.stamped, w) : o);
       syncTimers(st);
-      st.dirty = true;
+      reconcile(st, closed.cutId(), w);
+      ObjectNode ce = Json.object().put("station", st.name);
+      Json.putSafe(ce, "cutId", closed.cutId());
+      Json.putSafe(ce, "onlineVisits", st.state.onlineVisits());
+      cutEvidence.add(ce);
       closedCuts++;
     }
   }
@@ -282,13 +326,38 @@ public final class Stage1Stations extends AbstractStreamOperator<Out>
     out.addAll(res.outputs());
   }
 
+  private void violation(Station st, long cutId, String what) {
+    timerInvariantViolations++;
+    if (timerInvariantExamples.size() < 10) timerInvariantExamples.addObject().put("station", st.name).put("cutId", cutId).put("problem", what);
+  }
+
+  /** The registrations against the authoritative deadline index and against Flink's timer queue: every distinct deadline of the
+   *  station's index has exactly one native registration or one held mark (never both), no registration or held mark outside the index,
+   *  every held mark at or below the watermark {@code w} (its timer fired). That Flink itself holds exactly these registrations is
+   *  checked where Flink reports a timer: every timer it fires must be a registration of this station ({@link #onEventTime}); its
+   *  RocksDB timer queue offers no complete enumeration to compare with. */
+  private void reconcile(Station st, long cutId, long w) {
+    TreeSet<Long> index = new TreeSet<>();
+    for (DeadlineIndex.Deadline d : st.state.deadlines().all()) index.add(d.deadline());
+    deadlinesSeen = Math.max(deadlinesSeen, index.size());
+    for (Long d : index) {
+      boolean reg = st.timerAt.contains(d), held = st.held.contains(d);
+      if (reg && held) violation(st, cutId, "deadline " + d + " both registered and held");
+    }
+    for (Long d : st.timerAt) if (!index.contains(d)) violation(st, cutId, "registration " + d + " outside the index");
+    for (Long d : st.held) {
+      if (!index.contains(d)) violation(st, cutId, "held mark " + d + " outside the index");
+      if (d > w) violation(st, cutId, "held mark " + d + " above the watermark " + w);
+    }
+  }
+
   /** One Flink event-time timer per distinct deadline of the index that has not fired yet; timers of deadlines that left it removed. */
   private void syncTimers(Station st) {
     TreeSet<Long> current = new TreeSet<>();
     for (DeadlineIndex.Deadline d : st.state.deadlines().all()) current.add(d.deadline());
-    st.held.retainAll(current);
-    for (Long d : new ArrayList<>(st.timerAt)) if (!current.contains(d)) { timers.deleteEventTimeTimer(VoidNamespace.INSTANCE, d); st.timerAt.remove(d); }
-    for (Long d : current) if (!st.held.contains(d) && st.timerAt.add(d)) timers.registerEventTimeTimer(VoidNamespace.INSTANCE, d);
+    if (st.held.retainAll(current)) st.headDirty = true;
+    for (Long d : new ArrayList<>(st.timerAt)) if (!current.contains(d)) { timers.deleteEventTimeTimer(VoidNamespace.INSTANCE, d); st.timerAt.remove(d); st.headDirty = true; }
+    for (Long d : current) if (!st.held.contains(d) && st.timerAt.add(d)) { timers.registerEventTimeTimer(VoidNamespace.INSTANCE, d); timerRegistrations++; st.headDirty = true; }
   }
 
   private void emit(Station st, Object x) {
@@ -309,13 +378,41 @@ public final class Stage1Stations extends AbstractStreamOperator<Out>
 
   @Override public void snapshotState(StateSnapshotContext context) throws Exception {
     super.snapshotState(context);
+    snapshots++;
     for (Station st : stations.values()) {
-      if (!st.dirty) continue;
       setCurrentKey(st.name);
-      stored.update(st.bytes());
-      st.dirty = false;
+      Segments.Drain d = st.state.drainChanged();
+      if (d.full()) {
+        // the first drain of a state not built from segments replaces whatever the store held for the station
+        List<String> old = new ArrayList<>();
+        for (String k : stored.keys()) if (k.startsWith(STATE_PREFIX)) old.add(k);
+        for (String k : old) stored.remove(k);
+        fullDrains++;
+      }
+      for (Map.Entry<String, byte[]> e : d.written().entrySet()) put(STATE_PREFIX + e.getKey(), e.getValue());
+      for (String id : d.removed()) { stored.remove(STATE_PREFIX + id); segmentsRemoved++; }
+      if (st.cuts.drainChanged()) put(CutAssembler.SEGMENT, st.cuts.segment(InputCodec::encode));
+      if (st.headDirty) { byte[] h = st.head(); headBytesMax = Math.max(headBytesMax, h.length); put(ENGINE, h); st.headDirty = false; }
     }
     writeEvidence(getContainingTask().getEnvironment().getTaskInfo().getIndexOfThisSubtask());
+  }
+
+  private void put(String id, byte[] b) throws Exception {
+    stored.put(id, b);
+    segmentsWritten++;
+    segmentBytes += b.length;
+    segmentBytesMax = Math.max(segmentBytesMax, b.length);
+  }
+
+  /** A station of this subtask as the restore test compares it: the core state, the assembler and the engine head (package-private). */
+  ObjectNode inspect(String station) {
+    Station st = stations.get(station);
+    if (st == null) return null;
+    ObjectNode n = Json.object();
+    n.set("state", st.state.toJson());
+    n.set("assembler", st.cuts.toJson(InputCodec::encode));
+    n.set("head", Segments.read(ENGINE, st.head()));
+    return n;
   }
 
   private void writeEvidence(int subtask) {
@@ -323,6 +420,21 @@ public final class Stage1Stations extends AbstractStreamOperator<Out>
     Json.putSafe(n, "closedCuts", closedCuts);
     Json.putSafe(n, "firedTimers", firedTimers);
     Json.putSafe(n, "heldDeadlinesDrained", heldDrained);
+    Json.putSafe(n, "watermarkCloses", watermarkCloses);
+    Json.putSafe(n, "timerInvariantCloses", timerInvariantCloses);
+    Json.putSafe(n, "timerRegistrations", timerRegistrations);
+    Json.putSafe(n, "deadlinesSeen", deadlinesSeen);
+    Json.putSafe(n, "timerInvariantViolations", timerInvariantViolations);
+    n.set("timerInvariantExamples", timerInvariantExamples);
+    ObjectNode seg = n.putObject("segments");
+    Json.putSafe(seg, "snapshots", snapshots);
+    Json.putSafe(seg, "written", segmentsWritten);
+    Json.putSafe(seg, "writtenBytes", segmentBytes);
+    Json.putSafe(seg, "largestBytes", segmentBytesMax);
+    Json.putSafe(seg, "largestHeadBytes", headBytesMax);
+    Json.putSafe(seg, "removed", segmentsRemoved);
+    Json.putSafe(seg, "fullDrains", fullDrains);
+    n.set("cuts", cutEvidence);
     Writers.evidence(settings, "stage1-stations-" + subtask + "-attempt-" + n.path("attemptNumber").intValue(), n);
   }
 }

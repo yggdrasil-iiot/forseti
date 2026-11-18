@@ -1,0 +1,277 @@
+{
+  "engine": "flink",
+  "shards": [
+    {
+      "name": "inj-baseline",
+      "scenarios": [
+        "baseline",
+        "held-back-10min"
+      ],
+      "generationRuns": [
+        "baseline@rule-1.0.1"
+      ],
+      "assertions": [
+        "I-1",
+        "I-20"
+      ],
+      "settings": {
+        "stage1": {
+          "tm.task.heap": "512m"
+        },
+        "stage2": {
+          "tm.task.heap": "512m"
+        }
+      }
+    },
+    {
+      "name": "inj-corrections",
+      "scenarios": [
+        "corrections",
+        "corrections-10b-before",
+        "corrections-10b-after",
+        "smoke-incident",
+        "dedicated/baseline"
+      ],
+      "generationRuns": [],
+      "assertions": [
+        "I-2",
+        "I-2b",
+        "I-10",
+        "I-10b",
+        "I-10d",
+        "I-10f"
+      ],
+      "settings": {
+        "stage1": {
+          "tm.task.heap": "512m"
+        },
+        "stage2": {
+          "tm.task.heap": "512m"
+        }
+      }
+    },
+    {
+      "name": "inj-stage1",
+      "scenarios": [
+        "baseline",
+        "bad-quality",
+        "overlap",
+        "redelivery",
+        "session"
+      ],
+      "generationRuns": [],
+      "assertions": [
+        "I-3",
+        "I-4",
+        "I-5",
+        "I-7",
+        "I-8",
+        "I-25"
+      ],
+      "settings": {
+        "stage1": {
+          "tm.task.heap": "512m"
+        },
+        "stage2": {
+          "tm.task.heap": "512m"
+        }
+      }
+    },
+    {
+      "name": "inj-clock-plc",
+      "scenarios": [
+        "baseline",
+        "clock-plus-30",
+        "clock-plus-90",
+        "plc-stamped",
+        "smoke",
+        "smoke-plc",
+        "dedicated/smoke"
+      ],
+      "generationRuns": [],
+      "assertions": [
+        "I-9",
+        "I-9b",
+        "I-11",
+        "I-11c",
+        "I-11d"
+      ],
+      "settings": {
+        "stage1": {
+          "tm.task.heap": "512m"
+        },
+        "stage2": {
+          "tm.task.heap": "512m"
+        }
+      }
+    },
+    {
+      "name": "inj-plc-quiet",
+      "scenarios": [
+        "plc-held-back",
+        "plc-nocheck",
+        "quiet-occupancy",
+        "quiet-occupancy-control"
+      ],
+      "generationRuns": [],
+      "assertions": [
+        "I-11b",
+        "I-26"
+      ],
+      "settings": {
+        "stage1": {
+          "tm.task.heap": "512m"
+        },
+        "stage2": {
+          "tm.task.heap": "512m"
+        }
+      }
+    },
+    {
+      "name": "inj-stage2",
+      "scenarios": [
+        "stage2",
+        "stage2-early",
+        "cascade"
+      ],
+      "generationRuns": [],
+      "assertions": [
+        "I-12",
+        "I-13",
+        "I-14",
+        "I-15",
+        "I-16",
+        "I-17",
+        "I-18",
+        "I-19"
+      ],
+      "settings": {
+        "stage1": {
+          "tm.task.heap": "512m"
+        },
+        "stage2": {
+          "tm.task.heap": "512m"
+        }
+      }
+    },
+    {
+      "name": "horizon-no-departure",
+      "scenarios": [
+        "horizon-no-departure",
+        "baseline"
+      ],
+      "generationRuns": [],
+      "assertions": [
+        "I-6"
+      ],
+      "settings": {
+        "stage1": {
+          "tm.task.heap": "5g"
+        },
+        "stage2": {
+          "tm.task.heap": "2g"
+        }
+      }
+    },
+    {
+      "name": "horizon-reopened",
+      "scenarios": [
+        "horizon-reopened",
+        "corrections-10c"
+      ],
+      "generationRuns": [],
+      "assertions": [
+        "I-10c"
+      ],
+      "settings": {
+        "stage1": {
+          "tm.task.heap": "5g"
+        },
+        "stage2": {
+          "tm.task.heap": "2g"
+        }
+      }
+    },
+    {
+      "name": "horizon-correction-beyond",
+      "scenarios": [
+        "horizon-correction-beyond"
+      ],
+      "generationRuns": [],
+      "assertions": [
+        "I-10e"
+      ],
+      "settings": {
+        "stage1": {
+          "tm.task.heap": "5g"
+        },
+        "stage2": {
+          "tm.task.heap": "2g"
+        }
+      }
+    },
+    {
+      "name": "horizon-planned-late",
+      "scenarios": [
+        "horizon-planned-late"
+      ],
+      "generationRuns": [
+        "horizon-planned-late@replay"
+      ],
+      "assertions": [
+        "I-23"
+      ],
+      "settings": {
+        "stage1": {
+          "tm.task.heap": "5g"
+        },
+        "stage2": {
+          "tm.task.heap": "2g"
+        }
+      }
+    },
+    {
+      "name": "plc-horizon-no-end",
+      "scenarios": [
+        "plc-horizon-no-end"
+      ],
+      "generationRuns": [],
+      "assertions": [
+        "I-11e"
+      ],
+      "settings": {
+        "stage1": {
+          "tm.task.heap": "5g"
+        },
+        "stage2": {
+          "tm.task.heap": "2g"
+        }
+      }
+    }
+  ],
+  "aggregate": [
+    "J-DISPOSITION-COVERAGE",
+    "J-REVISION-CONTINUITY",
+    "J-NO-EQUAL-CONSECUTIVE",
+    "J-PROGRESS-ORDER",
+    "J-W1-FORMULA",
+    "J-W2-EQUALS-W1",
+    "J-BASIS-CURRENT",
+    "J-AFTER-HORIZON-CUTS",
+    "C-2-REFERENCE",
+    "C-1",
+    "R-READ-COMMITTED",
+    "R-JOB-SETTINGS",
+    "R-TIMESTAMP-SOURCE",
+    "R-PARTITION-ASSIGNMENT",
+    "R-TOPIC-RETENTION",
+    "R-RECONCILE",
+    "FL-KEYGROUP-MAP",
+    "FL-WATERMARK-PER-RECORD",
+    "FL-ONE-SPLIT",
+    "FL-JOB-SETTINGS",
+    "FL-TIMER-INVARIANT",
+    "R-INIT-EVIDENCE",
+    "R-CUT-EVIDENCE"
+  ]
+}

@@ -13,6 +13,7 @@ import yggdrasil.forseti.cli.recording.Recording;
 import yggdrasil.forseti.cli.recording.ReplayRecording;
 import yggdrasil.forseti.cli.recording.RoutingManifest;
 import yggdrasil.forseti.cli.recording.W1Form;
+import yggdrasil.forseti.cli.replay.EngineContract;
 import yggdrasil.forseti.core.cut.CutAssembler;
 import yggdrasil.forseti.core.Json;
 import yggdrasil.forseti.core.NegativeControls;
@@ -62,7 +63,7 @@ public final class ReferenceEngine {
 
     public static final String ENGINE = "core-harness", ENGINE_VERSION = "0.1.0", RECOVERY_CONTROL = "recovery-control.jsonl";
     public static final long DEFAULT_SEED = 20261109L;
-    public static final List<String> STAGE1_TOPICS = List.of(InputParser.MESSAGES, InputParser.SESSIONS, InputParser.OCCUPANCY);
+    public static final List<String> STAGE1_TOPICS = EngineContract.STAGE1_TOPICS;
 
     /** A start-up refusal: a code ({@code generation-unregistered}, {@code generation-rules-mismatch}, {@code generation-routing-mismatch}
      *  and {@code generation-transition} of the generation CLI, or a reader refusal such as {@code provenance-mismatch}) and its
@@ -380,25 +381,14 @@ public final class ReferenceEngine {
         }
     }
 
-    /** A station's required barriers (spec 412, both forms of the harness): every subscribed raw telemetry partition, plus the session
-     *  partitions of its devices and its occupancy partition when subscribed (the routing manifest fixes both), in the order its
-     *  {@code barrierRefs} list them. */
+    /** A station's required barriers: {@link EngineContract#stationRequired}. */
     public static List<Progress.Origin> stationRequired(String station, RoutingManifest routing, Map<String, List<Integer>> subscribed) {
-        Set<Integer> sessions = new TreeSet<>();
-        for (String d : routing.devices()) if (routing.stationOf(d).equals(station)) sessions.add(routing.rawPartitionOf(d));
-        Map<String, Set<Integer>> keep = Map.of(InputParser.MESSAGES, new TreeSet<>(subscribed.get(InputParser.MESSAGES)),
-            InputParser.SESSIONS, sessions, InputParser.OCCUPANCY, Set.of(routing.partitionOf(station)));
-        return required(subscribed, keep);
+        return EngineContract.stationRequired(station, routing, subscribed);
     }
 
-    /** Every subscribed stage-1 partition {@code keep} admits (all when null), by topic in input-topic order, then partition. */
+    /** {@link EngineContract#required}. */
     public static List<Progress.Origin> required(Map<String, List<Integer>> subscribed, Map<String, Set<Integer>> keep) {
-        List<Progress.Origin> l = new ArrayList<>();
-        for (String t : STAGE1_TOPICS) for (int p : subscribed.get(t)) {
-            if (keep != null && !keep.get(t).contains(p)) continue;
-            l.add(new Progress.Origin(t, p));
-        }
-        return l;
+        return EngineContract.required(subscribed, keep);
     }
 
     /** The barrier of cut {@code cutId} on {@code origin}: the batch's through-offset there, epoch 0 (the reference harness writes no
@@ -407,26 +397,11 @@ public final class ReferenceEngine {
         return new CutAssembler.Barrier(cutId, origin, b.through(origin.topic(), origin.partition()), 0, null, idle);
     }
 
-    /** The batch's {@code idleInputs[]}, read strictly. */
-    public static List<CutAssembler.Idle> idleInputs(Recording.Batch b) {
-        List<CutAssembler.Idle> l = new ArrayList<>();
-        for (JsonNode x : b.idleInputs()) {
-            try { l.add(CutAssembler.Idle.fromJson(x)); }
-            catch (IllegalArgumentException e) { throw new IllegalArgumentException("malformed recording: idleInputs of cut " + b.cutId() + ": " + e.getMessage()); }
-        }
-        return l;
-    }
+    /** The batch's {@code idleInputs[]}: {@link EngineContract#idleInputs}. */
+    public static List<CutAssembler.Idle> idleInputs(Recording.Batch b) { return EngineContract.idleInputs(b); }
 
-    /** The head the generation pinned, rebuilt from {@code releaseEvidence.head}; nothing in it is verified here (that was
-     *  {@code generation new}): {@link ReleaseReader#read} verifies the release against these digests. */
-    public static HeadVerifier.Head head(JsonNode evidence) {
-        JsonNode h = evidence.path("head");
-        if (!h.isObject()) throw new IllegalArgumentException("releaseEvidence.head is not an object");
-        return new HeadVerifier.Head(Json.text(h, "stream"), Json.text(h, "releaseId"), Json.text(h, "version"), Json.text(h, "releaseSha256"),
-            h.path("headFile").textValue(), h.path("headSha256").textValue(), h.path("attestationFile").textValue(), h.path("attestationSha256").textValue(),
-            Json.text(h, "statementSha256"), Json.safeLong(h.get("headVersion"), "releaseEvidence.head.headVersion", 1, Json.MAX_SAFE),
-            h.path("signedAt").textValue(), h.path("expires").textValue(), h.path("publishedBy").textValue(), h.path("approvedBy").textValue());
-    }
+    /** The head the generation pinned: {@link EngineContract#head}. */
+    public static HeadVerifier.Head head(JsonNode evidence) { return EngineContract.head(evidence); }
 
     /** One read of {@code <stateDir>/recovery-control.jsonl} at a writer's initialization: the offset of the latest declaration of this
      *  generation and the record count H at that read. Each line is one declaration ({@code {generation, injectionId, stage, epochBefore,
@@ -452,42 +427,11 @@ public final class ReferenceEngine {
         return new Progress.InitEvidence(found, count, "none");
     }
 
-    /** {@code pins} with {@code rules.attribution.sha256} replaced by the digest of the attribution rule of another release of the same
-     *  registry (the first other release, by path, whose {@code payload/attribution-rules/0.json} has another digest), the body's
-     *  {@code rulesDigest} untouched (the {@code wrong-rules-pin} control). No such release is an {@link IllegalStateException}. */
-    static Pins wrongRulesPin(Pins pins, Path mappings, HeadVerifier.Head head) {
-        String own = pins.rules().path("attribution").path("sha256").asText(), other = null;
-        Path releases = mappings.resolve("releases"), mine = releases.resolve(head.releaseId()).resolve(head.version()).resolve("release.json");
-        List<String> files = new ArrayList<>();
-        try (java.util.stream.Stream<Path> w = Files.walk(releases)) {
-            w.filter(p -> p.getFileName().toString().equals("release.json") && !p.equals(mine)).forEach(p -> {
-                List<String> parts = new ArrayList<>();
-                for (Path x : releases.relativize(p)) parts.add(x.toString());
-                files.add(String.join("/", parts));
-            });
-        } catch (IOException e) { throw new UncheckedIOException(e); }
-        Collections.sort(files);
-        for (String f : files) {
-            for (JsonNode x : Json.read(releases.resolve(f)).path("files"))
-                if ("payload/attribution-rules/0.json".equals(x.path("path").asText()) && x.path("sha256").isTextual() && !own.equals(x.path("sha256").asText())) {
-                    other = x.path("sha256").asText();
-                    break;
-                }
-            if (other != null) break;
-        }
-        if (other == null) throw new IllegalStateException("wrong-rules-pin: no other release under " + releases + " pins another attribution rule");
-        ObjectNode rulesPins = pins.rules().deepCopy();
-        ((ObjectNode) rulesPins.path("attribution")).put("sha256", other);
-        return new Pins(rulesPins, pins.hierarchy(), pins.bindings(), pins.definitions(), pins.job());
-    }
+    /** The {@code wrong-rules-pin} control's pins: {@link EngineContract#wrongRulesPin}. */
+    static Pins wrongRulesPin(Pins pins, Path mappings, HeadVerifier.Head head) { return EngineContract.wrongRulesPin(pins, mappings, head); }
 
-    public static Pins pins(RuleSet rules, JsonNode definitions, Pins.Job job) {
-        ObjectNode p = rules.pins();
-        Map<String, Pins.Definition> defs = new TreeMap<>();
-        definitions.fields().forEachRemaining(e -> defs.put(e.getKey(),
-            new Pins.Definition(Json.text(e.getValue(), "templateRef"), Json.text(e.getValue(), "version"), Json.text(e.getValue(), "sha256"))));
-        return new Pins(p.get("rules"), p.get("hierarchy"), p.get("bindings"), defs, job);
-    }
+    /** The envelope pin set: {@link EngineContract#pins}. */
+    public static Pins pins(RuleSet rules, JsonNode definitions, Pins.Job job) { return EngineContract.pins(rules, definitions, job); }
 
     /** The {@code value} bytes of every line of one partition file, as delivered (never re-serialized: a raw-bytes digest and an
      *  overflowing literal depend on them), checked against the record {@link Recording} parsed; one streaming pass that keeps nothing. */

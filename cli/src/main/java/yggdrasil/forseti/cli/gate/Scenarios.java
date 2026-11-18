@@ -20,6 +20,7 @@ import yggdrasil.forseti.cli.harness.ReferenceEngine;
 import yggdrasil.forseti.cli.recording.Recording;
 import yggdrasil.forseti.cli.recording.ReplayRecording;
 import yggdrasil.forseti.cli.recording.ScenarioBuilder;
+import yggdrasil.forseti.cli.recording.W1Form;
 import yggdrasil.forseti.core.Json;
 import yggdrasil.forseti.core.canon.Canonical;
 import yggdrasil.forseti.core.rules.RuleSet;
@@ -116,6 +117,7 @@ final class Scenarios {
     static boolean selected(Context c, String name) { return notRun(c, name) == null; }
     /** Why scenario {@code name} is not made in this gate run, null when it is. */
     static String notRun(Context c, String name) {
+        if (c.runs != null) return c.runs.notRun(name);
         if (HORIZON.contains(name) && skipHorizon()) return "not run: the horizon scenarios are skipped (-Dforseti.gate.skipHorizon=true)";
         if (c.shard != null && !c.shard.scenarios().contains(name)) return "not run: not in shard " + c.shard.name() + " (" + Shards.PLAN + ")";
         if (!selected(name)) return "not run: -Dforseti.gate.only=" + System.getProperty("forseti.gate.only");
@@ -186,6 +188,19 @@ final class Scenarios {
             return Json.object();
         }
         long w1(long cutId, String station) { return perStation(cutId).path(station).path("W1").asLong(); }
+        /** The device path {@code rest} under this run's hierarchy root, the first segment of its recording's device paths
+         *  ({@code synthetic-site} on a step-3 recording, the placement's site on an engine recording). */
+        String dev(String rest) {
+            Iterator<String> d = manifest.path("definitions").fieldNames();
+            if (!d.hasNext()) throw new IllegalStateException(name + ": the recording defines no device");
+            String first = d.next();
+            return first.substring(0, first.indexOf(':')) + ":" + rest;
+        }
+        /** The control-store identity of a replay-gate run (its cluster, generations and recovery-control topics, its generation and
+         *  the offset of its recovery declaration), null on a core gate run. */
+        com.fasterxml.jackson.databind.node.ObjectNode controlEvidence;
+        /** Replay-gate findings of this run ({@link ReplayChecks}): assertion id -> {count, describe}; null on a core gate run. */
+        com.fasterxml.jackson.databind.node.ObjectNode replay;
         long t0() { return manifest.path("T0").asLong(); }
         JsonNode rule() { return rule != null ? rule : manifest.get("rule"); }
         JsonNode visit(String ref) {
@@ -330,7 +345,7 @@ final class Scenarios {
             + counts.path("samples").asLong() + " samples, " + counts.path("cuts").asLong() + " cuts)";
     }
 
-    static final class Pipeline {
+    static final class Pipeline implements RunSource {
         final Context c;
         final Path registry, diffs;
         final Map<String, Future<Run>> runs = new LinkedHashMap<>();
@@ -374,20 +389,22 @@ final class Scenarios {
 
         Path dir(String name) throws IOException { return Files.createDirectories(c.tmp.resolve("scn-" + dirs.incrementAndGet() + "-" + name)); }
 
-        Run get(String name) throws Exception {
+        @Override public String notRun(String name) { return Scenarios.notRun(c, name); }
+
+        @Override public Run get(String name) throws Exception {
             Future<Run> f = runs.get(name);
             if (f == null) {
                 if (!all().contains(name)) throw new IllegalArgumentException("no scenario " + name);
                 for (Future<Run> x : runs.values()) x.get();   // the scenarios this run makes finish (and log) before the gate reports
-                throw new IllegalStateException(notRun(c, name));
+                throw new IllegalStateException(Scenarios.notRun(c, name));
             }
             return f.get();
         }
-        Run generationRun(String name) throws Exception {
+        @Override public Run generationRun(String name) throws Exception {
             GenerationRun g = Scenarios.generationRun(name);
             if (g == null) throw new IllegalArgumentException("no generation run " + name);
             Future<Run> f = generationRuns.get(name);
-            if (f == null) { String why = notRun(c, g); throw new IllegalStateException(why != null ? why : "not run"); }
+            if (f == null) { String why = Scenarios.notRun(c, g); throw new IllegalStateException(why != null ? why : "not run"); }
             return f.get();
         }
 
@@ -405,7 +422,7 @@ final class Scenarios {
             return run(r);
         }
 
-        Shuffled shuffled(String name, long seed) throws Exception {
+        @Override public Shuffled shuffled(String name, long seed) throws Exception {
             Future<Shuffled> f = shuffled.get(name + "@" + seed);
             if (f == null) throw new IllegalStateException(c.shard != null ? "not run: the shuffled runs of " + name + " are not in shard " + c.shard.name()
                 : "not run: -Dforseti.gate.only=" + System.getProperty("forseti.gate.only"));
@@ -509,119 +526,7 @@ final class Scenarios {
             r.runJson = Json.read(out.resolve("run.json"));
         }
 
-        /** {@code python -I -m forseti_oracle.cli all} on the harness's cut log, the recording's rule and subscription. */
-        private List<String> oracleCommand(Run r, Path run, Path out) {
-            JsonNode rule = r.rule();
-            Path reg = r.registry != null ? r.registry : registry;
-            List<String> cmd = new ArrayList<>(List.of(c.python, "-I", "-m", "forseti_oracle.cli", "all", "--recording", r.recording.toString(),
-                "--cuts", run.resolve("cuts.json").toString(), "--mappings", reg.resolve("mappings").toString(),
-                "--release", Json.text(rule, "releaseId") + "@" + Json.text(rule, "version"),
-                "--rule", Json.text(rule, "attributionRuleId") + "@" + Json.text(rule, "attributionRuleVersion"),
-                "--definitions", r.recording.resolve(Recording.MANIFEST).toString(), "--out", out.toString()));
-            r.runJson.path("subscribed").fields().forEachRemaining(e -> {
-                List<String> ps = new ArrayList<>();
-                e.getValue().forEach(p -> ps.add(p.asText()));
-                cmd.add("--subscribe");
-                cmd.add(e.getKey() + "=" + String.join(",", ps));
-            });
-            if (Boolean.getBoolean("forseti.gate.oracleNoMemo")) cmd.add("--no-memo");
-            if (yggdrasil.forseti.cli.harness.Controls.LENIENT_ORACLE.equals(c.control)) cmd.add("--lenient");   // the lenient-oracle control
-            return cmd;
-        }
-
-        /** The oracle with {@code --stream} beside the fold: each cut it announces is folded, compared and deleted before it writes the
-         *  next ({@link Comparison#consume}). Then the integrity checks and the ground truth; on a difference, the diff files from a
-         *  {@code --snapshots} rerun of the first differing cuts. Timings: {@code oracle} (the oracle process, start to exit),
-         *  {@code compare} (the gate's fold and comparison of the announced cuts); {@code oracleCutBytesPeak}, the largest cut on disk. */
-        private void fold(Run r, Path out, Path oracle) throws IOException, InterruptedException {
-            r.rules = ruleSet(r);
-            r.tally = new Comparison.Tally();
-            Map<String, Integer> stations = Recording.open(r.recording).routing().stations();
-            Files.createDirectories(oracle);
-            Path log = c.logs.resolve("oracle-" + r.label() + ".log");
-            Files.createDirectories(log.getParent());
-            List<String> cmd = oracleCommand(r, out, oracle);
-            cmd.add("--stream");
-            Duration timeout = Duration.ofHours(r.synthetic ? 6 : 1);
-            Map<Long, JsonNode> entries = new HashMap<>();
-            for (JsonNode cut : r.cutLog.path("cuts")) entries.put(cut.path("cutId").asLong(), cut);
-            Comparison.OracleFold of = new Comparison.OracleFold();
-            List<String> trailing = new ArrayList<>();
-            long[] compareNs = {0};
-            long started = System.nanoTime();
-            Process p = new ProcessBuilder(cmd).directory(c.root.toFile()).redirectError(log.toFile()).start();
-            Thread watchdog = new Thread(() -> {
-                try { if (!p.waitFor(timeout.toMillis(), TimeUnit.MILLISECONDS)) p.destroyForcibly(); } catch (InterruptedException e) { p.destroyForcibly(); }
-            }, "forseti-gate-oracle-watchdog-" + r.label());
-            watchdog.setDaemon(true);
-            watchdog.start();
-            try (RunFold f = new RunFold(out, r.rulesDigest, r.generation.generation(), !r.synthetic)) {
-                r.fold = f;
-                String broken;
-                try (BufferedReader announced = new BufferedReader(new java.io.InputStreamReader(p.getInputStream(), StandardCharsets.UTF_8));
-                     java.io.Writer acks = new java.io.OutputStreamWriter(p.getOutputStream(), StandardCharsets.UTF_8)) {
-                    broken = Comparison.consume(announced, acks, oracle, r.cutIds(), trailing, (k, dir) -> {
-                        long s = System.nanoTime();
-                        f.advance(k);
-                        Comparison.compareCut(f, k, dir, of, r.label(), entries.get(k), r.tally);
-                        Set<String> open = new TreeSet<>();
-                        for (Map.Entry<String, RunFold.Rev> e : f.live(RunFold.WR).entrySet()) {
-                            JsonNode b = e.getValue().node();
-                            if (b.path("interval").path("leave").isNull() && !"retracted".equals(b.path("status").asText())) open.add(b.path("readPoint").asText());
-                        }
-                        r.open.put(k, open);
-                        compareNs[0] += System.nanoTime() - s;
-                    });
-                }
-                if (!p.waitFor(timeout.toMillis(), TimeUnit.MILLISECONDS)) p.destroyForcibly();
-                int exit = p.waitFor();
-                r.ms.put("oracle", ms(started));
-                r.ms.put("compare", compareNs[0] / 1_000_000);
-                r.ms.put("oracleCutBytesPeak", of.diskPeak);
-                Files.write(log, (String.join("\n", trailing) + "\noracle " + r.ms.get("oracle") + " ms, compare " + r.ms.get("compare") + " ms, largest cut on disk "
-                    + of.diskPeak + " bytes, upserts " + of.upserts + ", deletes " + of.deletes + "\n").getBytes(StandardCharsets.UTF_8), StandardOpenOption.APPEND);
-                if (broken != null || exit != 0) {
-                    String[] lines = Files.readString(log, StandardCharsets.UTF_8).strip().split("\\R");
-                    throw new IllegalStateException("oracle exit " + exit + (broken != null ? ", " + broken : "") + ": " + (lines.length > 1 ? lines[lines.length - 2] : ""));
-                }
-                f.finish();
-                Map<String, List<Integer>> subscribed = new HashMap<>();
-                r.runJson.path("subscribed").fields().forEachRemaining(e -> { List<Integer> l = new ArrayList<>(); e.getValue().forEach(x -> l.add(x.asInt())); subscribed.put(e.getKey(), l); });
-                r.measures = Integrity.check(f, r.recording, r.cutLog, subscribed, r.rules, r.manifest.path("definitions"), stations);
-                r.outcome = Expectations.check(f, r.expected, r::perStation);
-                if (r.name.equals(Injections.PLANNED_LATE)) r.plannedLate = Injections.capturePlannedLate(c, f, r);
-                if (r.journals != null) r.foldDigest = f.digest();
-                if (r.synthetic) f.compact();
-            } finally {
-                if (p.isAlive()) p.destroyForcibly();
-            }
-            if (!r.tally.pending.isEmpty()) diagnose(r, out);
-        }
-
-        /** The diff files of the first differing cuts, from an oracle rerun with {@code --snapshots --cut-ids} on the original inputs. */
-        private void diagnose(Run r, Path run) throws IOException {
-            Path snapshots = dir(r.label() + "-oracle-diag").resolve("out");
-            String failure = null;
-            try {
-                List<String> cmd = oracleCommand(r, run, snapshots);
-                cmd.addAll(List.of("--snapshots", "--cut-ids", String.join(",", r.tally.pendingCuts().stream().map(String::valueOf).toList())));
-                Proc p = Proc.run(c.root, c.logs.resolve("oracle-" + r.label() + "-diagnostic.log"), Duration.ofHours(r.synthetic ? 6 : 1), cmd);
-                if (p.exit() != 0) failure = "exit " + p.exit() + ": " + p.lastLine();
-            } catch (Exception e) {
-                failure = e.toString();
-            }
-            Comparison.writeDiffs(r.tally, diffs, r.label(), r.generation.generation(), failure == null ? snapshots : null, failure);
-            CoreGate.delete(snapshots.getParent());
-        }
-
-        /** The rule set the recording names, from its release in the fixture registry (head verified at its signedAt + 60 s). */
-        private RuleSet ruleSet(Run r) throws IOException {
-            Path m = (r.registry != null ? r.registry : registry).resolve("mappings");
-            JsonNode rule = r.rule();
-            yggdrasil.forseti.core.release.HeadVerifier.Head h = yggdrasil.forseti.core.release.HeadVerifier.verify(m, Json.text(rule, "stream"), Foundation.fixtureKeys(c),
-                new yggdrasil.forseti.core.release.FloorStore(dir(r.name + "-floors")), GateSigner.now(m, Json.text(rule, "stream")));
-            return RuleSet.load(yggdrasil.forseti.core.release.ReleaseReader.read(m, h), Json.text(rule, "attributionRuleId"), Json.text(rule, "attributionRuleVersion"), r.manifest.get("definitions"));
-        }
+        private void fold(Run r, Path out, Path oracle) throws IOException, InterruptedException { Scenarios.fold(c, r, out, oracle, registry, diffs); }
 
         /** A {@code --shuffle} run on its scenario's generation (it registers none), compared with the oracle at every cut of its own cut log
          *  through {@link #fold}, like its scenario's run; its run record and cut log are kept. */
@@ -681,8 +586,138 @@ final class Scenarios {
         return r;
     }
 
-    static Pipeline pipeline(Context c) throws Exception { return c.memo("scenario-pipeline", () -> new Pipeline(c)); }
+    /** {@code python -I -m forseti_oracle.cli all} on the harness's cut log, the recording's rule and subscription. */
+    static List<String> oracleCommand(Context c, Run r, Path run, Path out, Path registry) {
+        JsonNode rule = r.rule();
+        Path reg = r.registry != null ? r.registry : registry;
+        List<String> cmd = new ArrayList<>(List.of(c.python, "-I", "-m", "forseti_oracle.cli", "all", "--recording", r.recording.toString(),
+            "--cuts", run.resolve("cuts.json").toString(), "--mappings", reg.resolve("mappings").toString(),
+            "--release", Json.text(rule, "releaseId") + "@" + Json.text(rule, "version"),
+            "--rule", Json.text(rule, "attributionRuleId") + "@" + Json.text(rule, "attributionRuleVersion"),
+            "--definitions", r.recording.resolve(Recording.MANIFEST).toString(), "--out", out.toString()));
+        r.runJson.path("subscribed").fields().forEachRemaining(e -> {
+            List<String> ps = new ArrayList<>();
+            e.getValue().forEach(p -> ps.add(p.asText()));
+            cmd.add("--subscribe");
+            cmd.add(e.getKey() + "=" + String.join(",", ps));
+        });
+        if (Boolean.getBoolean("forseti.gate.oracleNoMemo")) cmd.add("--no-memo");
+        if (yggdrasil.forseti.cli.harness.Controls.LENIENT_ORACLE.equals(c.control)) cmd.add("--lenient");   // the lenient-oracle control
+        return cmd;
+    }
+
+    /** The oracle with {@code --stream} beside the fold: each cut it announces is folded, compared and deleted before it writes the
+     *  next ({@link Comparison#consume}). Then the integrity checks and the ground truth; on a difference, the diff files from a
+     *  {@code --snapshots} rerun of the first differing cuts. Timings: {@code oracle} (the oracle process, start to exit),
+     *  {@code compare} (the gate's fold and comparison of the announced cuts); {@code oracleCutBytesPeak}, the largest cut on disk. */
+    static void fold(Context c, Run r, Path out, Path oracle, Path registry, Path diffs) throws IOException, InterruptedException {
+        r.rules = ruleSet(c, r, registry);
+        r.tally = new Comparison.Tally();
+        Map<String, Integer> stations = Recording.open(r.recording).routing().stations();
+        Files.createDirectories(oracle);
+        Path log = c.logs.resolve("oracle-" + r.label() + ".log");
+        Files.createDirectories(log.getParent());
+        List<String> cmd = oracleCommand(c, r, out, oracle, registry);
+        cmd.add("--stream");
+        Duration timeout = Duration.ofHours(r.synthetic ? 6 : 1);
+        Map<Long, JsonNode> entries = new HashMap<>();
+        for (JsonNode cut : r.cutLog.path("cuts")) entries.put(cut.path("cutId").asLong(), cut);
+        Comparison.OracleFold of = new Comparison.OracleFold();
+        List<String> trailing = new ArrayList<>();
+        long[] compareNs = {0};
+        long started = System.nanoTime();
+        Process p = new ProcessBuilder(cmd).directory(c.root.toFile()).redirectError(log.toFile()).start();
+        Thread watchdog = new Thread(() -> {
+            try { if (!p.waitFor(timeout.toMillis(), TimeUnit.MILLISECONDS)) p.destroyForcibly(); } catch (InterruptedException e) { p.destroyForcibly(); }
+        }, "forseti-gate-oracle-watchdog-" + r.label());
+        watchdog.setDaemon(true);
+        watchdog.start();
+        try (RunFold f = new RunFold(out, r.rulesDigest, r.generation.generation(), !r.synthetic)) {
+            r.fold = f;
+            String broken;
+            try (BufferedReader announced = new BufferedReader(new java.io.InputStreamReader(p.getInputStream(), StandardCharsets.UTF_8));
+                 java.io.Writer acks = new java.io.OutputStreamWriter(p.getOutputStream(), StandardCharsets.UTF_8)) {
+                broken = Comparison.consume(announced, acks, oracle, r.cutIds(), trailing, (k, dir) -> {
+                    long s = System.nanoTime();
+                    f.advance(k);
+                    Comparison.compareCut(f, k, dir, of, r.label(), entries.get(k), r.tally);
+                    Set<String> open = new TreeSet<>();
+                    for (Map.Entry<String, RunFold.Rev> e : f.live(RunFold.WR).entrySet()) {
+                        JsonNode b = e.getValue().node();
+                        if (b.path("interval").path("leave").isNull() && !"retracted".equals(b.path("status").asText())) open.add(b.path("readPoint").asText());
+                    }
+                    r.open.put(k, open);
+                    compareNs[0] += System.nanoTime() - s;
+                });
+            }
+            if (!p.waitFor(timeout.toMillis(), TimeUnit.MILLISECONDS)) p.destroyForcibly();
+            int exit = p.waitFor();
+            r.ms.put("oracle", Pipeline.ms(started));
+            r.ms.put("compare", compareNs[0] / 1_000_000);
+            r.ms.put("oracleCutBytesPeak", of.diskPeak);
+            Files.write(log, (String.join("\n", trailing) + "\noracle " + r.ms.get("oracle") + " ms, compare " + r.ms.get("compare") + " ms, largest cut on disk "
+                + of.diskPeak + " bytes, upserts " + of.upserts + ", deletes " + of.deletes + "\n").getBytes(StandardCharsets.UTF_8), StandardOpenOption.APPEND);
+            if (broken != null || exit != 0) {
+                String[] lines = Files.readString(log, StandardCharsets.UTF_8).strip().split("\\R");
+                throw new IllegalStateException("oracle exit " + exit + (broken != null ? ", " + broken : "") + ": " + (lines.length > 1 ? lines[lines.length - 2] : ""));
+            }
+            f.finish();
+            Map<String, List<Integer>> subscribed = new HashMap<>();
+            r.runJson.path("subscribed").fields().forEachRemaining(e -> { List<Integer> l = new ArrayList<>(); e.getValue().forEach(x -> l.add(x.asInt())); subscribed.put(e.getKey(), l); });
+            // the W1 form the run reports (spec 620): on a replay gate the engine's own form, which the run's cut log must declare
+            // (a missing or other form fails the run); on a core gate run the per-station form, which its cut log declares by omission
+            String declared = r.cutLog.path("w1Form").isTextual() ? r.cutLog.get("w1Form").textValue() : null;
+            if (c.w1Form != null && !c.w1Form.equals(declared))
+                throw new IllegalStateException("cuts.json declares the W1 form " + declared + ", the engine reports " + c.w1Form);
+            W1Form form = W1Form.of(c.w1Form != null ? c.w1Form : declared);
+            r.measures = Integrity.check(f, r.recording, r.cutLog, subscribed, r.rules, r.manifest.path("definitions"), stations, form);
+            r.outcome = Expectations.check(f, r.expected, r::perStation);
+            if (r.name.equals(Injections.PLANNED_LATE)) r.plannedLate = Injections.capturePlannedLate(c, f, r);
+            if (r.journals != null) r.foldDigest = f.digest();
+            if (r.synthetic) f.compact();
+        } finally {
+            if (p.isAlive()) p.destroyForcibly();
+        }
+        if (!r.tally.pending.isEmpty()) diagnose(c, r, out, registry, diffs);
+    }
+
+    /** The diff files of the first differing cuts, from an oracle rerun with {@code --snapshots --cut-ids} on the original inputs. */
+    static void diagnose(Context c, Run r, Path run, Path registry, Path diffs) throws IOException {
+        Path snapshots = c.newDir(r.label() + "-oracle-diag").resolve("out");
+        String failure = null;
+        try {
+            List<String> cmd = oracleCommand(c, r, run, snapshots, registry);
+            cmd.addAll(List.of("--snapshots", "--cut-ids", String.join(",", r.tally.pendingCuts().stream().map(String::valueOf).toList())));
+            Proc p = Proc.run(c.root, c.logs.resolve("oracle-" + r.label() + "-diagnostic.log"), Duration.ofHours(r.synthetic ? 6 : 1), cmd);
+            if (p.exit() != 0) failure = "exit " + p.exit() + ": " + p.lastLine();
+        } catch (Exception e) {
+            failure = e.toString();
+        }
+        Comparison.writeDiffs(r.tally, diffs, r.label(), r.generation.generation(), failure == null ? snapshots : null, failure);
+        CoreGate.delete(snapshots.getParent());
+    }
+
+    /** The rule set the recording names, from its release in the fixture registry (head verified at its signedAt + 60 s). */
+    static RuleSet ruleSet(Context c, Run r, Path registry) throws IOException {
+        Path m = (r.registry != null ? r.registry : registry).resolve("mappings");
+        JsonNode rule = r.rule();
+        yggdrasil.forseti.core.release.HeadVerifier.Head h = yggdrasil.forseti.core.release.HeadVerifier.verify(m, Json.text(rule, "stream"), c.trustedKeys(),
+            new yggdrasil.forseti.core.release.FloorStore(c.newDir(r.name + "-floors")), GateSigner.now(m, Json.text(rule, "stream")));
+        return RuleSet.load(yggdrasil.forseti.core.release.ReleaseReader.read(m, h), Json.text(rule, "attributionRuleId"), Json.text(rule, "attributionRuleVersion"), r.manifest.get("definitions"));
+    }
+
+    /** Where the assertions take a gate run's scenario, generation and shuffled runs: the core gate's {@link Pipeline}, or the runs an
+     *  engine's replay gate made and compared ({@link ReplayGate}). */
+    interface RunSource {
+        Run get(String name) throws Exception;
+        Run generationRun(String name) throws Exception;
+        Shuffled shuffled(String name, long seed) throws Exception;
+        /** Why scenario {@code name} is not made in this gate run, null when it is. */
+        String notRun(String name);
+    }
+
+    static RunSource pipeline(Context c) throws Exception { return c.runs != null ? c.runs : c.memo("scenario-pipeline", () -> new Pipeline(c)); }
     static Run get(Context c, String name) throws Exception { return pipeline(c).get(name); }
     /** Whether this gate run has made its scenario pipeline (an assertion asked for a scenario). */
-    static boolean started(Context c) { return c.has("scenario-pipeline"); }
+    static boolean started(Context c) { return c.runs != null || c.has("scenario-pipeline"); }
 }

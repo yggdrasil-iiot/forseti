@@ -61,22 +61,52 @@ final class FlinkCluster implements AutoCloseable {
   static final List<String> LOGGING = List.of("-Dorg.slf4j.simpleLogger.defaultLogLevel=info", "-Dorg.slf4j.simpleLogger.showDateTime=true",
       "-Dorg.slf4j.simpleLogger.dateTimeFormat=HH:mm:ss.SSS", "-Dorg.slf4j.simpleLogger.log.org.apache.kafka=warn");
 
-  /** The memory of one cluster: explicit components, so the JVM flags never depend on a fraction of a host default. */
+  /** The memory of one cluster: explicit components, so the JVM flags never depend on a fraction of a host default. A component is
+   *  {@code forseti.flink.<key>} (a system property), overridden per stage by {@code forseti.flink.stage<N>.<key>} and then by the
+   *  shard's engine settings ({@code "stage<N>": {"<key>": "5g"}} in {@code gate/flink-shards.json}: the horizon shards' stage-1 task
+   *  heap, measured on CI). */
   record Memory(String jmHeap, String jmOffHeap, String jmMetaspace, String jmOverhead, String tmFrameworkHeap, String tmTaskHeap, String tmFrameworkOffHeap,
                 String tmManaged, String tmNetwork, String tmMetaspace, String tmOverhead) {
-    static Memory defaults() {
-      return new Memory(prop("jm.heap", "192m"), prop("jm.offheap", "64m"), prop("jm.metaspace", "160m"), prop("jm.overhead", "96m"),
-          prop("tm.framework.heap", "64m"), prop("tm.task.heap", "224m"), prop("tm.framework.offheap", "64m"), prop("tm.managed", "128m"),
-          prop("tm.network", "64m"), prop("tm.metaspace", "192m"), prop("tm.overhead", "128m"));
+    static Memory defaults() { return forStage(0, null); }
+
+    static Memory forStage(int stage, JsonNode settings) {
+      JsonNode s = settings == null ? null : settings.path("stage" + stage);
+      return new Memory(prop(stage, s, "jm.heap", "192m"), prop(stage, s, "jm.offheap", "64m"), prop(stage, s, "jm.metaspace", "160m"), prop(stage, s, "jm.overhead", "96m"),
+          prop(stage, s, "tm.framework.heap", "64m"), prop(stage, s, "tm.task.heap", "224m"), prop(stage, s, "tm.framework.offheap", "64m"),
+          prop(stage, s, "tm.managed", "128m"), prop(stage, s, "tm.network", "64m"), prop(stage, s, "tm.metaspace", "192m"), prop(stage, s, "tm.overhead", "128m"));
     }
-    private static String prop(String k, String d) { return System.getProperty("forseti.flink." + k, d); }
+
+    private static String prop(int stage, JsonNode shard, String k, String d) {
+      String v = System.getProperty("forseti.flink." + k, d);
+      v = System.getProperty("forseti.flink.stage" + stage + "." + k, v);
+      if (shard != null && shard.path(k).isTextual()) v = shard.get(k).textValue();
+      return v;
+    }
+
+    ObjectNode toJson() {
+      return Json.object().put("jm.heap", jmHeap).put("jm.offheap", jmOffHeap).put("jm.metaspace", jmMetaspace).put("jm.overhead", jmOverhead)
+          .put("tm.framework.heap", tmFrameworkHeap).put("tm.task.heap", tmTaskHeap).put("tm.framework.offheap", tmFrameworkOffHeap).put("tm.managed", tmManaged)
+          .put("tm.network", tmNetwork).put("tm.metaspace", tmMetaspace).put("tm.overhead", tmOverhead);
+    }
   }
+
+  /** How often a cluster is started when its JobManager could not bind a port it was given: the ports are taken free and handed to
+   *  the JobManager's configuration, so another process can take one in between; such a start never reached the job (the REST
+   *  endpoint and the RPC service come up before the dispatcher), and it is started again on fresh ports, each attempt recorded. */
+  static final int MAX_STARTS = 3;
 
   final String name;
   final Path dir;
   final JobID jobId;
-  final int restPort;
-  private final ProcessSupervisor.Supervised jm, tm;
+  private final ProcessSupervisor sup;
+  private final String jobClass, checkpointUri;
+  private final Path jobSpec;
+  private final Memory mem;
+  private final java.util.function.IntSupplier ports;
+  private volatile int restPort;
+  private volatile ProcessSupervisor.Supervised jm, tm;
+  private int starts;
+  private boolean jobSeen;
   private final HttpClient http = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(5)).build();
   final ObjectNode record = Json.object();
   private final long startedNanos = System.nanoTime();
@@ -85,12 +115,22 @@ final class FlinkCluster implements AutoCloseable {
 
   private final Path tmp;
 
-  private FlinkCluster(String name, Path dir, JobID jobId, int restPort, ProcessSupervisor.Supervised jm, ProcessSupervisor.Supervised tm, Path tmp) {
-    this.name = name; this.dir = dir; this.jobId = jobId; this.restPort = restPort; this.jm = jm; this.tm = tm; this.tmp = tmp;
+  private FlinkCluster(ProcessSupervisor sup, String name, Path dir, String jobClass, Path jobSpec, String checkpointUri, Memory mem,
+                       java.util.function.IntSupplier ports, Path tmp) {
+    this.sup = sup; this.name = name; this.dir = dir; this.jobClass = jobClass; this.jobSpec = jobSpec; this.checkpointUri = checkpointUri;
+    this.mem = mem; this.ports = ports; this.tmp = tmp; this.jobId = JobID.generate();
   }
+
+  int restPort() { return restPort; }
 
   /** Starts the cluster of {@code jobClass} on {@code jobSpec} under {@code dir}; {@code checkpointDir} as a file URI. */
   static FlinkCluster start(ProcessSupervisor sup, String name, Path dir, String jobClass, Path jobSpec, String checkpointUri, Memory mem) {
+    return start(sup, name, dir, jobClass, jobSpec, checkpointUri, mem, FlinkCluster::freePort);
+  }
+
+  /** {@link #start}, the ports taken from {@code ports}. */
+  static FlinkCluster start(ProcessSupervisor sup, String name, Path dir, String jobClass, Path jobSpec, String checkpointUri, Memory mem,
+                            java.util.function.IntSupplier ports) {
     // the working and RocksDB directories in a short temporary directory: RocksDB refuses paths over 247 characters on Windows, and
     // the per-operator directory names alone take about 150
     Path tmp;
@@ -98,8 +138,17 @@ final class FlinkCluster implements AutoCloseable {
       Files.createDirectories(dir.resolve("conf"));
       tmp = Files.createTempDirectory("fst-" + name + "-");
     } catch (IOException e) { throw new UncheckedIOException(e); }
-    int rest = freePort(), rpc = freePort();
-    JobID jobId = JobID.generate();
+    FlinkCluster f = new FlinkCluster(sup, name, dir, jobClass, jobSpec, checkpointUri, mem, ports, tmp);
+    f.record.put("jobId", f.jobId.toHexString()).put("jobClass", jobClass);
+    f.record.putArray("startAttempts");
+    f.launch();
+    return f;
+  }
+
+  /** One start of both JVMs on fresh REST and RPC ports, the same job id, job spec and checkpoint directory. */
+  private void launch() {
+    starts++;
+    int rest = ports.getAsInt(), rpc = ports.getAsInt();
     Configuration c = Topology.configuration(checkpointUri);
     c.setString("jobmanager.rpc.address", "localhost");
     c.setString("jobmanager.bind-host", "localhost");
@@ -153,16 +202,42 @@ final class FlinkCluster implements AutoCloseable {
     tmCmd.addAll(LOGGING);
     tmCmd.addAll(List.of("-cp", cp, TASK_MANAGER, "--configDir", conf));
     tmCmd.addAll(split(TaskExecutorProcessUtils.generateDynamicConfigsStr(tmSpec)));
-    ProcessSupervisor.Supervised jm = sup.start(name + "-jobmanager", jmCmd, Map.of(), dir.resolve("jobmanager.log"));
-    ProcessSupervisor.Supervised tm = sup.start(name + "-taskmanager", tmCmd, Map.of(), dir.resolve("taskmanager.log"));
-    FlinkCluster f = new FlinkCluster(name, dir, jobId, rest, jm, tm, tmp);
-    f.record.put("jobId", jobId.toHexString()).put("restPort", rest).put("rpcPort", rpc).put("jobClass", jobClass);
-    Json.putSafe(f.record, "jobManagerPid", jm.pid());
-    Json.putSafe(f.record, "taskManagerPid", tm.pid());
-    ArrayNode jc = f.record.putArray("jobManagerCommand"), tc = f.record.putArray("taskManagerCommand");
+    restPort = rest;
+    jm = sup.start(name + "-jobmanager", jmCmd, Map.of(), dir.resolve("jobmanager.log"));
+    tm = sup.start(name + "-taskmanager", tmCmd, Map.of(), dir.resolve("taskmanager.log"));
+    record.put("restPort", rest).put("rpcPort", rpc).put("starts", starts);
+    Json.putSafe(record, "jobManagerPid", jm.pid());
+    Json.putSafe(record, "taskManagerPid", tm.pid());
+    ArrayNode jc = record.putArray("jobManagerCommand"), tc = record.putArray("taskManagerCommand");
     jmCmd.forEach(x -> jc.add(x.equals(cp) ? "<engine class path>" : x));
     tmCmd.forEach(x -> tc.add(x.equals(cp) ? "<engine class path>" : x));
-    return f;
+  }
+
+  /** The line of the JobManager's log that says it could not bind a port, null when it says no such thing. */
+  static String bindFailure(Path jobManagerLog) {
+    try (java.util.stream.Stream<String> l = Files.lines(jobManagerLog, StandardCharsets.UTF_8)) {
+      return l.filter(x -> x.contains("java.net.BindException")).findFirst().map(String::trim).orElse(null);
+    } catch (IOException | UncheckedIOException e) { return null; }
+  }
+
+  /** After a start whose JobManager exited on a port it could not bind, before the job was ever reported: the attempt is recorded
+   *  (its ports, the bind failure, its logs kept as {@code <jvm>.start-<n>.log}) and both JVMs are started again on fresh ports. The
+   *  same cluster, job id and run: nothing of the job ran. Returns false when the exit was anything else, or the starts are used up. */
+  private boolean restartOnBindFailure() {
+    if (jobSeen || jm.alive() || starts >= MAX_STARTS) return false;
+    String bind = bindFailure(jm.log());
+    if (bind == null) return false;
+    if (tm.alive()) { tm.signal(ProcessSupervisor.Signal.KILL); tm.waitFor(Duration.ofSeconds(30)); }
+    jm.waitFor(Duration.ofSeconds(30));
+    ObjectNode a = ((ArrayNode) record.get("startAttempts")).addObject().put("start", starts).put("restPort", restPort).put("rpcPort", record.path("rpcPort").asInt())
+        .put("cause", bind);
+    for (ProcessSupervisor.Supervised p : List.of(jm, tm)) {
+      Path kept = p.log().resolveSibling(p.log().getFileName().toString().replace(".log", ".start-" + starts + ".log"));
+      try { Files.move(p.log(), kept, java.nio.file.StandardCopyOption.REPLACE_EXISTING); a.put(p == jm ? "jobManagerLog" : "taskManagerLog", kept.getFileName().toString()); }
+      catch (IOException e) { a.put(p == jm ? "jobManagerLog" : "taskManagerLog", "not kept: " + e.getMessage()); }
+    }
+    launch();
+    return true;
   }
 
   private static List<String> split(String s) {
@@ -191,7 +266,7 @@ final class FlinkCluster implements AutoCloseable {
     try { Files.writeString(f, b.toString(), StandardCharsets.UTF_8); } catch (IOException e) { throw new UncheckedIOException(e); }
   }
 
-  private static int freePort() {
+  static int freePort() {
     try (ServerSocket s = new ServerSocket(0)) { return s.getLocalPort(); } catch (IOException e) { throw new IllegalStateException(e); }
   }
 
@@ -234,8 +309,12 @@ final class FlinkCluster implements AutoCloseable {
     long until = System.nanoTime() + timeout.toNanos();
     Status last = null;
     while (System.nanoTime() < until) {
-      if (!jm.alive() || !tm.alive()) throw new IllegalStateException(name + " ended before RUNNING: " + tail());
+      if (!jm.alive() || !tm.alive()) {
+        if (restartOnBindFailure()) continue;
+        throw new IllegalStateException(name + " ended before RUNNING (start " + starts + "): " + tail());
+      }
       last = status();
+      if (last != null) jobSeen = true;
       if (last != null && (last.state().equals("FAILED") || last.state().equals("CANCELED") || last.state().equals("FINISHED")))
         throw new IllegalStateException(name + ": job " + last.state() + " before RUNNING " + failure());
       if (last != null && last.state().equals("RUNNING") && last.allRunning()) {
@@ -282,6 +361,37 @@ final class FlinkCluster implements AutoCloseable {
       try { v = (long) Double.parseDouble(m.path("value").asText()); } catch (NumberFormatException e) { continue; }
       heapPeak.merge(who + (id.endsWith("Used") ? "HeapUsedPeakBytes" : "HeapMaxBytes"), v, Math::max);
     }
+  }
+
+  /** The keys of the JobManager's effective configuration the job settings record (run-invariant engine pins, spec 588-590). */
+  static final List<String> OBSERVED_KEYS = List.of("execution.checkpointing.interval", "execution.checkpointing.mode", "execution.checkpointing.max-concurrent-checkpoints",
+      "execution.checkpointing.incremental", "state.backend.type", "pipeline.auto-watermark-interval", "pipeline.max-parallelism", "restart-strategy.type");
+
+  /** The job's settings as the cluster reports them over REST (reviewer decision 1 of 2026-11-18: observed, not only submitted): the
+   *  checkpoint configuration, the selected keys of the JobManager's effective configuration and every vertex's parallelism. */
+  ObjectNode observedSettings() {
+    ObjectNode n = Json.object();
+    JsonNode cp = get("/jobs/" + jobId.toHexString() + "/checkpoints/config");
+    n.set("checkpointConfig", cp == null ? com.fasterxml.jackson.databind.node.NullNode.getInstance() : cp);
+    ObjectNode conf = n.putObject("configuration");
+    JsonNode jc = get("/jobs/" + jobId.toHexString() + "/jobmanager/config");
+    if (jc != null) for (JsonNode e : jc) if (OBSERVED_KEYS.contains(e.path("key").asText())) conf.put(e.path("key").asText(), e.path("value").asText());
+    ObjectNode v = n.putObject("vertices");
+    JsonNode j = get("/jobs/" + jobId.toHexString());
+    if (j != null) for (JsonNode x : j.path("vertices")) Json.putSafe(v, x.path("name").asText(), x.path("parallelism").asLong());
+    return n;
+  }
+
+  /** The job's checkpoint statistics over REST (comparison item 8): counts, and the checkpointed size, state size and end-to-end
+   *  duration summaries. */
+  ObjectNode checkpointStatistics() {
+    ObjectNode n = Json.object();
+    JsonNode c = get("/jobs/" + jobId.toHexString() + "/checkpoints");
+    if (c == null) return n.put("error", "no checkpoint statistics");
+    n.set("counts", c.path("counts"));
+    ObjectNode s = n.putObject("summary");
+    for (String k : List.of("checkpointed_size", "state_size", "end_to_end_duration")) s.set(k, c.path("summary").path(k));
+    return n;
   }
 
   /** The resident set of both JVMs now and at their peak, as the operating system reports it. */

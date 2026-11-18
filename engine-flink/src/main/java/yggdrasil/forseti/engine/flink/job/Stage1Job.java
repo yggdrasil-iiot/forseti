@@ -44,7 +44,8 @@ public final class Stage1Job {
       sources.put(t, Topology.sourceProperties(s, id));
       parallelism.put(t, ps.size());
       WatermarkStrategy<Msg> ws = t.equals(InputParser.MESSAGES) ? PerRecordWatermarks.strategy(oo) : WatermarkStrategy.noWatermarks();
-      DataStream<Msg> raw = env.fromSource(Topology.source(s, t, ps, null, id), ws, id).setParallelism(ps.size()).uid("forseti-" + id);
+      DataStream<Msg> raw = env.fromSource(Topology.source(s, t, ps, null, id), ws, id).setParallelism(ps.size()).uid("forseti-" + id)
+          .process(new SplitProbe(s, id), msg).setParallelism(ps.size()).name("split-probe-" + id).uid("forseti-split-probe-" + id);
       routed.put(t, raw.process(new Stage1Router(s), msg).setParallelism(ps.size()).name("stage1-router-" + t).uid("forseti-stage1-router-" + t));
     }
     if (!routed.containsKey(InputParser.MESSAGES)) throw new IllegalStateException("no subscribed raw telemetry partition");

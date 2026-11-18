@@ -104,7 +104,10 @@ public final class Topology {
     ObjectNode n = Json.object().put("engine", JobSettings.ENGINE).put("engineVersion", JobSettings.ENGINE_VERSION).put("stage", s.stage());
     ObjectNode c = n.putObject("configuration");
     new TreeMap<>(conf.toMap()).forEach(c::put);
+    // job constants: the per-record delegating generator and no idleness are how the jobs are built, and an idle status on the
+    // telemetry input fails the job (Stage1Stations.processWatermarkStatus), so the recorded values cannot differ from the running job
     n.put("watermarkEmission", PerRecordWatermarks.MODE).put("idleness", "off");
+    n.set("generationsReader", s.node().get("generationsReader"));
     ObjectNode sp = n.putObject("sourceParallelism");
     sourceParallelism.forEach(sp::put);
     n.put("keyedParallelism", JobSettings.KEYED_PARALLELISM).put("maxParallelism", JobSettings.MAX_PARALLELISM);
