@@ -1021,10 +1021,27 @@ final class Injections {
         p.equal(GateEvidence.PIPELINE, a.generation.store().name(), "the base generation's store");
         p.equal(GateEvidence.PIPELINE, b.generation.store().name(), "the replay generation's store");
         p.require(a.generation.store().shared() == c.pipeline.shared() && b.generation.store().shared() == c.pipeline.shared(), "both generations " + state);
+        String store = "";
+        if (a.controlEvidence != null || b.controlEvidence != null) {
+            // a replay gate run: from the runs' own evidence, the replay generation is a row of the base's forseti.generations topic, the
+            // next number after it (the shard registers its one scenario, then the replay), and its declaration a later record of the
+            // same forseti.recovery-control topic
+            JsonNode x = a.controlEvidence, y = b.controlEvidence;
+            p.require(x != null && y != null, "control-store evidence of both runs: " + x + " / " + y);
+            if (x != null && y != null) {
+                for (String k : List.of("cluster", "generationsTopic", "recoveryControlTopic"))
+                    p.equal(x.path(k).asText(null), y.path(k).asText(null), "the replay's " + k + " (the base's)");
+                p.equal(x.path("generation").asLong() + 1, y.path("generation").asLong(), "the replay generation (base + 1)");
+                p.require(y.path("declarationOffset").asLong(-1) > x.path("declarationOffset").asLong(Long.MAX_VALUE),
+                    "the replay's declaration at offset " + y.path("declarationOffset") + " after the base's " + x.path("declarationOffset"));
+                store = "; one control store " + x.path("generationsTopic").asText() + " / " + x.path("recoveryControlTopic").asText() + ": generations "
+                    + x.path("generation") + " -> " + y.path("generation") + ", declarations at " + x.path("declarationOffset") + " -> " + y.path("declarationOffset");
+            }
+        }
         return p.result("online: W1 at the planned cut " + planned + " = A T0 + " + (A - a.t0()) + "; holeAt, holeAt - 1 attributed, holeAt - 2 replay-required beyond-horizon; "
             + t.path("ref").asText() + " missingPeriods 1 at cut " + planned + ", 0 at cut " + lateCut + "; replay (generation " + b.generation.generation() + "): " + kept
             + " deadlines keep their cut ids and are bracketed, holeAt - 2 attributed with cause replayed, no replay-required, "
-            + (rc == null ? "" : rc.replayedTimerRows + " timer rows with the replayed timer cause, ") + "J-PROGRESS-ORDER clean; " + remain + "; both generations " + state);
+            + (rc == null ? "" : rc.replayedTimerRows + " timer rows with the replayed timer cause, ") + "J-PROGRESS-ORDER clean; " + remain + "; both generations " + state + store);
     }
 
     /** The online journals after the replay: equal to the index written before the replay started, file for file, and folding to the same
@@ -1119,18 +1136,16 @@ final class Injections {
         P p = new P();
         List<String> out = new ArrayList<>();
         for (String s : Scenarios.HORIZON) {
-            JsonNode r = all.runs.get(s);
-            if (r == null) { p.list.add(s + " not run"); continue; }
-            p.use(r);
-            out.add(afterHorizon(s, r, p.list));
+            List<JsonNode> rs = Summaries.named(all.runs, s);   // every execution of it
+            if (rs.isEmpty()) { p.list.add(s + " not run"); continue; }
+            for (JsonNode r : rs) { p.use(r); out.add(afterHorizon(s, r, p.list)); }
         }
         // the generation runs of a horizon recording (its event-time replay): their own afterHorizon values, required
         for (Scenarios.GenerationRun g : Scenarios.GENERATION_RUNS) {
             if (!Scenarios.HORIZON.contains(g.scenario())) continue;
-            JsonNode r = all.generationRuns.get(g.name());
-            if (r == null) { p.list.add(g.name() + " not run: no afterHorizon values"); continue; }
-            p.use(r);
-            out.add(afterHorizon(g.name(), r, p.list));
+            List<JsonNode> rs = Summaries.named(all.generationRuns, g.name());
+            if (rs.isEmpty()) { p.list.add(g.name() + " not run: no afterHorizon values"); continue; }
+            for (JsonNode r : rs) { p.use(r); out.add(afterHorizon(g.name(), r, p.list)); }
         }
         out.removeIf(Objects::isNull);
         return p.result(String.join("; ", out));
@@ -1274,9 +1289,9 @@ final class Injections {
         Summaries all = Summaries.of(c);
         P p = new P();
         p.list.addAll(all.missing);
-        JsonNode hb = all.runs.get("held-back-10min"), pl = all.runs.get("horizon-planned-late");
-        if (hb != null) p.use(hb);
-        if (pl != null) p.use(pl);
+        List<JsonNode> hbs = Summaries.named(all.runs, "held-back-10min"), pls = Summaries.named(all.runs, "horizon-planned-late");
+        for (JsonNode x : hbs) p.use(x);
+        for (JsonNode x : pls) p.use(x);
         ObjectNode m = Json.object(), rows = m.putObject("journalRecordsPerTopic");
         long without = 0;
         for (JsonNode r : all.runs.values()) {
@@ -1290,7 +1305,7 @@ final class Injections {
         m.put("latenessDefinition", "admissionW - sourceTs of an accepted sample");
         ObjectNode late = m.putObject("longestLatenessCorrectedOnlineMs");
         String evidence = "";
-        if (hb != null && !Summaries.failed(hb)) {
+        for (JsonNode hb : hbs) if (!Summaries.failed(hb)) {
             long have = hb.path("measures").path("longestLatenessMs").asLong();
             String at = hb.path("measures").path("longestAt").asText();
             Json.putSafe(late, "held-back-10min", have);
@@ -1299,7 +1314,7 @@ final class Injections {
             else p.equal(want, have, "held-back-10min longestLatenessCorrectedOnlineMs (" + at + "), delayMs - scanMs - O - 1");
             evidence += "held-back-10min " + have + " = delayMs - scanMs - O - 1 = " + want + " (" + at + ")";
         }
-        if (pl != null && !Summaries.failed(pl)) {
+        for (JsonNode pl : pls) if (!Summaries.failed(pl)) {
             long H = pl.path("horizonMs").asLong(), have = pl.path("measures").path("longestLatenessMs").asLong();
             String at = pl.path("measures").path("longestAt").asText();
             Json.putSafe(late, "horizon-planned-late", have);

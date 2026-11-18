@@ -57,18 +57,18 @@ import yggdrasil.forseti.replay.kafka.KafkaTopicManager;
 import yggdrasil.forseti.replay.kafka.LocalProcessSupervisor;
 
 /**
- * One replay run of one engine recording on Flink (the harness side, plan D1, D7, D10): the run's topics created and their settings
- * observed; the generations of the request registered by the operator CLI itself ({@code generation new --store kafka} on
- * {@code forseti.generations}); the run preparation on {@code forseti.recovery-control} (the initial declaration); both jobs started,
- * each in its own application-mode cluster, and awaited RUNNING (the stage-1 writers fix their epoch in {@code initializeState}, before
- * RUNNING); then per batch the business records and barriers written and the cut awaited from the committed progress records, batch k+1
- * only after cut k is complete. After the last cut the memory and the checkpoint statistics of both clusters and their observed job
- * settings are read over REST, both jobs are cancelled and their JVMs stopped, and one {@code read_committed} consumer dumps every output
- * journal into the step-3 journal format in recording offsets ({@code journals/}, {@code quarantine/}), beside {@code cuts.json} (with
- * each station's {@code onlineVisits} at each cut, from the stage-1 operators' cut evidence), {@code run.json} (with {@code jobSettings}
+ * One replay run of one engine recording on Flink (the harness side, plan D1, D7, D10), on a generation the gate registered before
+ * any run started (spec 577; {@link #register} is the operator CLI's {@code generation new --store kafka} on the store's
+ * {@code forseti.generations}): the run's own input and output topics created and every planned topic's settings observed; the run
+ * preparation on the store's {@code forseti.recovery-control} (the initial declaration of its generation); both jobs started, each in
+ * its own application-mode cluster, and awaited RUNNING (the stage-1 writers fix their epoch in {@code initializeState}, before RUNNING);
+ * then per batch the business records and barriers written and the cut awaited from the committed progress records, batch k+1 only
+ * after cut k is complete. After the last cut the memory and the checkpoint statistics of both clusters and their observed job settings
+ * are read over REST, both jobs are cancelled and their JVMs stopped, and one {@code read_committed} consumer dumps every output journal
+ * into the step-3 journal format in recording offsets ({@code journals/}, {@code quarantine/}), beside {@code cuts.json} (with each
+ * station's {@code onlineVisits} at each cut, from the stage-1 operators' cut evidence), {@code run.json} (with {@code jobSettings}
  * beside {@code pins}), {@code offset-map.json} and {@code evidence.json}. The comparison with the oracle runs afterwards, on those files
- * only. An event-time replay ({@code base} set) runs on topics of its own but registers its generation in the base run's
- * {@code forseti.generations} and declares in its {@code forseti.recovery-control}.
+ * only.
  */
 final class FlinkRun {
   static final Duration CUT_TIMEOUT = Duration.ofSeconds(Long.getLong("forseti.flink.cutTimeoutSeconds", 600)), RUNNING_TIMEOUT = Duration.ofSeconds(180),
@@ -82,23 +82,23 @@ final class FlinkRun {
 
   static ReplayEngine.Run run(String bootstrap, Path root, ReplayEngine.Request req, FlinkCluster.Memory stage1Memory, FlinkCluster.Memory stage2Memory) throws IOException {
     long t0 = System.nanoTime();
-    Path work = req.work(), state = req.state(), out = work.resolve("run"), flink = work.resolve("flink");
+    Path work = req.work(), out = work.resolve("run"), flink = work.resolve("flink");
     for (Path p : List.of(out, flink)) delete(p);
     Files.createDirectories(work);
-    Files.createDirectories(state);
     Recording rec = Recording.open(req.recording());
-    JsonNode rule = Json.read(req.scenario()).path("rule");
-    Handle base = req.base() == null ? null : (Handle) req.base().handle();
     String control = req.negativeControl() != null && Controls.harness(req.negativeControl()) ? req.negativeControl() : null;
+    ReplayEngine.ControlStore cs = req.generation().store();
+    long generation = req.generation().generation();
 
-    // (1) the run's topics (an event-time replay shares its base run's generation and recovery control topics)
+    // (1) the run's own input and output topics; forseti.generations and forseti.recovery-control are its control store's (spec 577: the
+    // generation was registered there by the gate, before any run started)
     String prefix = "flink-" + req.label().replaceAll("[^a-z0-9.-]", "-") + "-" + UUID.randomUUID().toString().substring(0, 8) + ".";
-    List<ReplayTopics.Spec> own = ReplayTopics.plan(prefix), plan = new ArrayList<>(), create = new ArrayList<>();
-    for (ReplayTopics.Spec s : own) {
-      boolean shared = base != null && (s.base().equals(ReplayTopics.GENERATIONS) || s.base().equals(ReplayTopics.RECOVERY_CONTROL));
-      ReplayTopics.Spec x = shared ? new ReplayTopics.Spec(s.base(), base.names().get(s.base()), s.role(), s.partitions(), s.configs()) : s;
+    List<ReplayTopics.Spec> plan = new ArrayList<>(), create = new ArrayList<>();
+    for (ReplayTopics.Spec s : ReplayTopics.plan(prefix)) {
+      String shared = s.base().equals(ReplayTopics.GENERATIONS) ? cs.generationsTopic() : s.base().equals(ReplayTopics.RECOVERY_CONTROL) ? cs.recoveryControlTopic() : null;
+      ReplayTopics.Spec x = shared != null ? new ReplayTopics.Spec(s.base(), shared, s.role(), s.partitions(), s.configs()) : s;
       plan.add(x);
-      if (!shared) create.add(x);
+      if (shared == null) create.add(x);
     }
     KafkaEvidenceCollector evidence = new KafkaEvidenceCollector();
     try (KafkaTopicManager admin = new KafkaTopicManager(bootstrap, "forseti-harness-admin")) {
@@ -108,12 +108,6 @@ final class FlinkRun {
     Map<String, String> names = new LinkedHashMap<>();
     for (ReplayTopics.Spec s : plan) names.put(s.base(), s.name());
     String generationsTopic = names.get(ReplayTopics.GENERATIONS), controlTopic = names.get(ReplayTopics.RECOVERY_CONTROL);
-
-    // (2) the generations of the request, registered by the operator CLI on forseti.generations (spec 575-577), the run's last
-    Path registerWith = base != null ? base.recording() : req.recording();
-    List<ReplayEngine.Registered> registered = new ArrayList<>();
-    for (ReplayEngine.Registration g : req.registrations()) registered.add(register(bootstrap, generationsTopic, state, req.trustedKeys(), rule, g, registerWith));
-    long generation = registered.get(registered.size() - 1).generation();
 
     try (KafkaGenerationStore store = new KafkaGenerationStore(bootstrap, generationsTopic, false);
          KafkaRecoveryControl rc = new KafkaRecoveryControl(bootstrap, controlTopic, true);
@@ -126,6 +120,8 @@ final class FlinkRun {
       GenerationStore.Entry entry = store.registered(generation).orElseThrow(() -> new IllegalStateException("generation " + generation + " is not registered"));
       Generation g = entry.row();
       String rowSha = store.registeredRowSha256(generation).orElseThrow();
+      if (!rowSha.equals(req.generation().registeredRowSha256()))
+        throw new IllegalStateException("generation " + generation + " of " + generationsTopic + " has the row " + rowSha + ", the gate registered " + req.generation().registeredRowSha256());
       HeadVerifier.Head head = EngineContract.head(g.releaseEvidence());
       Path mappings = req.registry().resolve("mappings");
       RuleSet rules;
@@ -216,7 +212,8 @@ final class FlinkRun {
       rec.digests().forEach(digests::put);
       String manifestSha = Canonical.digestOf(Files.readAllBytes(req.recording().resolve(Recording.MANIFEST)));
       boolean replay = Envelope.REPLAYED.equals(req.causeKind());
-      String originalSha = replay && base != null ? Canonical.digestOf(Files.readAllBytes(base.recording().resolve(Recording.MANIFEST))) : null;
+      JsonNode source = rec.manifest().path("source");
+      String originalSha = replay && source.path("replayOf").isTextual() ? source.path("replayOf").asText() : null;
       ObjectNode record = RunRecord.build(new RunRecord.Facts(runId, g.generation(), rowSha, entry.scope(), ReferenceEngine.DEFAULT_SEED, false,
           replay ? ReferenceEngine.EVENT_TIME : null, originalSha, pins, manifestSha, digests, head.releaseSha256(), rules.rulesDigest(), ReferenceEngine.jcsJava(),
           written, consumed, cuts.size(), "forseti gate --engine flink (" + req.label() + ", topic prefix " + prefix + ")", control));
@@ -231,6 +228,8 @@ final class FlinkRun {
       Json.putSafe(prep, "declarationOffset", declaration);
       Json.putSafe(prep, "controlEnd", controlEnd);
       prep.put("prefix", prefix).put("generationsTopic", generationsTopic).put("controlTopic", controlTopic);
+      prep.set("controlStore", cs.toJson());
+      Json.putSafe(prep, "generation", generation);
       evidence.collect("flink", flinkEvidence);
       ObjectNode ev = evidence.evidence();
       Json.write(out.resolve("evidence.json"), ev);
@@ -245,9 +244,10 @@ final class FlinkRun {
       Json.putSafe(summary, "dumpedRecords", dumped.values().stream().mapToLong(Long::longValue).sum());
       summary.set("memory", memoryOut);
       summary.set("checkpoints", checkpoints);
+      summary.set("segments", segmentSizes(jobs));
       summary.set("configuredMemory", Json.object().<ObjectNode>set("stage1", stage1Memory.toJson()).set("stage2", stage2Memory.toJson()));
       if (cuts.size() != rec.batches().size()) throw new IllegalStateException("cuts " + cuts.size() + " of " + rec.batches().size() + " batches");
-      return new ReplayEngine.Run(out, registered, ev, summary, new Handle(bootstrap, plan, names, g.generation(), req.recording(), writer.offsets()));
+      return new ReplayEngine.Run(out, req.generation(), declaration, controlEnd, ev, summary, new Handle(bootstrap, plan, names, g.generation(), req.recording(), writer.offsets()));
     }
   }
 
@@ -275,8 +275,10 @@ final class FlinkRun {
 
   /** {@code generation new --store kafka} in-process with the registry's fixture clock (its head's signedAt + 60 s); the printed
    *  registration. */
-  static ReplayEngine.Registered register(String bootstrap, String generationsTopic, Path state, Path trustedKeys, JsonNode rule, ReplayEngine.Registration g,
-                                          Path recording) {
+  static ReplayEngine.Registered register(String bootstrap, ReplayEngine.ControlStore cs, Path state, Path trustedKeys, JsonNode rule, ReplayEngine.Registration g,
+                                          Path recording) throws IOException {
+    String generationsTopic = cs.generationsTopic();
+    Files.createDirectories(state);
     String stream = rule.path("stream").asText();
     Path mappings = g.registry().resolve("mappings");
     JsonNode statement = Json.read(Base64.getDecoder().decode(Json.read(mappings.resolve("head-attestations/" + stream + ".dsse.json")).get("payload").asText()));
@@ -290,7 +292,31 @@ final class FlinkRun {
     String printed = o.toString(StandardCharsets.UTF_8).strip();
     if (exit != 0) throw new IllegalStateException("generation new --store kafka exit " + exit + ": " + printed + e.toString(StandardCharsets.UTF_8));
     JsonNode p = Json.read(printed.lines().reduce((a, b) -> b).orElse("").getBytes(StandardCharsets.UTF_8));
-    return new ReplayEngine.Registered(p.get("generation").longValue(), Json.text(p, "rulesDigest"), Json.text(p, "registeredRowSha256"), Json.text(p, "scope"));
+    return new ReplayEngine.Registered(cs, p.get("generation").longValue(), Json.text(p, "rulesDigest"), Json.text(p, "registeredRowSha256"), Json.text(p, "scope"), g.variant());
+  }
+
+  /** Comparison item 8 and the D5 head bound: the largest segment and the largest head segment either stage's station operators
+   *  wrote, over every subtask (the stage-1 head carries the pending deadlines, the stage-2 head the tracker and the incidents). */
+  static ObjectNode segmentSizes(ObjectNode jobs) {
+    ObjectNode n = Json.object();
+    for (String stage : List.of("stage1", "stage2")) {
+      long largest = -1, head = -1, written = 0, bytes = 0;
+      for (Iterator<Map.Entry<String, JsonNode>> it = jobs.fields(); it.hasNext();) {
+        Map.Entry<String, JsonNode> e = it.next();
+        if (!e.getKey().startsWith(stage + "-stations-")) continue;
+        JsonNode sg = e.getValue().path("segments");
+        largest = Math.max(largest, sg.path("largestBytes").asLong(-1));
+        head = Math.max(head, sg.path("largestHeadBytes").asLong(-1));
+        written += sg.path("written").asLong();
+        bytes += sg.path("writtenBytes").asLong();
+      }
+      ObjectNode x = n.putObject(stage);
+      Json.putSafe(x, "largestBytes", largest);
+      Json.putSafe(x, "largestHeadBytes", head);
+      Json.putSafe(x, "written", written);
+      Json.putSafe(x, "writtenBytes", bytes);
+    }
+    return n;
   }
 
   /** Each station's {@code onlineVisits} at each cut it completed, from the stage-1 operators' cut evidence

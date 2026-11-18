@@ -20,11 +20,30 @@ import yggdrasil.forseti.replay.kafka.KafkaRecoveryControl;
 final class Writers {
   private Writers() {}
 
+  /** Where the writers read {@code forseti.recovery-control} and its reader's configuration: Kafka in every job; the operator restore
+   *  test replaces both with a fixed read of the same row shape (no broker in a unit test). */
+  static volatile java.util.function.Function<JobSettings, RecoveryControlStore.Snapshot> CONTROL = Writers::kafkaControl;
+  static volatile java.util.function.Function<JobSettings, ObjectNode> CONTROL_READER = Writers::kafkaControlReader;
+
   /** One fresh {@code read_committed} read of the control partition up to its end offset H (spec 416): never a cached value. */
-  static RecoveryControlStore.Snapshot readControl(JobSettings s) {
+  static RecoveryControlStore.Snapshot readControl(JobSettings s) { return CONTROL.apply(s); }
+
+  static ObjectNode controlReader(JobSettings s) { return CONTROL_READER.apply(s); }
+
+  private static RecoveryControlStore.Snapshot kafkaControl(JobSettings s) {
     try (KafkaRecoveryControl c = new KafkaRecoveryControl(s.bootstrap(), s.runName(ReplayTopics.RECOVERY_CONTROL), false)) {
       return c.read();
     }
+  }
+
+  /** The configuration of the writers' {@code forseti.recovery-control} reader, as {@link #readControl} builds it (spec 708: it is
+   *  a consumer of the run and is recorded in the job settings). */
+  private static ObjectNode kafkaControlReader(JobSettings s) {
+    ObjectNode n = Json.object();
+    try (KafkaRecoveryControl c = new KafkaRecoveryControl(s.bootstrap(), s.runName(ReplayTopics.RECOVERY_CONTROL), false)) {
+      new java.util.TreeMap<>(c.readerConfig()).forEach((k, v) -> n.put(k.toString(), v.toString()));
+    }
+    return n;
   }
 
   /** The control read a recovering writer makes when a barrier of a later epoch arrives. */

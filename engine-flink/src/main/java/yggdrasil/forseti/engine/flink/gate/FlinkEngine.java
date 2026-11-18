@@ -9,11 +9,16 @@ import org.apache.flink.runtime.state.KeyGroupRange;
 import org.apache.flink.runtime.state.KeyGroupRangeAssignment;
 import yggdrasil.forseti.cli.recording.Recording;
 import yggdrasil.forseti.cli.recording.RoutingManifest;
+import yggdrasil.forseti.cli.replay.EngineContract;
 import yggdrasil.forseti.cli.replay.ReplayEngine;
+import yggdrasil.forseti.cli.replay.ReplayTopics;
 import yggdrasil.forseti.core.Json;
 import yggdrasil.forseti.engine.flink.job.JobSettings;
 import yggdrasil.forseti.engine.flink.job.PerRecordWatermarks;
 import yggdrasil.forseti.replay.kafka.DockerBroker;
+import yggdrasil.forseti.replay.kafka.KafkaConfig;
+import yggdrasil.forseti.replay.kafka.KafkaTopicManager;
+import yggdrasil.forseti.engine.flink.job.RestoreEvidence;
 
 /** The Flink engine of the replay gate ({@link ReplayEngine}, plan D1, D7): each run on its own topics of one broker (the pinned Docker
  *  image the engine starts and removes, or a running one), each job in its own application-mode cluster ({@link FlinkRun}), and the
@@ -29,15 +34,14 @@ import yggdrasil.forseti.replay.kafka.DockerBroker;
  *  <li>{@code FL-JOB-SETTINGS} (588-590): the observed job settings are the engine pins: {@code EXACTLY_ONCE} checkpoints every
  *  1000 ms, one at a time, RocksDB with incremental checkpoints, no restart strategy, keyed parallelism 6 and max parallelism 128 as the
  *  operators saw them, transactional {@code EXACTLY_ONCE} sinks;</li>
- *  <li>{@code FL-TIMER-INVARIANT} (reviewer decision 4): at every cut close, evaluated at the operator watermark W1, every deadline
- *  registered before it and at or below {@code W1} was held (its timer had fired);</li>
- *  <li>{@code FL-INIT-EVIDENCE}: the first progress of every stage-1 progress writer carries the run's {@code initEvidence} (its
- *  declaration, the control end offset H and Flink's restore evidence of a first start) and no other progress does;</li>
- *  <li>{@code FL-CUT-EVIDENCE}: every station's entry of every cut in {@code cuts.json} carries the {@code onlineVisits} its operator
- *  recorded at that close.</li></ul> */
+ *  <li>{@code FL-TIMER-INVARIANT} (reviewer decision 4): the native timers are reconciled with the authoritative deadline index at
+ *  every cut close: every distinct deadline of the index has exactly one Flink registration or a held mark, Flink's own timer queue holds
+ *  exactly the registered ones, every held mark is at or below the watermark, and every deadline registered before the close and at or
+ *  below {@code W1} is held; on a run whose stations had deadlines, timers were registered, fired and drained as held (no vacuous pass).</li></ul>
+ *  The engine-independent init and cut evidence are the gate's {@code R-INIT-EVIDENCE} and {@code R-CUT-EVIDENCE}.
+ */
 final class FlinkEngine implements ReplayEngine {
-  static final List<String> IDS = List.of("FL-KEYGROUP-MAP", "FL-WATERMARK-PER-RECORD", "FL-ONE-SPLIT", "FL-JOB-SETTINGS", "FL-TIMER-INVARIANT", "FL-INIT-EVIDENCE",
-      "FL-CUT-EVIDENCE");
+  static final List<String> IDS = List.of("FL-KEYGROUP-MAP", "FL-WATERMARK-PER-RECORD", "FL-ONE-SPLIT", "FL-JOB-SETTINGS", "FL-TIMER-INVARIANT");
 
   private final Path root;
   private final DockerBroker broker;
@@ -58,6 +62,39 @@ final class FlinkEngine implements ReplayEngine {
   @Override public String name() { return JobSettings.ENGINE; }
 
   @Override public String w1Form() { return "min-over-partitions"; }
+
+  @Override public ControlStore controlStore(String name) throws Exception {
+    String prefix = "flink-store-" + name.replaceAll("[^a-z0-9.-]", "-") + "-" + java.util.UUID.randomUUID().toString().substring(0, 8) + ".";
+    List<ReplayTopics.Spec> specs = new ArrayList<>();
+    for (ReplayTopics.Spec s : ReplayTopics.plan(prefix))
+      if (s.base().equals(ReplayTopics.GENERATIONS) || s.base().equals(ReplayTopics.RECOVERY_CONTROL)) specs.add(s);
+    try (KafkaTopicManager admin = new KafkaTopicManager(bootstrap, "forseti-harness-admin")) { admin.create(specs); }
+    String cluster;
+    try (org.apache.kafka.clients.admin.Admin a = org.apache.kafka.clients.admin.Admin.create(KafkaConfig.admin(bootstrap, "forseti-harness-cluster-id"))) {
+      cluster = "kafka:" + a.describeCluster().clusterId().get(30, java.util.concurrent.TimeUnit.SECONDS);
+    }
+    return new ControlStore(name, cluster, ReplayTopics.nameOf(specs, ReplayTopics.GENERATIONS), ReplayTopics.nameOf(specs, ReplayTopics.RECOVERY_CONTROL));
+  }
+
+  @Override public Registered register(ControlStore store, Path state, Path trustedKeys, JsonNode rule, Registration registration, Path recording) throws Exception {
+    return FlinkRun.register(bootstrap, store, state, trustedKeys, rule, registration, recording);
+  }
+
+  @Override public String firstStartRestore() { return new RestoreEvidence(false, null, 0).encode(); }
+
+  /** From the split probes of both jobs: the partitions each source consumed (the stage-1 raw topics and {@code quality.incidents}). */
+  @Override public Map<String, List<Integer>> observedSubscription(Run run) {
+    Map<String, List<Integer>> m = new LinkedHashMap<>();
+    for (String t : EngineContract.STAGE1_TOPICS_AND_INCIDENTS) {
+      String source = (t.equals("quality.incidents") ? "stage2-source-" : "stage1-source-") + t;
+      TreeSet<Integer> ps = new TreeSet<>();
+      run.evidence().path("flink").path("jobs").fields().forEachRemaining(e -> {
+        if (e.getKey().startsWith("split-" + source + "-") && source.equals(e.getValue().path("source").asText())) e.getValue().path("partitions").forEach(x -> ps.add(x.intValue()));
+      });
+      m.put(t, new ArrayList<>(ps));
+    }
+    return m;
+  }
 
   @Override public Run run(Request r) throws Exception {
     return FlinkRun.run(bootstrap, root, r, FlinkCluster.Memory.forStage(1, r.settings()), FlinkCluster.Memory.forStage(2, r.settings()));
@@ -168,6 +205,9 @@ final class FlinkEngine implements ReplayEngine {
         if (!"EXACTLY_ONCE".equals(e.getValue().path("deliveryGuarantee").asText(null))) js.add(stage + " sink " + e.getKey() + " " + e.getValue().path("deliveryGuarantee"));
       });
       if (s.path("sinks").size() != 2) js.add(stage + ": " + s.path("sinks").size() + " sinks recorded, 2 expected");
+      if (!s.path("sourceParallelism").isObject() || s.path("sourceParallelism").isEmpty()) js.add(stage + ": no source parallelism recorded");
+      if (!s.path("readers").path("generations").isObject()) js.add(stage + ": the job's forseti.generations reader is not recorded");
+      if (stage.equals("stage1") && !s.path("readers").path("recoveryControl").isObject()) js.add(stage + ": the writers' forseti.recovery-control reader is not recorded");
       s.path("sourceParallelism").fields().forEachRemaining(e -> {
         List<Integer> w = want.get(stage + "-source-" + e.getKey());
         if (w == null || e.getValue().asLong(-1) != w.size()) js.add(stage + " source " + e.getKey() + " parallelism " + e.getValue() + " (observed), subscribed " + w);
@@ -175,28 +215,28 @@ final class FlinkEngine implements ReplayEngine {
       if (!engineMatches(s)) js.add(stage + " engine " + s.path("engine") + " " + s.path("engineVersion"));
     }
 
-    // reviewer decision 4: the timer invariant at watermark-driven closes
+    // reviewer decision 4: native registrations and held marks reconciled with the deadline index, with coverage
     List<String> ti = f.get("FL-TIMER-INVARIANT");
-    long closes = 0;
+    long closes = 0, deadlines = 0, registrations = 0, fired = 0, drained = 0;
     for (Iterator<Map.Entry<String, JsonNode>> it = jobs.fields(); it.hasNext();) {
       Map.Entry<String, JsonNode> e = it.next();
       if (!e.getKey().startsWith("stage1-stations-")) continue;
-      closes += e.getValue().path("timerInvariantCloses").asLong();
-      long v = e.getValue().path("timerInvariantViolations").asLong(-1);
-      if (v != 0) ti.add(e.getKey() + ": " + v + " deadlines at or below W1 not held at a cut close " + e.getValue().path("timerInvariantExamples"));
+      JsonNode n = e.getValue();
+      if (!n.has("timerRegistrations")) { ti.add(e.getKey() + ": no timer evidence"); continue; }
+      closes += n.path("timerInvariantCloses").asLong();
+      deadlines += n.path("deadlinesSeen").asLong();
+      registrations += n.path("timerRegistrations").asLong();
+      fired += n.path("firedTimers").asLong();
+      drained += n.path("heldDeadlinesDrained").asLong();
+      long v = n.path("timerInvariantViolations").asLong(-1);
+      if (v != 0) ti.add(e.getKey() + ": " + v + " timer invariant violations " + n.path("timerInvariantExamples"));
     }
     if (closes == 0) ti.add("no cut close checked");
-
-    // initEvidence
-    JsonNode prep = ev.path("flink").path("preparation");
-    f.get("FL-INIT-EVIDENCE").addAll(FlinkGate.initEvidence(run.out(), prep.path("declarationOffset").asLong(-1), prep.path("controlEnd").asLong(-1)));
-
-    // onlineVisits in the cut log
-    List<String> ce = f.get("FL-CUT-EVIDENCE");
-    for (JsonNode c : cutLog.path("cuts"))
-      c.path("perStation").fields().forEachRemaining(e -> {
-        if (!e.getValue().path("onlineVisits").isIntegralNumber() && ce.size() < 20) ce.add("cut " + c.path("cutId") + " " + e.getKey() + ": no onlineVisits");
-      });
+    if (deadlines > 0) {
+      if (registrations == 0) ti.add(deadlines + " deadlines in the index, no Flink timer registered");
+      if (fired == 0) ti.add(registrations + " timers registered, none fired");
+      if (drained == 0) ti.add(fired + " timers fired, no held deadline drained at a close");
+    }
     return f;
   }
 

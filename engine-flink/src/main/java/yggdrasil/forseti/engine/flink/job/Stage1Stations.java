@@ -87,7 +87,7 @@ public final class Stage1Stations extends AbstractStreamOperator<Out>
   private transient MapState<String, byte[]> stored;
   private transient InternalTimerService<VoidNamespace> timers;
   private transient Map<String, Station> stations;
-  private transient long firedTimers, heldDrained, closedCuts, watermarkCloses, timerInvariantCloses, timerInvariantViolations, snapshots, segmentsWritten, segmentBytes, segmentBytesMax,
+  private transient long firedTimers, heldDrained, closedCuts, watermarkCloses, timerInvariantCloses, timerInvariantViolations, timerRegistrations, deadlinesSeen, headBytesMax, snapshots, segmentsWritten, segmentBytes, segmentBytesMax,
       segmentsRemoved, fullDrains;
   private transient ArrayNode timerInvariantExamples;
   /** Per cut closed by this subtask: {station, cutId, onlineVisits} (the cut log's operator evidence, appended at each close). */
@@ -200,6 +200,7 @@ public final class Stage1Stations extends AbstractStreamOperator<Out>
     stations.keySet().forEach(owned::add);
     initRecord.put("restore", restore.encode());
     initRecord.set("initEvidence", Writers.initJson(init));
+    initRecord.set("recoveryControlReader", Writers.controlReader(settings));
     Json.putSafe(initRecord, "epoch", declaration.targetEpoch());
     writeEvidence(subtask);
   }
@@ -256,6 +257,10 @@ public final class Stage1Stations extends AbstractStreamOperator<Out>
       st.held.add(timer.getTimestamp());
       st.headDirty = true;
       firedTimers++;
+    } else {
+      // a Flink timer the station did not register (or had deleted): Flink's registrations and the station's disagree
+      timerInvariantViolations++;
+      if (timerInvariantExamples.size() < 10) timerInvariantExamples.addObject().put("station", st.name).put("problem", "Flink fired an unregistered timer " + timer.getTimestamp());
     }
   }
 
@@ -273,8 +278,10 @@ public final class Stage1Stations extends AbstractStreamOperator<Out>
 
   /** Closes what the assembler closes now. The timer invariant (reviewer decision 4 of 2026-11-18) is checked at every close: the
    *  close is evaluated at the operator watermark W1, and Flink fires every registered timer at or below a watermark when it processes
-   *  it, so every deadline registered before this close and at or below W1 must be held (its timer fired); the evidence counts the
-   *  closes checked, those a watermark of input 1 triggered ({@code byWatermark}) and every violation. */
+   *  it, so every deadline registered before this close and at or below W1 must be held (its timer fired), and the registrations and
+   *  held marks must agree with the authoritative deadline index ({@link #reconcile}) and every timer Flink fires must be one the station
+   *  registered ({@link #onEventTime}); the evidence
+   *  counts the closes checked, those a watermark of input 1 triggered ({@code byWatermark}) and every violation. */
   private void close(Station st, boolean byWatermark) {
     while (true) {
       long w = nativeTime();
@@ -283,12 +290,8 @@ public final class Stage1Stations extends AbstractStreamOperator<Out>
       CutAssembler.Closed<Inputs.InputRecord> closed = c.get();
       if (byWatermark) watermarkCloses++;
       timerInvariantCloses++;
-      {
-        for (Long d : st.timerAt.headSet(w, true)) {
-          timerInvariantViolations++;
-          if (timerInvariantExamples.size() < 10) timerInvariantExamples.addObject().put("station", st.name).put("cutId", closed.cutId()).put("deadline", d).put("w1", w);
-        }
-      }
+      for (Long d : st.timerAt.headSet(w, true)) violation(st, closed.cutId(), "registered deadline " + d + " at or below W1 " + w + " not held");
+      reconcile(st, closed.cutId(), w);
       Long admissionW = closed.admissionW();
       if (!Objects.equals(admissionW, st.state.admissionW()))
         throw new IllegalStateException("station " + st.name + ": the assembler's admissionW " + admissionW + " differs from the state's " + st.state.admissionW());
@@ -308,6 +311,7 @@ public final class Stage1Stations extends AbstractStreamOperator<Out>
       apply(st, new Events.CutClose(closed.cutId(), w, refs, closed.restartEpoch(), closed.recoveryRef(), closed.mergedCutIds()), w, raw);
       for (Object o : raw) emit(st, o instanceof Row row ? Stage1.stamp(row, rt.stamped, w) : o);
       syncTimers(st);
+      reconcile(st, closed.cutId(), w);
       ObjectNode ce = Json.object().put("station", st.name);
       Json.putSafe(ce, "cutId", closed.cutId());
       Json.putSafe(ce, "onlineVisits", st.state.onlineVisits());
@@ -322,13 +326,38 @@ public final class Stage1Stations extends AbstractStreamOperator<Out>
     out.addAll(res.outputs());
   }
 
+  private void violation(Station st, long cutId, String what) {
+    timerInvariantViolations++;
+    if (timerInvariantExamples.size() < 10) timerInvariantExamples.addObject().put("station", st.name).put("cutId", cutId).put("problem", what);
+  }
+
+  /** The registrations against the authoritative deadline index and against Flink's timer queue: every distinct deadline of the
+   *  station's index has exactly one native registration or one held mark (never both), no registration or held mark outside the index,
+   *  every held mark at or below the watermark {@code w} (its timer fired). That Flink itself holds exactly these registrations is
+   *  checked where Flink reports a timer: every timer it fires must be a registration of this station ({@link #onEventTime}); its
+   *  RocksDB timer queue offers no complete enumeration to compare with. */
+  private void reconcile(Station st, long cutId, long w) {
+    TreeSet<Long> index = new TreeSet<>();
+    for (DeadlineIndex.Deadline d : st.state.deadlines().all()) index.add(d.deadline());
+    deadlinesSeen = Math.max(deadlinesSeen, index.size());
+    for (Long d : index) {
+      boolean reg = st.timerAt.contains(d), held = st.held.contains(d);
+      if (reg && held) violation(st, cutId, "deadline " + d + " both registered and held");
+    }
+    for (Long d : st.timerAt) if (!index.contains(d)) violation(st, cutId, "registration " + d + " outside the index");
+    for (Long d : st.held) {
+      if (!index.contains(d)) violation(st, cutId, "held mark " + d + " outside the index");
+      if (d > w) violation(st, cutId, "held mark " + d + " above the watermark " + w);
+    }
+  }
+
   /** One Flink event-time timer per distinct deadline of the index that has not fired yet; timers of deadlines that left it removed. */
   private void syncTimers(Station st) {
     TreeSet<Long> current = new TreeSet<>();
     for (DeadlineIndex.Deadline d : st.state.deadlines().all()) current.add(d.deadline());
     if (st.held.retainAll(current)) st.headDirty = true;
     for (Long d : new ArrayList<>(st.timerAt)) if (!current.contains(d)) { timers.deleteEventTimeTimer(VoidNamespace.INSTANCE, d); st.timerAt.remove(d); st.headDirty = true; }
-    for (Long d : current) if (!st.held.contains(d) && st.timerAt.add(d)) { timers.registerEventTimeTimer(VoidNamespace.INSTANCE, d); st.headDirty = true; }
+    for (Long d : current) if (!st.held.contains(d) && st.timerAt.add(d)) { timers.registerEventTimeTimer(VoidNamespace.INSTANCE, d); timerRegistrations++; st.headDirty = true; }
   }
 
   private void emit(Station st, Object x) {
@@ -363,7 +392,7 @@ public final class Stage1Stations extends AbstractStreamOperator<Out>
       for (Map.Entry<String, byte[]> e : d.written().entrySet()) put(STATE_PREFIX + e.getKey(), e.getValue());
       for (String id : d.removed()) { stored.remove(STATE_PREFIX + id); segmentsRemoved++; }
       if (st.cuts.drainChanged()) put(CutAssembler.SEGMENT, st.cuts.segment(InputCodec::encode));
-      if (st.headDirty) { put(ENGINE, st.head()); st.headDirty = false; }
+      if (st.headDirty) { byte[] h = st.head(); headBytesMax = Math.max(headBytesMax, h.length); put(ENGINE, h); st.headDirty = false; }
     }
     writeEvidence(getContainingTask().getEnvironment().getTaskInfo().getIndexOfThisSubtask());
   }
@@ -375,6 +404,17 @@ public final class Stage1Stations extends AbstractStreamOperator<Out>
     segmentBytesMax = Math.max(segmentBytesMax, b.length);
   }
 
+  /** A station of this subtask as the restore test compares it: the core state, the assembler and the engine head (package-private). */
+  ObjectNode inspect(String station) {
+    Station st = stations.get(station);
+    if (st == null) return null;
+    ObjectNode n = Json.object();
+    n.set("state", st.state.toJson());
+    n.set("assembler", st.cuts.toJson(InputCodec::encode));
+    n.set("head", Segments.read(ENGINE, st.head()));
+    return n;
+  }
+
   private void writeEvidence(int subtask) {
     ObjectNode n = initRecord.deepCopy();
     Json.putSafe(n, "closedCuts", closedCuts);
@@ -382,6 +422,8 @@ public final class Stage1Stations extends AbstractStreamOperator<Out>
     Json.putSafe(n, "heldDeadlinesDrained", heldDrained);
     Json.putSafe(n, "watermarkCloses", watermarkCloses);
     Json.putSafe(n, "timerInvariantCloses", timerInvariantCloses);
+    Json.putSafe(n, "timerRegistrations", timerRegistrations);
+    Json.putSafe(n, "deadlinesSeen", deadlinesSeen);
     Json.putSafe(n, "timerInvariantViolations", timerInvariantViolations);
     n.set("timerInvariantExamples", timerInvariantExamples);
     ObjectNode seg = n.putObject("segments");
@@ -389,6 +431,7 @@ public final class Stage1Stations extends AbstractStreamOperator<Out>
     Json.putSafe(seg, "written", segmentsWritten);
     Json.putSafe(seg, "writtenBytes", segmentBytes);
     Json.putSafe(seg, "largestBytes", segmentBytesMax);
+    Json.putSafe(seg, "largestHeadBytes", headBytesMax);
     Json.putSafe(seg, "removed", segmentsRemoved);
     Json.putSafe(seg, "fullDrains", fullDrains);
     n.set("cuts", cutEvidence);

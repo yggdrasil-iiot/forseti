@@ -39,9 +39,23 @@ final class JobSettingsRecord {
       s.put("autoWatermarkInterval", conf.path("pipeline.auto-watermark-interval").asText(null));
       s.put("restartStrategy", conf.path("restart-strategy.type").asText(null));
       s.put("configuredMaxParallelism", conf.path("pipeline.max-parallelism").asText(null));
+      // watermarkEmission, idleness and timestampSource are job constants (the jobs are built with the per-record delegating generator,
+      // no idleness and the payload timestamp source), backed at run time by the stage-1 operator failing on an idle telemetry status
       s.put("watermarkEmission", stage == 1 ? pins.path("watermarkEmission").asText(null) : "none (stage 2 uses no engine watermark)");
       s.put("idleness", pins.path("idleness").asText(null));
       s.put("timestampSource", "payload");
+      // the jobs' own readers of the control store (spec 708): forseti.generations in each job's main, forseti.recovery-control in
+      // every stage-1 writer's initialization
+      ObjectNode readers = s.putObject("readers");
+      if (pins.path("generationsReader").isObject()) readers.set("generations", filtered(pins.get("generationsReader"), DUMP_KEYS));
+      if (stage == 1) {
+        JsonNode cr = null;
+        for (Iterator<Map.Entry<String, JsonNode>> it = jobs.fields(); it.hasNext();) {
+          Map.Entry<String, JsonNode> e = it.next();
+          if (e.getKey().startsWith("stage1-stations-") && e.getValue().path("recoveryControlReader").isObject()) cr = e.getValue().get("recoveryControlReader");
+        }
+        if (cr != null) readers.set("recoveryControl", filtered(cr, DUMP_KEYS));
+      }
       // keyed parallelism and max parallelism as the station operators saw them at run time
       Set<Long> par = new TreeSet<>(), max = new TreeSet<>();
       jobs.fields().forEachRemaining(e -> {
@@ -74,6 +88,12 @@ final class JobSettingsRecord {
     ObjectNode d = n.putObject("dumpConsumer");
     for (String key : DUMP_KEYS) d.put(key, dump.path(key).asText(null));
     return n;
+  }
+
+  static ObjectNode filtered(JsonNode n, List<String> keys) {
+    ObjectNode x = Json.object();
+    for (String k : keys) x.put(k, n.path(k).asText(null));
+    return x;
   }
 
   /** {@code record} with {@code jobSettings} placed right after {@code pins}. */

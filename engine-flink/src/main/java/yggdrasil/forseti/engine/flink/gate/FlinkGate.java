@@ -79,35 +79,7 @@ public final class FlinkGate {
    *  run's declaration, the control end offset H and Flink's restore evidence of a first start; no later progress and no stage-2 progress
    *  carries one. Returns the problems. */
   static List<String> initEvidence(Path run, long declaration, long end) throws IOException {
-    List<String> problems = new ArrayList<>();
-    String expected = new RestoreEvidence(false, null, 0).encode();
-    Path journals = run.resolve("journals");
-    for (String t : List.of(Stage1.WORK_RECORDS, Stage1.SAMPLES, ReplayTopics.DISPOSITIONS1, Stage2.AFFECTED, Stage2.AFFECTED_SETS, ReplayTopics.DISPOSITIONS2)) {
-      boolean stage1 = t.equals(Stage1.WORK_RECORDS) || t.equals(Stage1.SAMPLES) || t.equals(ReplayTopics.DISPOSITIONS1);
-      Path dir = journals.resolve(t);
-      if (!Files.isDirectory(dir)) { problems.add(t + ": no journal"); continue; }
-      List<Path> files;
-      try (Stream<Path> s = Files.list(dir)) { files = s.sorted().toList(); }
-      for (Path file : files) {
-        int n = 0;
-        for (String l : Files.readAllLines(file, StandardCharsets.UTF_8)) {
-          JsonNode v = Json.read(l.getBytes(StandardCharsets.UTF_8)).path("value");
-          if (!"progress".equals(v.path("type").asText())) continue;
-          JsonNode ie = v.get("initEvidence");
-          String w = t + "/" + file.getFileName() + " progress " + v.path("cutId").asLong();
-          if (!stage1 || n > 0) { if (ie != null) problems.add(w + " carries initEvidence"); n++; continue; }
-          n++;
-          if (ie == null) { problems.add(w + ": the first progress carries no initEvidence"); continue; }
-          if (ie.path("declarationOffset").asLong(-1) != declaration) problems.add(w + ": declarationOffset " + ie.path("declarationOffset"));
-          if (ie.path("endOffset").asLong(-1) != end) problems.add(w + ": endOffset " + ie.path("endOffset") + ", H " + end);
-          try {
-            RestoreEvidence re = RestoreEvidence.decode(ie.path("restore").asText());
-            if (!re.encode().equals(expected)) problems.add(w + ": restore " + re.encode());
-          } catch (IllegalArgumentException e) { problems.add(w + ": restore " + ie.path("restore") + ": " + e.getMessage()); }
-        }
-        if (stage1 && n == 0) problems.add(t + "/" + file.getFileName() + ": no progress");
-      }
-    }
-    return problems;
+    return yggdrasil.forseti.cli.gate.ReplayChecks.initEvidence(run, declaration, end, new RestoreEvidence(false, null, 0).encode());
   }
+
 }

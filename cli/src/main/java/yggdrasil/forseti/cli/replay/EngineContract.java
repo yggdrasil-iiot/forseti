@@ -27,6 +27,8 @@ public final class EngineContract {
 
     /** The stage-1 input topics, in input-topic order. */
     public static final List<String> STAGE1_TOPICS = List.of(InputParser.MESSAGES, InputParser.SESSIONS, InputParser.OCCUPANCY);
+    /** Every input topic of a run: the stage-1 topics and {@code quality.incidents}. */
+    public static final List<String> STAGE1_TOPICS_AND_INCIDENTS = List.of(InputParser.MESSAGES, InputParser.SESSIONS, InputParser.OCCUPANCY, InputParser.INCIDENTS);
 
     /** The envelope pin set of a generation's rows: the rule set's pins, the definitions of the recording and {@code job}. */
     public static Pins pins(RuleSet rules, JsonNode definitions, Pins.Job job) {

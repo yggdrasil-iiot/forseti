@@ -61,7 +61,7 @@ public final class Stage2Stations extends AbstractStreamOperator<Out> implements
   private transient MapState<String, byte[]> stored;
   private transient Map<String, Station> stations;
   private transient ObjectNode initRecord;
-  private transient long appliedCuts, snapshots, segmentsWritten, segmentBytes, segmentBytesMax, segmentsRemoved;
+  private transient long appliedCuts, snapshots, segmentsWritten, segmentBytes, segmentBytesMax, segmentsRemoved, headBytesMax;
 
   public Stage2Stations(JobSettings settings) { this.settings = settings; }
 
@@ -346,7 +346,7 @@ public final class Stage2Stations extends AbstractStreamOperator<Out> implements
       st.toRemove.clear();
       for (String t : st.openDirty) put(OPEN_PREFIX + t, st.openSegment(t));
       st.openDirty.clear();
-      if (st.headDirty) { put(ENGINE, st.head()); st.headDirty = false; }
+      if (st.headDirty) { byte[] h = st.head(); headBytesMax = Math.max(headBytesMax, h.length); put(ENGINE, h); st.headDirty = false; }
     }
     writeEvidence();
   }
@@ -358,6 +358,23 @@ public final class Stage2Stations extends AbstractStreamOperator<Out> implements
     segmentBytesMax = Math.max(segmentBytesMax, b.length);
   }
 
+  /** A station of this subtask as the restore test compares it: the core state, the engine head, the open and queued evidence
+   *  (package-private). */
+  ObjectNode inspect(String station) {
+    Station st = stations.get(station);
+    if (st == null) return null;
+    ObjectNode n = Json.object();
+    n.set("state", st.state.toJson());
+    n.set("head", Segments.read(ENGINE, st.head()));
+    ObjectNode open = n.putObject("open"), queued = n.putObject("queued");
+    for (String t : List.of(Stage1.WORK_RECORDS, Stage1.SAMPLES)) {
+      open.set(t, Segments.read(OPEN_PREFIX + t, st.openSegment(t)));
+      ArrayNode q = queued.putArray(t);
+      for (long seq : st.queued.get(t)) q.add(Segments.read(EVIDENCE_PREFIX + t + "/" + seq, st.closedSegment(seq)));
+    }
+    return n;
+  }
+
   private void writeEvidence() {
     ObjectNode n = initRecord.deepCopy();
     Json.putSafe(n, "appliedCuts", appliedCuts);
@@ -366,6 +383,7 @@ public final class Stage2Stations extends AbstractStreamOperator<Out> implements
     Json.putSafe(seg, "written", segmentsWritten);
     Json.putSafe(seg, "writtenBytes", segmentBytes);
     Json.putSafe(seg, "largestBytes", segmentBytesMax);
+    Json.putSafe(seg, "largestHeadBytes", headBytesMax);
     Json.putSafe(seg, "removed", segmentsRemoved);
     Writers.evidence(settings, "stage2-stations-" + n.path("subtask").intValue() + "-attempt-" + n.path("attemptNumber").intValue(), n);
   }

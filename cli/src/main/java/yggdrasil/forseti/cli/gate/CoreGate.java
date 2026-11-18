@@ -111,6 +111,9 @@ public final class CoreGate {
         /** The scenario files the assertions read ({@code fixtures/scenarios} on a core gate run) and the trusted keys the releases
          *  verify against ({@code fixtures/trusted-keys.jsonl}). */
         Path scenarios, trustedKeys;
+        /** The W1 form the engine of a replay gate reports ({@code ReplayEngine#w1Form}): every run's cut log must declare it; null on a
+         *  core gate run (the reference harness reports the per-station form and declares none). */
+        String w1Form;
         Context(Path root, Path tmp, Path logs, String python) {
             this.root = root; this.tmp = tmp; this.logs = logs; this.python = python;
             this.out = logs.getParent();

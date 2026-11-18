@@ -115,12 +115,27 @@ public final class JobSettings implements Serializable {
     // the registered generation, read from forseti.generations (spec 575: a job refuses an unregistered generation)
     GenerationStore.Entry registered;
     boolean retired;
+    ObjectNode generationsReader = Json.object();
     try (KafkaGenerationStore store = new KafkaGenerationStore(bootstrap, Json.text(names, ReplayTopics.GENERATIONS), false)) {
+      new TreeMap<>(store.readerConfig()).forEach((k, v) -> generationsReader.put(k.toString(), v.toString()));
       registered = store.registered(generation).orElseThrow(() -> new IllegalStateException("generation-unregistered: generation " + generation));
       retired = Generation.RETIRED.equals(store.latestStatus(generation).orElse(null));
     }
     if (retired) throw new IllegalStateException("generation-retired: generation " + generation);
-    Generation g = registered.row();
+    return build(spec, registered.row(), generationsReader);
+  }
+
+  /** The settings of {@code spec} on the registered generation {@code g} ({@link #prepare} after its reads; the operator restore test
+   *  calls it with a generation of a file store). {@code generationsReader}: the configuration of the job's own generations reader. */
+  static JobSettings build(JsonNode spec, Generation g, ObjectNode generationsReader) {
+    int stage = spec.path("stage").intValue();
+    String bootstrap = Json.text(spec, "bootstrap"), prefix = spec.path("prefix").asText("");
+    long generation = Json.safeLong(spec.get("generation"), "generation", 1, Json.MAX_SAFE);
+    if (g.generation() != generation) throw new IllegalArgumentException("job spec generation " + generation + ", the row's " + g.generation());
+    String artifact = Json.text(spec, "artifactSha256");
+    String control = spec.path("negativeControl").isTextual() ? spec.get("negativeControl").textValue() : null;
+    ObjectNode names = Json.object();
+    for (ReplayTopics.Spec s : ReplayTopics.plan(prefix)) names.put(s.base(), spec.path("topics").path(s.base()).asText(s.name()));
     Path mappings = Path.of(Json.text(spec, "mappings"));
     JsonNode definitions = spec.get("definitions");
     if (definitions == null || !definitions.isObject()) throw new IllegalArgumentException("job spec without definitions");
@@ -174,6 +189,7 @@ public final class JobSettings implements Serializable {
     });
     Json.putSafe(n, "transactionTimeoutMs", spec.path("transactionTimeoutMs").longValue());
     // the cause kind of every row (spec 616): input for an online generation, replayed for an event-time replay
+    n.set("generationsReader", generationsReader);   // the job's own forseti.generations reader (spec 708), recorded in the job settings
     n.put("causeKind", Envelope.causeKind(spec.path("causeKind").asText(Envelope.ONLINE)));
     return of(n);
   }

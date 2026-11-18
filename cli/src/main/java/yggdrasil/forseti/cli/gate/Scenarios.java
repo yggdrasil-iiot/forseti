@@ -196,6 +196,9 @@ final class Scenarios {
             String first = d.next();
             return first.substring(0, first.indexOf(':')) + ":" + rest;
         }
+        /** The control-store identity of a replay-gate run (its cluster, generations and recovery-control topics, its generation and
+         *  the offset of its recovery declaration), null on a core gate run. */
+        com.fasterxml.jackson.databind.node.ObjectNode controlEvidence;
         /** Replay-gate findings of this run ({@link ReplayChecks}): assertion id -> {count, describe}; null on a core gate run. */
         com.fasterxml.jackson.databind.node.ObjectNode replay;
         long t0() { return manifest.path("T0").asLong(); }
@@ -661,8 +664,12 @@ final class Scenarios {
             f.finish();
             Map<String, List<Integer>> subscribed = new HashMap<>();
             r.runJson.path("subscribed").fields().forEachRemaining(e -> { List<Integer> l = new ArrayList<>(); e.getValue().forEach(x -> l.add(x.asInt())); subscribed.put(e.getKey(), l); });
-            // the W1 form the run reports (spec 620): its cut log names it (an engine's replay run), the per-station form otherwise
-            W1Form form = W1Form.of(r.cutLog.path("w1Form").isTextual() ? r.cutLog.get("w1Form").textValue() : null);
+            // the W1 form the run reports (spec 620): on a replay gate the engine's own form, which the run's cut log must declare
+            // (a missing or other form fails the run); on a core gate run the per-station form, which its cut log declares by omission
+            String declared = r.cutLog.path("w1Form").isTextual() ? r.cutLog.get("w1Form").textValue() : null;
+            if (c.w1Form != null && !c.w1Form.equals(declared))
+                throw new IllegalStateException("cuts.json declares the W1 form " + declared + ", the engine reports " + c.w1Form);
+            W1Form form = W1Form.of(c.w1Form != null ? c.w1Form : declared);
             r.measures = Integrity.check(f, r.recording, r.cutLog, subscribed, r.rules, r.manifest.path("definitions"), stations, form);
             r.outcome = Expectations.check(f, r.expected, r::perStation);
             if (r.name.equals(Injections.PLANNED_LATE)) r.plannedLate = Injections.capturePlannedLate(c, f, r);

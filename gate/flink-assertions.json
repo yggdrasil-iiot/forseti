@@ -169,122 +169,122 @@
     {
       "id": "I-23",
       "pr": 5,
-      "description": "Flink, shared placement (site-019): horizon-planned-late online: W1 = A at the planned cut, holeAt and holeAt - 1 admitted, holeAt - 2 replay-required beyond-horizon, visit 3 missingPeriods 1 before the late batch and 0 after; horizon-planned-late@replay on the locked replay recording: every deadline keeps its cut ids and is bracketed by the reported W1, the third sample attributed with cause replayed, no replay-required disposition, every timer row carries the replayed timer cause and precedes its progress; the base journals reread after the replay equal their index and fold alike, the replay journals carry only the replay generation; both generations shared under --state"
+      "description": "Flink, shared placement (site-019): horizon-planned-late online: W1 = A at the planned cut, holeAt and holeAt - 1 admitted, holeAt - 2 replay-required beyond-horizon, visit 3 missingPeriods 1 before the late batch and 0 after; horizon-planned-late@replay on the locked replay recording: every deadline keeps its cut ids and is bracketed by the reported W1, the third sample attributed with cause replayed, no replay-required disposition, every timer row carries the replayed timer cause and precedes its progress; the base journals reread after the replay equal their index and fold alike, the replay journals carry only the replay generation; both generations shared under --state; on Flink, from the runs' evidence: the replay generation is a row of the base's forseti.generations topic in the same cluster, the next number after the base's, and its recovery declaration a later record of the same forseti.recovery-control topic"
     },
     {
       "id": "J-DISPOSITION-COVERAGE",
       "pr": 5,
-      "description": "Flink, over every run summary of every shard: every scenario run and shuffled run: every delivered input has a disposition, every message member its part; inputsWithoutDisposition 0"
+      "description": "Flink, over every execution of every shard: every scenario run and shuffled run: every delivered input has a disposition, every message member its part; inputsWithoutDisposition 0"
     },
     {
       "id": "J-REVISION-CONTINUITY",
       "pr": 5,
-      "description": "Flink, over every run summary of every shard: every scenario run and shuffled run: revisions contiguous from 1 per key on every journal and ledger, deletes superseding the last digest"
+      "description": "Flink, over every execution of every shard: every scenario run and shuffled run: revisions contiguous from 1 per key on every journal and ledger, deletes superseding the last digest"
     },
     {
       "id": "J-NO-EQUAL-CONSECUTIVE",
       "pr": 5,
-      "description": "Flink, over every run summary of every shard: every scenario run and shuffled run: no two consecutive equal digests of one key; every reported bodyDigest recomputed"
+      "description": "Flink, over every execution of every shard: every scenario run and shuffled run: no two consecutive equal digests of one key; every reported bodyDigest recomputed"
     },
     {
       "id": "J-PROGRESS-ORDER",
       "pr": 5,
-      "description": "Flink, over every run summary of every shard: every scenario run and shuffled run: progress cutId increasing and event time non-decreasing per partition; no business row or disposition of a cut after its progress; a progress record of every cut on every partition"
+      "description": "Flink, over every execution of every shard: every scenario run and shuffled run: progress cutId increasing and event time non-decreasing per partition; no business row or disposition of a cut after its progress; a progress record of every cut on every partition"
     },
     {
       "id": "J-W1-FORMULA",
       "pr": 5,
-      "description": "Flink, over every run summary of every shard: every run of the Flink gate (spec 718): W1 in cuts.json and in the stage-1 progress equals the Flink form, min over the subscribed raw telemetry partitions of (the largest sourceTs delivered on the partition through the cut - outOfOrdernessMs - 1), at every cut each station completed; admissionW = the previous W1"
+      "description": "Flink, over every execution of every shard: every run of the Flink gate (spec 718): W1 in cuts.json and in the stage-1 progress equals the Flink form, min over the subscribed raw telemetry partitions of (the largest sourceTs delivered on the partition through the cut - outOfOrdernessMs - 1), at every cut each station completed; admissionW = the previous W1"
     },
     {
       "id": "J-W2-EQUALS-W1",
       "pr": 5,
-      "description": "Flink, over every run summary of every shard: every scenario run and shuffled run: stage-2 progress W2 equals the cut's W1, six incidentOffsets"
+      "description": "Flink, over every execution of every shard: every scenario run and shuffled run: stage-2 progress W2 equals the cut's W1, six incidentOffsets"
     },
     {
       "id": "J-BASIS-CURRENT",
       "pr": 5,
-      "description": "Flink, over every run summary of every shard: every scenario run and shuffled run: every basis[].bodyDigest of every live assessment is the current work record digest at every cut"
+      "description": "Flink, over every execution of every shard: every scenario run and shuffled run: every basis[].bodyDigest of every live assessment is the current work record digest at every cut"
     },
     {
       "id": "J-AFTER-HORIZON-CUTS",
       "pr": 5,
-      "description": "Flink, over every run summary of every shard: the five horizon scenarios: cuts exist with W1 >= enter + H + L of the open visits (or the first onlineExpiresAt); onlineVisits drops after expiry while the work records remain in the fold"
+      "description": "Flink, over every execution of every shard: the five horizon scenarios: cuts exist with W1 >= enter + H + L of the open visits (or the first onlineExpiresAt); onlineVisits drops after expiry while the work records remain in the fold"
     },
     {
       "id": "C-2-REFERENCE",
       "pr": 5,
-      "description": "Flink, over every run summary of every shard: report.json measurements record longestLatenessCorrectedOnlineMs (568999 from held-back-10min, H from horizon-planned-late's online run), journal records per topic per scenario and inputsWithoutDisposition 0"
+      "description": "Flink, over every execution of every shard: report.json measurements record longestLatenessCorrectedOnlineMs (568999 from held-back-10min, H from horizon-planned-late's online run), journal records per topic per scenario and inputsWithoutDisposition 0"
     },
     {
       "id": "C-1",
       "pr": 5,
-      "description": "Flink, over every run summary of every shard: item 1 (spec 579): every scenario run, shuffled run and generation run of the gate was compared with the oracle at every cut its recording plans and every compared cut matched; report.json measurements.item1 lists the scenarios and the cuts, rows and dispositions compared"
+      "description": "Flink, over every execution of every shard: item 1 (spec 579): every scenario run, shuffled run and generation run of the gate was compared with the oracle at every cut its recording plans and every compared cut matched; report.json measurements.item1 lists the scenarios and the cuts, rows and dispositions compared"
     },
     {
       "id": "R-READ-COMMITTED",
       "pr": 5,
-      "description": "Flink, over every run summary of every shard: spec 708: every consumer of every run reads with isolation.level=read_committed: the harness's clients as configured, both jobs' sources and the gate's dump consumer as the run record's jobSettings record them"
+      "description": "Flink, over every execution of every shard: spec 708: every consumer of every run reads with isolation.level=read_committed: the harness's clients as configured, both jobs' sources and the gate's dump consumer as the run record's jobSettings record them"
     },
     {
       "id": "R-JOB-SETTINGS",
       "pr": 5,
-      "description": "Flink, over every run summary of every shard: spec 590, reviewer decision 1: run.json carries jobSettings right after pins, one object per stage plus the dump consumer, run-invariant values only; run.json pins.job names its runId and artifactSha256 (the digest of the sorted (file name, sha256) list of the engine path); every row's envelope pins.job.runId and pins.job.artifactSha256 equal the run record's"
+      "description": "Flink, over every execution of every shard: spec 590, reviewer decision 1: run.json carries jobSettings right after pins, one object per stage plus the dump consumer, run-invariant values only; run.json pins.job names its runId and artifactSha256 (the digest of the sorted (file name, sha256) list of the engine path); every row has an envelope with pins.job, whose runId and artifactSha256 equal the run record's (a row without them is a finding)"
     },
     {
       "id": "R-TIMESTAMP-SOURCE",
       "pr": 5,
-      "description": "Flink, over every run summary of every shard: spec 709: pins.job.timestampSource is payload in every run record and on every row"
+      "description": "Flink, over every execution of every shard: spec 709: pins.job.timestampSource is payload in every run record and on every row (a row without pins.job is a finding)"
     },
     {
       "id": "R-PARTITION-ASSIGNMENT",
       "pr": 5,
-      "description": "Flink, over every run summary of every shard: spec 710: the run's subscription is the routing manifest's; every station-topic record is on the stations' partitions (each present), every ledger record on them or partition 6"
+      "description": "Flink, over every execution of every shard: spec 710: on every input topic, an empty one included, the partitions the jobs consumed (as the engine observed them) are the run's declared subscription, which is the routing manifest's; every station-topic record is on the stations' partitions (each present), every ledger record on them or partition 6"
     },
     {
       "id": "R-TOPIC-RETENTION",
       "pr": 5,
-      "description": "Flink, over every run summary of every shard: spec 711: every planned topic of every run exists with its planned partitions, timestamp type and retention as the broker reports them (no settings problem)"
+      "description": "Flink, over every execution of every shard: spec 711: every planned topic of every run exists with its planned partitions, timestamp type and retention as the broker reports them (no settings problem)"
     },
     {
       "id": "R-RECONCILE",
       "pr": 5,
-      "description": "Flink, over every run summary of every shard: the shared identity-bound reconciliation of every run's ledgers and row triggers with its recording holds at every completed cut and at the end"
+      "description": "Flink, over every execution of every shard: the shared identity-bound reconciliation of every run's ledgers and row triggers with its recording holds at every completed cut and at the end"
     },
     {
       "id": "FL-KEYGROUP-MAP",
       "pr": 5,
-      "description": "Flink, over every run summary of every shard: spec 715: from the init records of both station operators, every station has exactly one owner subtask, at the key group Flink assigns it under max parallelism 128 and inside that subtask's key-group range, so every station output partition has exactly one owner; the routingDigest of run.json, cuts.json and the recording are one"
+      "description": "Flink, over every execution of every shard: spec 715: from the init records of both station operators, every station has exactly one owner subtask, at the key group Flink assigns it under max parallelism 128 and inside that subtask's key-group range, so every station output partition has exactly one owner; the routingDigest of run.json, cuts.json and the recording are one"
     },
     {
       "id": "FL-WATERMARK-PER-RECORD",
       "pr": 5,
-      "description": "Flink, over every run summary of every shard: spec 716: the stage-1 watermark emission is per record (the delegating generator), the automatic watermark interval 0 as the cluster reports it, idleness off in the job settings and in pins.job"
+      "description": "Flink, over every execution of every shard: spec 716: the stage-1 watermark emission is per record (the delegating generator), the automatic watermark interval 0 as the cluster reports it, idleness off in the job settings and in pins.job"
     },
     {
       "id": "FL-ONE-SPLIT",
       "pr": 5,
-      "description": "Flink, over every run summary of every shard: spec 717: every source subtask of both jobs received records of exactly one partition and every subscribed partition reached exactly one subtask, at a source parallelism equal to the number of subscribed partitions"
+      "description": "Flink, over every execution of every shard: spec 717: every source subtask of both jobs received records of exactly one partition and every subscribed partition reached exactly one subtask, at a source parallelism equal to the number of subscribed partitions"
     },
     {
       "id": "FL-JOB-SETTINGS",
       "pr": 5,
-      "description": "Flink, over every run summary of every shard: spec 588-590: the observed job settings of both stages are the engine pins: EXACTLY_ONCE checkpoints every 1000 ms, one at a time, RocksDB with incremental checkpoints, no restart strategy, keyed parallelism 6 and max parallelism 128 as the operators saw them, two EXACTLY_ONCE transactional sinks, source parallelism the subscribed partitions"
+      "description": "Flink, over every execution of every shard: spec 588-590: the observed job settings of both stages are the engine pins: EXACTLY_ONCE checkpoints every 1000 ms, one at a time, RocksDB with incremental checkpoints, no restart strategy, keyed parallelism 6 and max parallelism 128 as the operators saw them, two EXACTLY_ONCE transactional sinks, a non-empty source parallelism equal to the subscribed partitions, and the jobs' forseti.generations and forseti.recovery-control readers recorded"
     },
     {
       "id": "FL-TIMER-INVARIANT",
       "pr": 5,
-      "description": "Flink, over every run summary of every shard: reviewer decision 4: at every cut close of every stage-1 station writer, evaluated at the operator watermark W1 (Flink fires every timer at or below a watermark when it processes it), every deadline registered before the close and at or below W1 is held (its Flink timer fired); at least one close checked"
+      "description": "Flink, over every execution of every shard: reviewer decision 4: at every cut close of every stage-1 station writer the native timers agree with the authoritative deadline index (every distinct deadline exactly one registration or held mark, Flink's timer queue exactly the registrations, held marks at or below the watermark) and every deadline registered before the close and at or below W1 is held; on a run with deadlines, timers were registered, fired and drained as held"
     },
     {
-      "id": "FL-INIT-EVIDENCE",
+      "id": "R-INIT-EVIDENCE",
       "pr": 5,
-      "description": "Flink, over every run summary of every shard: the first progress of every stage-1 progress writer of every run (work records, samples, the station ledgers and the stage-1 reject collector) carries initEvidence naming the run's recovery declaration, the control end offset H read in initializeState and the Flink restore evidence of a first start; no later progress and no stage-2 progress carries one"
+      "description": "Flink, over every execution of every shard: spec 723: the first progress of every stage-1 progress writer of every run (work records, samples, the station ledgers and the stage-1 reject collector) carries initEvidence naming the run's recovery declaration, the control end offset H its writers read and the engine's restore evidence of a first start; no later progress and no stage-2 progress carries one"
     },
     {
-      "id": "FL-CUT-EVIDENCE",
+      "id": "R-CUT-EVIDENCE",
       "pr": 5,
-      "description": "Flink, over every run summary of every shard: every station entry of every cut of every run's cuts.json carries the onlineVisits its stage-1 operator recorded at that close (Stage1State.onlineVisits(), operator evidence, never derived from journal rows)"
+      "description": "Flink, over every execution of every shard: every cut of every run's cuts.json has station entries and every station entry carries the onlineVisits its stage-1 operator recorded at that close (operator evidence, never derived from journal rows)"
     }
   ]
 }

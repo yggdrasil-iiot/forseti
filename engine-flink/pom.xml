@@ -34,6 +34,12 @@
          Maven build does not) -->
     <dependency><groupId>org.slf4j</groupId><artifactId>slf4j-simple</artifactId><version>1.7.36</version><scope>runtime</scope></dependency>
     <dependency><groupId>org.junit.jupiter</groupId><artifactId>junit-jupiter</artifactId></dependency>
+    <!-- the operator test harness of the pinned Flink (KeyedTwoInputStreamOperatorTestHarness, KeyedOneInputStreamOperatorTestHarness):
+         the station operators' snapshot and restore test, test scope only -->
+    <dependency><groupId>org.apache.flink</groupId><artifactId>flink-runtime</artifactId><version>${flink.version}</version><type>test-jar</type><scope>test</scope></dependency>
+    <dependency><groupId>org.apache.flink</groupId><artifactId>flink-test-utils-junit</artifactId><version>${flink.version}</version><scope>test</scope>
+      <exclusions><exclusion><groupId>*</groupId><artifactId>*</artifactId></exclusion></exclusions></dependency>
+    <dependency><groupId>org.apache.flink</groupId><artifactId>flink-streaming-java</artifactId><version>${flink.version}</version><type>test-jar</type><scope>test</scope></dependency>
   </dependencies>
   <build>
     <plugins>
