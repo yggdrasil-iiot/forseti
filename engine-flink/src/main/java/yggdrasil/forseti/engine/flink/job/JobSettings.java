@@ -5,15 +5,16 @@ import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.fasterxml.jackson.databind.node.TextNode;
 import java.io.Serializable;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 import yggdrasil.forseti.cli.harness.Controls;
-import yggdrasil.forseti.cli.harness.ReferenceEngine;
-import yggdrasil.forseti.cli.recording.Recording;
 import yggdrasil.forseti.cli.recording.RoutingManifest;
+import yggdrasil.forseti.cli.replay.EngineContract;
 import yggdrasil.forseti.cli.replay.ReplayTopics;
 import yggdrasil.forseti.core.Json;
+import yggdrasil.forseti.core.NegativeControls;
 import yggdrasil.forseti.core.canon.Canonical;
 import yggdrasil.forseti.core.generation.Generation;
 import yggdrasil.forseti.core.generation.GenerationStore;
@@ -89,40 +90,51 @@ public final class JobSettings implements Serializable {
 
   // --- the job main: from the harness's job spec to the settings --------------------------------------------------------------
 
-  /** The settings of the job the harness's {@code spec} describes ({@code {stage, bootstrap, prefix, generation, recording, mappings,
-   *  runId, artifactSha256, evidenceDir, transactionTimeoutMs}}). */
+  /** The settings of the job the harness's {@code spec} describes: {@code {stage, bootstrap, prefix, topics?, generation, mappings,
+   *  definitions, routing, evidenceRanges, runId, artifactSha256, evidenceDir, checkpointDir, transactionTimeoutMs, negativeControl, causeKind}}.
+   *  The spec carries no recording path: the definitions, the routing manifest and the evidence ranges come in the spec itself
+   *  (reviewer decision 3 of 2026-11-18), so nothing here opens the recording directory. {@code topics}, when present, names the run
+   *  topic of a contract topic in place of {@code <prefix><contract>} (an event-time replay shares its base run's generation and recovery
+   *  control topics). The job refuses to run when the engine path it runs from does not have the digest {@code artifactSha256}
+   *  ({@link EngineContract#engineArtifactSha256}, reviewer decision 2), and on an unregistered or retired generation or a rule set whose
+   *  digest is not the registered one (spec 575). */
   public static JobSettings prepare(JsonNode spec) {
     int stage = spec.path("stage").intValue();
     if (stage != 1 && stage != 2) throw new IllegalArgumentException("job spec stage " + spec.path("stage"));
+    if (spec.has("recording")) throw new IllegalArgumentException("a job spec carries no recording path (reviewer decision 3)");
     String bootstrap = Json.text(spec, "bootstrap"), prefix = spec.path("prefix").asText("");
     long generation = Json.safeLong(spec.get("generation"), "generation", 1, Json.MAX_SAFE);
+    String artifact = Json.text(spec, "artifactSha256"), own = engineArtifact();
+    if (!artifact.equals(own)) throw new IllegalStateException("engine-artifact-mismatch: the job spec names " + artifact + ", the engine path digests to " + own);
+    String control = spec.path("negativeControl").isTextual() ? spec.get("negativeControl").textValue() : null;
+    if (control != null && !Controls.harness(control)) throw new IllegalArgumentException("negative control " + control + " is not one the jobs apply");
     List<ReplayTopics.Spec> plan = ReplayTopics.plan(prefix);
     ObjectNode names = Json.object();
-    for (ReplayTopics.Spec s : plan) names.put(s.base(), s.name());
+    for (ReplayTopics.Spec s : plan) names.put(s.base(), spec.path("topics").path(s.base()).asText(s.name()));
 
     // the registered generation, read from forseti.generations (spec 575: a job refuses an unregistered generation)
     GenerationStore.Entry registered;
     boolean retired;
-    try (KafkaGenerationStore store = new KafkaGenerationStore(bootstrap, ReplayTopics.nameOf(plan, ReplayTopics.GENERATIONS), false)) {
+    try (KafkaGenerationStore store = new KafkaGenerationStore(bootstrap, Json.text(names, ReplayTopics.GENERATIONS), false)) {
       registered = store.registered(generation).orElseThrow(() -> new IllegalStateException("generation-unregistered: generation " + generation));
       retired = Generation.RETIRED.equals(store.latestStatus(generation).orElse(null));
     }
     if (retired) throw new IllegalStateException("generation-retired: generation " + generation);
     Generation g = registered.row();
-    Recording rec = Recording.open(Path.of(Json.text(spec, "recording")));
     Path mappings = Path.of(Json.text(spec, "mappings"));
-    JsonNode definitions = rec.manifest().path("definitions");
+    JsonNode definitions = spec.get("definitions");
+    if (definitions == null || !definitions.isObject()) throw new IllegalArgumentException("job spec without definitions");
     RuleSet rules = rules(mappings, g.releaseEvidence(), definitions);
     if (!rules.rulesDigest().equals(g.rulesDigest()))
       throw new IllegalStateException("generation-rules-mismatch: registered " + g.rulesDigest() + ", loaded " + rules.rulesDigest());
-    RoutingManifest routing = rec.routing();
+    RoutingManifest routing = RoutingManifest.read(spec.get("routing"));
     List<String> stations = new ArrayList<>(rules.attribution().stations());
     Collections.sort(stations);
 
     // subscriptions, as the reference harness and the step-6 test driver fix them
     boolean occupancyRead = !(rules.attribution().mode().equals("plc-stamped") && rules.attribution().crossCheck().equals("none"));
     ObjectNode subscribed = Json.object();
-    for (String t : ReferenceEngine.STAGE1_TOPICS) {
+    for (String t : EngineContract.STAGE1_TOPICS) {
       ArrayNode a = subscribed.putArray(t);
       if (!(t.equals(InputParser.OCCUPANCY) && !occupancyRead)) routing.subscribed(t).forEach(a::add);
     }
@@ -133,8 +145,10 @@ public final class JobSettings implements Serializable {
       for (String s : stations) a.add(routing.partitionOf(s));
     }
 
-    Pins pins = ReferenceEngine.pins(rules, definitions, new Pins.Job(ENGINE, ENGINE_VERSION, Json.text(spec, "artifactSha256"), Json.text(spec, "runId"),
+    Pins pins = EngineContract.pins(rules, definitions, new Pins.Job(ENGINE, ENGINE_VERSION, artifact, Json.text(spec, "runId"),
         "payload", TextNode.valueOf("off"), routing.routingDigest()));
+    // the wrong-rules-pin control: the rows' envelope pins name another release's attribution rule; the run record keeps the true pins
+    Pins stamped = Controls.WRONG_RULES_PIN.equals(control) ? EngineContract.wrongRulesPin(pins, mappings, EngineContract.head(g.releaseEvidence())) : pins;
     ObjectNode n = Json.object().put("stage", stage).put("bootstrap", bootstrap).put("prefix", prefix);
     n.set("names", names);
     Json.putSafe(n, "generation", generation);
@@ -145,19 +159,39 @@ public final class JobSettings implements Serializable {
     n.set("releaseEvidence", g.releaseEvidence());
     n.put("rulesDigest", g.rulesDigest());
     n.put("runId", Json.text(spec, "runId"));
+    n.put("artifactSha256", artifact);
     n.put("evidenceDir", Json.text(spec, "evidenceDir"));
     n.set("subscribed", subscribed);
     ArrayNode st = n.putArray("stations");
     stations.forEach(st::add);
     n.set("pins", pins.toJson());
+    n.set("stampedPins", stamped.toJson());
+    if (control == null) n.putNull("negativeControl"); else n.put("negativeControl", control);
     ObjectNode er = n.putObject("evidenceRanges");
-    rec.evidenceRange().forEach((d, r) -> er.putArray(d).add(r.from()).add(r.to()));
+    spec.path("evidenceRanges").fields().forEachRemaining(e -> {
+      if (!e.getValue().isArray() || e.getValue().size() != 2) throw new IllegalArgumentException("job spec evidenceRanges." + e.getKey());
+      er.putArray(e.getKey()).add(e.getValue().get(0).longValue()).add(e.getValue().get(1).longValue());
+    });
     Json.putSafe(n, "transactionTimeoutMs", spec.path("transactionTimeoutMs").longValue());
+    // the cause kind of every row (spec 616): input for an online generation, replayed for an event-time replay
+    n.put("causeKind", Envelope.causeKind(spec.path("causeKind").asText(Envelope.ONLINE)));
     return of(n);
   }
 
+  /** The digest of the engine path this class runs from ({@link EngineContract#engineArtifactSha256} of the directory of its jar),
+   *  {@code unpacked} when it runs from a classes directory (the unit tests). */
+  public static String engineArtifact() {
+    try {
+      Path p = Path.of(JobSettings.class.getProtectionDomain().getCodeSource().getLocation().toURI());
+      return Files.isRegularFile(p) ? EngineContract.engineArtifactSha256(p.getParent()) : "unpacked";
+    } catch (java.net.URISyntaxException | RuntimeException e) { return "unpacked"; }
+  }
+
+  /** The negative control the jobs apply, null for none. */
+  public String negativeControl() { return node().path("negativeControl").isTextual() ? node().get("negativeControl").textValue() : null; }
+
   static RuleSet rules(Path mappings, JsonNode releaseEvidence, JsonNode definitions) {
-    HeadVerifier.Head head = ReferenceEngine.head(releaseEvidence);
+    HeadVerifier.Head head = EngineContract.head(releaseEvidence);
     try {
       ReleaseReader.Release release = ReleaseReader.read(mappings, head);
       JsonNode r = releaseEvidence.path("pins").path("rules").path("attribution");
@@ -173,6 +207,9 @@ public final class JobSettings implements Serializable {
     public final RuleSet rules;
     public final RoutingManifest routing;
     public final Pins pins;
+    /** The pins the rows are stamped with: {@link #pins}, or under {@code wrong-rules-pin} another release's attribution pin. */
+    public final Pins stamped;
+    public final NegativeControls controls;
     public final Stage1 stage1;
     public final Stage2 stage2;
     public final Routing router;
@@ -188,14 +225,18 @@ public final class JobSettings implements Serializable {
       if (!rules.rulesDigest().equals(Json.text(n, "rulesDigest"))) throw new IllegalStateException("generation-rules-mismatch on the TaskManager");
       this.routing = RoutingManifest.read(n.get("routing"));
       this.pins = Pins.fromJson(n.get("pins"));
-      this.stage1 = new Stage1(rules, Controls.of(null), Envelope.ONLINE);
-      this.stage2 = new Stage2(rules, Controls.of(null), Envelope.ONLINE);
+      this.stamped = Pins.fromJson(n.get("stampedPins"));
+      // the negative control of the run, through the job settings (lenient-oracle is the oracle's and never reaches a job)
+      this.controls = Controls.of(s.negativeControl());
+      String cause = n.path("causeKind").asText(Envelope.ONLINE);
+      this.stage1 = new Stage1(rules, controls, cause);
+      this.stage2 = new Stage2(rules, controls, cause);
       this.router = new Routing(rules);
       this.outOfOrdernessMs = rules.attribution().outOfOrdernessMs();
       Map<String, List<Integer>> stage1Subscribed = new LinkedHashMap<>();
-      for (String t : ReferenceEngine.STAGE1_TOPICS) stage1Subscribed.put(t, s.subscribed(t));
-      for (String st : s.stations()) required.put(st, ReferenceEngine.stationRequired(st, routing, stage1Subscribed));
-      this.rejectsRequired = ReferenceEngine.required(stage1Subscribed, null);
+      for (String t : EngineContract.STAGE1_TOPICS) stage1Subscribed.put(t, s.subscribed(t));
+      for (String st : s.stations()) required.put(st, EngineContract.stationRequired(st, routing, stage1Subscribed));
+      this.rejectsRequired = EngineContract.required(stage1Subscribed, null);
       List<Progress.Origin> io = new ArrayList<>();
       for (int p : s.subscribed(InputParser.INCIDENTS)) io.add(new Progress.Origin(InputParser.INCIDENTS, p));
       this.incidentOrigins = List.copyOf(io);

@@ -2,54 +2,289 @@
   "engine": "flink",
   "assertions": [
     {
-      "id": "FL-SMOKE-DEDICATED-RUN",
-      "pr": 4,
-      "description": "engine-fixtures/scenarios/dedicated/smoke.json on Flink: the recording equals its lock, the run's topics are the plan, both jobs (each its own application-mode cluster: one JobManager JVM, one TaskManager JVM) and all their tasks are RUNNING before the first batch, every batch's cut completes from the committed progress records, and both clusters stop on cancel"
+      "id": "I-1",
+      "pr": 5,
+      "description": "Flink, shared placement (site-019): held-back-10min vs baseline: the engine recording of engine-fixtures/scenarios/shared built and verified against its lock, run on Flink over Kafka under a generation registered through generation new --store kafka, equal to the oracle at every cut (recomputed digests, dispositions per identity), integrity and pins cross-check clean, expected.json at the last cut and transitions[] at the bracketing cuts; every work record and sample row digest equal at the settled cut (comparable-cut predicate)"
     },
     {
-      "id": "FL-SMOKE-DEDICATED-OUTPUT",
-      "pr": 4,
-      "description": "the dedicated smoke run's output journals, dumped with read_committed: every record carries the run's forseti-generation header and RFC 8785 key and value bytes, every writer's journal is present, and every consumer of the run (harness clients and job sources) reads with isolation.level=read_committed"
+      "id": "I-2",
+      "pr": 5,
+      "description": "Flink, shared placement (site-019): corrections: the engine recording of engine-fixtures/scenarios/shared built and verified against its lock, run on Flink over Kafka under a generation registered through generation new --store kafka, equal to the oracle at every cut (recomputed digests, dispositions per identity), integrity and pins cross-check clean, expected.json at the last cut and transitions[] at the bracketing cuts; visit 2 provisional at cutA and complete at cutB of leave + L"
     },
     {
-      "id": "FL-SMOKE-DEDICATED-INIT",
-      "pr": 4,
-      "description": "the first progress of every stage-1 progress writer of the dedicated smoke run (work records, samples, the station ledgers and the stage-1 reject collector) carries initEvidence naming the run's recovery declaration, the control end offset H read in initializeState and the Flink restore evidence of a first start; no later progress and no stage-2 progress carries one"
+      "id": "I-2b",
+      "pr": 5,
+      "description": "Flink, shared placement (site-019): corrections: the engine recording of engine-fixtures/scenarios/shared built and verified against its lock, run on Flink over Kafka under a generation registered through generation new --store kafka, equal to the oracle at every cut (recomputed digests, dispositions per identity), integrity and pins cross-check clean, expected.json at the last cut and transitions[] at the bracketing cuts; visit 5's sample rows unattributed no-occupancy first, then attributed; members[] include them"
     },
     {
-      "id": "FL-SMOKE-DEDICATED-ORACLE",
-      "pr": 4,
-      "description": "the oracle, unchanged, equals the dedicated smoke run's journals at every cut the run reported (Comparison and JournalFold as the core gate runs them): every cut compared, no difference, no finding, rows and dispositions compared"
+      "id": "I-3",
+      "pr": 5,
+      "description": "Flink, shared placement (site-019): bad-quality: the engine recording of engine-fixtures/scenarios/shared built and verified against its lock, run on Flink over Kafka under a generation registered through generation new --store kafka, equal to the oracle at every cut (recomputed digests, dispositions per identity), integrity and pins cross-check clean, expected.json at the last cut and transitions[] at the bracketing cuts; 7 rows unattributed bad-quality; visit 1 members[nutrunner1-torque] observedPeriods 60, badSlots 7, count 53; insufficient bad-share-exceeded"
     },
     {
-      "id": "FL-SMOKE-DEDICATED-RECONCILE",
-      "pr": 4,
-      "description": "the shared identity-bound reconciliation of the dedicated smoke run's ledgers and row triggers with its recording holds at every completed cut and at the end"
+      "id": "I-4",
+      "pr": 5,
+      "description": "Flink, shared placement (site-019): overlap: the engine recording of engine-fixtures/scenarios/shared built and verified against its lock, run on Flink over Kafka under a generation registered through generation new --store kafka, equal to the oracle at every cut (recomputed digests, dispositions per identity), integrity and pins cross-check clean, expected.json at the last cut and transitions[] at the bracketing cuts; visit 3 and the extra visit retracted overlap; samples in one actual interval attributed to it, in [1000000, 1020000) unattributed ambiguous; station2's two visits complete with unknownActivityPeriods 3; 48 station2 Running rows in [1557000, 1605000) unattributed ambiguous"
     },
     {
-      "id": "FL-SMOKE-SHARED-RUN",
-      "pr": 4,
-      "description": "engine-fixtures/scenarios/shared/smoke.json (raw partition 0 carries two stations) on Flink: the recording equals its lock, the run's topics are the plan, both jobs and all their tasks are RUNNING before the first batch, every batch's cut completes, and both clusters stop on cancel"
+      "id": "I-5",
+      "pr": 5,
+      "description": "Flink, shared placement (site-019): redelivery: the engine recording of engine-fixtures/scenarios/shared built and verified against its lock, run on Flink over Kafka under a generation registered through generation new --store kafka, equal to the oracle at every cut (recomputed digests, dispositions per identity), integrity and pins cross-check clean, expected.json at the last cut and transitions[] at the bracketing cuts; the second deliveries duplicate identical-redelivery; live row counts equal baseline's"
     },
     {
-      "id": "FL-SMOKE-SHARED-OUTPUT",
-      "pr": 4,
-      "description": "the shared smoke run's output journals, dumped with read_committed: every record carries the run's forseti-generation header and RFC 8785 bytes, every writer's journal is present, and every consumer of the run reads with isolation.level=read_committed"
+      "id": "I-6",
+      "pr": 5,
+      "description": "Flink, shared placement (site-019): horizon-no-departure: the engine recording of engine-fixtures/scenarios/shared built and verified against its lock, run on Flink over Kafka under a generation registered through generation new --store kafka, equal to the oracle at every cut (recomputed digests, dispositions per identity), integrity and pins cross-check clean, expected.json at the last cut and transitions[] at the bracketing cuts; visit 8 provisional at cutA (missingPeriods 0, reasons []) and insufficient missing-departure at cutB of enter + H = 88260000; visits 1-7 equal baseline's; visit 9 provisional then complete at 89280000, never retracted; visit 8 without overlap"
     },
     {
-      "id": "FL-SMOKE-SHARED-INIT",
-      "pr": 4,
-      "description": "the first progress of every stage-1 progress writer of the shared smoke run carries initEvidence naming the run's recovery declaration, H and the Flink restore evidence of a first start; no later progress and no stage-2 progress carries one"
+      "id": "I-7",
+      "pr": 5,
+      "description": "Flink, shared placement (site-019): session: the engine recording of engine-fixtures/scenarios/shared built and verified against its lock, run on Flink over Kafka under a generation registered through generation new --store kafka, equal to the oracle at every cut (recomputed digests, dispositions per identity), integrity and pins cross-check clean, expected.json at the last cut and transitions[] at the bracketing cuts; 120 nutrunner1 sample rows unattributed no-occupancy active true; no complete visit for that window"
     },
     {
-      "id": "FL-SMOKE-SHARED-ORACLE",
-      "pr": 4,
-      "description": "the oracle, unchanged, equals the shared smoke run's journals at every cut the run reported: every cut compared, no difference, no finding, rows and dispositions compared"
+      "id": "I-8",
+      "pr": 5,
+      "description": "Flink, shared placement (site-019): session: the engine recording of engine-fixtures/scenarios/shared built and verified against its lock, run on Flink over Kafka under a generation registered through generation new --store kafka, equal to the oracle at every cut (recomputed digests, dispositions per identity), integrity and pins cross-check clean, expected.json at the last cut and transitions[] at the bracketing cuts; visit 3 insufficient session-gap, equipmentEvidence[nutrunner1].coverage.sessionGaps 1"
     },
     {
-      "id": "FL-SMOKE-SHARED-RECONCILE",
-      "pr": 4,
-      "description": "the shared identity-bound reconciliation of the shared smoke run's ledgers and row triggers with its recording holds at every completed cut and at the end"
+      "id": "I-9",
+      "pr": 5,
+      "description": "Flink, shared placement (site-019): clock-plus-30: the engine recording of engine-fixtures/scenarios/shared built and verified against its lock, run on Flink over Kafka under a generation registered through generation new --store kafka, equal to the oracle at every cut (recomputed digests, dispositions per identity), integrity and pins cross-check clean, expected.json at the last cut and transitions[] at the bracketing cuts; every sample inside a visit's [enter, leave) attributed to the same visit as in baseline; the sample at original 550000 attributed to visit 1"
+    },
+    {
+      "id": "I-9b",
+      "pr": 5,
+      "description": "Flink, shared placement (site-019): clock-plus-90: the engine recording of engine-fixtures/scenarios/shared built and verified against its lock, run on Flink over Kafka under a generation registered through generation new --store kafka, equal to the oracle at every cut (recomputed digests, dispositions per identity), integrity and pins cross-check clean, expected.json at the last cut and transitions[] at the bracketing cuts; per-sample attribution equals expected.json (three bands)"
+    },
+    {
+      "id": "I-10",
+      "pr": 5,
+      "description": "Flink, shared placement (site-019): corrections: the engine recording of engine-fixtures/scenarios/shared built and verified against its lock, run on Flink over Kafka under a generation registered through generation new --store kafka, equal to the oracle at every cut (recomputed digests, dispositions per identity), integrity and pins cross-check clean, expected.json at the last cut and transitions[] at the bracketing cuts; visit 4 retracted error-declaration, errorReason did_not_occur"
+    },
+    {
+      "id": "I-10b",
+      "pr": 5,
+      "description": "Flink, shared placement (site-019): corrections-10b-before vs -after: the engine recording of engine-fixtures/scenarios/shared built and verified against its lock, run on Flink over Kafka under a generation registered through generation new --store kafka, equal to the oracle at every cut (recomputed digests, dispositions per identity), integrity and pins cross-check clean, expected.json at the last cut and transitions[] at the bracketing cuts; the same settled body digest of visit 8 (retracted error-declaration did_not_occur) in both orders; in -before the declaration accepted (part errorDeclaration) before the original accepted (part event)"
+    },
+    {
+      "id": "I-10c",
+      "pr": 5,
+      "description": "Flink, shared placement (site-019): corrections-10c and horizon-reopened: the engine recording of engine-fixtures/scenarios/shared built and verified against its lock, run on Flink over Kafka under a generation registered through generation new --store kafka, equal to the oracle at every cut (recomputed digests, dispositions per identity), integrity and pins cross-check clean, expected.json at the last cut and transitions[] at the bracketing cuts; visit 8 complete at the cut of W1 2640999, the declaration accepted late-after-settlement, the visit provisional with reasons []; in horizon-reopened insufficient missing-departure at enter + H"
+    },
+    {
+      "id": "I-10d",
+      "pr": 5,
+      "description": "Flink, shared placement (site-019): corrections: the engine recording of engine-fixtures/scenarios/shared built and verified against its lock, run on Flink over Kafka under a generation registered through generation new --store kafka, equal to the oracle at every cut (recomputed digests, dispositions per identity), integrity and pins cross-check clean, expected.json at the last cut and transitions[] at the bracketing cuts; both deliveries of occ-1 conflict identity-conflict; visit 1 retracted input-conflict"
+    },
+    {
+      "id": "I-10e",
+      "pr": 5,
+      "description": "Flink, shared placement (site-019): horizon-correction-beyond: the engine recording of engine-fixtures/scenarios/shared built and verified against its lock, run on Flink over Kafka under a generation registered through generation new --store kafka, equal to the oracle at every cut (recomputed digests, dispositions per identity), integrity and pins cross-check clean, expected.json at the last cut and transitions[] at the bracketing cuts; the cut before the declaration's batch reports W1 87960999 >= onlineExpiresAt; the declaration replay-required correction-beyond-horizon; visit 2 unchanged complete"
+    },
+    {
+      "id": "I-10f",
+      "pr": 5,
+      "description": "Flink, shared placement (site-019): corrections: the engine recording of engine-fixtures/scenarios/shared built and verified against its lock, run on Flink over Kafka under a generation registered through generation new --store kafka, equal to the oracle at every cut (recomputed digests, dispositions per identity), integrity and pins cross-check clean, expected.json at the last cut and transitions[] at the bracketing cuts; the declaration and the corrective departure accepted late-after-settlement; visit 6 complete, provisional, then complete with leave 1565000 once W1 >= 1565000 + L"
+    },
+    {
+      "id": "I-11",
+      "pr": 5,
+      "description": "Flink, shared placement (site-019): plc-stamped: the engine recording of engine-fixtures/scenarios/shared built and verified against its lock, run on Flink over Kafka under a generation registered through generation new --store kafka, equal to the oracle at every cut (recomputed digests, dispositions per identity), integrity and pins cross-check clean, expected.json at the last cut and transitions[] at the bracketing cuts; visit 3's samples attributed with reason identity-mismatch, attributedTo unchanged"
+    },
+    {
+      "id": "I-11b",
+      "pr": 5,
+      "description": "Flink, shared placement (site-019): plc-held-back vs plc-nocheck (stream line2-plc-nocheck): the engine recording of engine-fixtures/scenarios/shared built and verified against its lock, run on Flink over Kafka under a generation registered through generation new --store kafka, equal to the oracle at every cut (recomputed digests, dispositions per identity), integrity and pins cross-check clean, expected.json at the last cut and transitions[] at the bracketing cuts; bodies equal at the settled cut; at least one complete visit"
+    },
+    {
+      "id": "I-11c",
+      "pr": 5,
+      "description": "Flink, shared placement (site-019): plc-stamped: the engine recording of engine-fixtures/scenarios/shared built and verified against its lock, run on Flink over Kafka under a generation registered through generation new --store kafka, equal to the oracle at every cut (recomputed digests, dispositions per identity), integrity and pins cross-check clean, expected.json at the last cut and transitions[] at the bracketing cuts; the mixed snapshot's samples incoherent-snapshot"
+    },
+    {
+      "id": "I-11d",
+      "pr": 5,
+      "description": "Flink, shared placement (site-019): plc-stamped: the engine recording of engine-fixtures/scenarios/shared built and verified against its lock, run on Flink over Kafka under a generation registered through generation new --store kafka, equal to the oracle at every cut (recomputed digests, dispositions per identity), integrity and pins cross-check clean, expected.json at the last cut and transitions[] at the bracketing cuts; visit 7 insufficient missing-visit-close"
+    },
+    {
+      "id": "I-11e",
+      "pr": 5,
+      "description": "Flink, shared placement (site-019): plc-horizon-no-end: the engine recording of engine-fixtures/scenarios/shared built and verified against its lock, run on Flink over Kafka under a generation registered through generation new --store kafka, equal to the oracle at every cut (recomputed digests, dispositions per identity), integrity and pins cross-check clean, expected.json at the last cut and transitions[] at the bracketing cuts; V3 insufficient missing-departure once W1 >= enter + H"
+    },
+    {
+      "id": "I-12",
+      "pr": 5,
+      "description": "Flink, shared placement (site-019): stage2: the engine recording of engine-fixtures/scenarios/shared built and verified against its lock, run on Flink over Kafka under a generation registered through generation new --store kafka, equal to the oracle at every cut (recomputed digests, dispositions per identity), integrity and pins cross-check clean, expected.json at the last cut and transitions[] at the bracketing cuts; inc-1 units 1, 3, 5 affected-candidate equipment-activity; set settled true at the last cut"
+    },
+    {
+      "id": "I-13",
+      "pr": 5,
+      "description": "Flink, shared placement (site-019): stage2-early: the engine recording of engine-fixtures/scenarios/shared built and verified against its lock, run on Flink over Kafka under a generation registered through generation new --store kafka, equal to the oracle at every cut (recomputed digests, dispositions per identity), integrity and pins cross-check clean, expected.json at the last cut and transitions[] at the bracketing cuts; the first set row has units [], settled false, coverage unknown with unknownActivityPeriods 990; it falls cut by cut; units grow one per visit; settled once W2 >= 2310000; complete at the last cut"
+    },
+    {
+      "id": "I-14",
+      "pr": 5,
+      "description": "Flink, shared placement (site-019): stage2: the engine recording of engine-fixtures/scenarios/shared built and verified against its lock, run on Flink over Kafka under a generation registered through generation new --store kafka, equal to the oracle at every cut (recomputed digests, dispositions per identity), integrity and pins cross-check clean, expected.json at the last cut and transitions[] at the bracketing cuts; inc-2 while open: T1 visits affected-candidate, T2-only and no-tool no-equipment-activity; after revision 2 visits 6-8 interval-narrowed, 3 and 5 affected-candidate, open false"
+    },
+    {
+      "id": "I-15",
+      "pr": 5,
+      "description": "Flink, shared placement (site-019): stage2: the engine recording of engine-fixtures/scenarios/shared built and verified against its lock, run on Flink over Kafka under a generation registered through generation new --store kafka, equal to the oracle at every cut (recomputed digests, dispositions per identity), integrity and pins cross-check clean, expected.json at the last cut and transitions[] at the bracketing cuts; inc-3 every unit not-affected-within-scope incident-withdrawn; resolution withdrawn, open false, settled true, never complete"
+    },
+    {
+      "id": "I-16",
+      "pr": 5,
+      "description": "Flink, shared placement (site-019): stage2: the engine recording of engine-fixtures/scenarios/shared built and verified against its lock, run on Flink over Kafka under a generation registered through generation new --store kafka, equal to the oracle at every cut (recomputed digests, dispositions per identity), integrity and pins cross-check clean, expected.json at the last cut and transitions[] at the bracketing cuts; inc-1 T2-only visit 2 no-equipment-activity, both-tool visit 3 affected-candidate, no-tool visit 4 no-equipment-activity"
+    },
+    {
+      "id": "I-17",
+      "pr": 5,
+      "description": "Flink, shared placement (site-019): stage2: the engine recording of engine-fixtures/scenarios/shared built and verified against its lock, run on Flink over Kafka under a generation registered through generation new --store kafka, equal to the oracle at every cut (recomputed digests, dispositions per identity), integrity and pins cross-check clean, expected.json at the last cut and transitions[] at the bracketing cuts; inc-1 coverage.unattributedActivityPeriods 28, status incomplete; 56 nutrunner1 rows unattributed no-occupancy active true"
+    },
+    {
+      "id": "I-18",
+      "pr": 5,
+      "description": "Flink, shared placement (site-019): cascade: the engine recording of engine-fixtures/scenarios/shared built and verified against its lock, run on Flink over Kafka under a generation registered through generation new --store kafka, equal to the oracle at every cut (recomputed digests, dispositions per identity), integrity and pins cross-check clean, expected.json at the last cut and transitions[] at the bracketing cuts; inc-1 unit 1 affected-candidate then not-affected-within-scope basis-retracted-error-declaration in the cut of the retraction"
+    },
+    {
+      "id": "I-19",
+      "pr": 5,
+      "description": "Flink, shared placement (site-019): cascade: the engine recording of engine-fixtures/scenarios/shared built and verified against its lock, run on Flink over Kafka under a generation registered through generation new --store kafka, equal to the oracle at every cut (recomputed digests, dispositions per identity), integrity and pins cross-check clean, expected.json at the last cut and transitions[] at the bracketing cuts; inc-2 without unit 5 first; unit 5 insufficient-evidence basis-provisional while visit 5 is provisional, then affected-candidate equipment-activity at the bracketing cut of 2100000; each step a set revision"
+    },
+    {
+      "id": "I-25",
+      "pr": 5,
+      "description": "Flink, shared placement (site-019): session: the engine recording of engine-fixtures/scenarios/shared built and verified against its lock, run on Flink over Kafka under a generation registered through generation new --store kafka, equal to the oracle at every cut (recomputed digests, dispositions per identity), integrity and pins cross-check clean, expected.json at the last cut and transitions[] at the bracketing cuts; stale-death leaves station2's visit 2 equal to baseline's; session-ambiguous: visit 6 insufficient session-ambiguous, nutrunner2 coverage unknown"
+    },
+    {
+      "id": "I-26",
+      "pr": 5,
+      "description": "Flink, shared placement (site-019): quiet-occupancy vs quiet-occupancy-control: the engine recording of engine-fixtures/scenarios/shared built and verified against its lock, run on Flink over Kafka under a generation registered through generation new --store kafka, equal to the oracle at every cut (recomputed digests, dispositions per identity), integrity and pins cross-check clean, expected.json at the last cut and transitions[] at the bracketing cuts; Station1 work records and sample rows equal at every comparable cut, the settled cut among them"
+    },
+    {
+      "id": "I-20",
+      "pr": 5,
+      "description": "Flink, shared placement (site-019): rule change in a new generation: A = the pipeline baseline run (rule 1.0.0); in store assertion:I-20 generation 1 on registry and generation 2 on registry-next (rule 1.0.1, that store's floor 2, the pipeline store's 1); B = baseline@rule-1.0.1 under generation 2, compared with the oracle at every cut; every row of B carries the new rulesDigest, rule version 1.0.1 and evaluationGeneration 2, every row of A the old digest, the digests differ, each fold holds only its own; A and B named by (store, registeredRowSha256), both I-20 generations isolated"
+    },
+    {
+      "id": "I-23",
+      "pr": 5,
+      "description": "Flink, shared placement (site-019): horizon-planned-late online: W1 = A at the planned cut, holeAt and holeAt - 1 admitted, holeAt - 2 replay-required beyond-horizon, visit 3 missingPeriods 1 before the late batch and 0 after; horizon-planned-late@replay on the locked replay recording: every deadline keeps its cut ids and is bracketed by the reported W1, the third sample attributed with cause replayed, no replay-required disposition, every timer row carries the replayed timer cause and precedes its progress; the base journals reread after the replay equal their index and fold alike, the replay journals carry only the replay generation; both generations shared under --state"
+    },
+    {
+      "id": "J-DISPOSITION-COVERAGE",
+      "pr": 5,
+      "description": "Flink, over every run summary of every shard: every scenario run and shuffled run: every delivered input has a disposition, every message member its part; inputsWithoutDisposition 0"
+    },
+    {
+      "id": "J-REVISION-CONTINUITY",
+      "pr": 5,
+      "description": "Flink, over every run summary of every shard: every scenario run and shuffled run: revisions contiguous from 1 per key on every journal and ledger, deletes superseding the last digest"
+    },
+    {
+      "id": "J-NO-EQUAL-CONSECUTIVE",
+      "pr": 5,
+      "description": "Flink, over every run summary of every shard: every scenario run and shuffled run: no two consecutive equal digests of one key; every reported bodyDigest recomputed"
+    },
+    {
+      "id": "J-PROGRESS-ORDER",
+      "pr": 5,
+      "description": "Flink, over every run summary of every shard: every scenario run and shuffled run: progress cutId increasing and event time non-decreasing per partition; no business row or disposition of a cut after its progress; a progress record of every cut on every partition"
+    },
+    {
+      "id": "J-W1-FORMULA",
+      "pr": 5,
+      "description": "Flink, over every run summary of every shard: every run of the Flink gate (spec 718): W1 in cuts.json and in the stage-1 progress equals the Flink form, min over the subscribed raw telemetry partitions of (the largest sourceTs delivered on the partition through the cut - outOfOrdernessMs - 1), at every cut each station completed; admissionW = the previous W1"
+    },
+    {
+      "id": "J-W2-EQUALS-W1",
+      "pr": 5,
+      "description": "Flink, over every run summary of every shard: every scenario run and shuffled run: stage-2 progress W2 equals the cut's W1, six incidentOffsets"
+    },
+    {
+      "id": "J-BASIS-CURRENT",
+      "pr": 5,
+      "description": "Flink, over every run summary of every shard: every scenario run and shuffled run: every basis[].bodyDigest of every live assessment is the current work record digest at every cut"
+    },
+    {
+      "id": "J-AFTER-HORIZON-CUTS",
+      "pr": 5,
+      "description": "Flink, over every run summary of every shard: the five horizon scenarios: cuts exist with W1 >= enter + H + L of the open visits (or the first onlineExpiresAt); onlineVisits drops after expiry while the work records remain in the fold"
+    },
+    {
+      "id": "C-2-REFERENCE",
+      "pr": 5,
+      "description": "Flink, over every run summary of every shard: report.json measurements record longestLatenessCorrectedOnlineMs (568999 from held-back-10min, H from horizon-planned-late's online run), journal records per topic per scenario and inputsWithoutDisposition 0"
+    },
+    {
+      "id": "C-1",
+      "pr": 5,
+      "description": "Flink, over every run summary of every shard: item 1 (spec 579): every scenario run, shuffled run and generation run of the gate was compared with the oracle at every cut its recording plans and every compared cut matched; report.json measurements.item1 lists the scenarios and the cuts, rows and dispositions compared"
+    },
+    {
+      "id": "R-READ-COMMITTED",
+      "pr": 5,
+      "description": "Flink, over every run summary of every shard: spec 708: every consumer of every run reads with isolation.level=read_committed: the harness's clients as configured, both jobs' sources and the gate's dump consumer as the run record's jobSettings record them"
+    },
+    {
+      "id": "R-JOB-SETTINGS",
+      "pr": 5,
+      "description": "Flink, over every run summary of every shard: spec 590, reviewer decision 1: run.json carries jobSettings right after pins, one object per stage plus the dump consumer, run-invariant values only; run.json pins.job names its runId and artifactSha256 (the digest of the sorted (file name, sha256) list of the engine path); every row's envelope pins.job.runId and pins.job.artifactSha256 equal the run record's"
+    },
+    {
+      "id": "R-TIMESTAMP-SOURCE",
+      "pr": 5,
+      "description": "Flink, over every run summary of every shard: spec 709: pins.job.timestampSource is payload in every run record and on every row"
+    },
+    {
+      "id": "R-PARTITION-ASSIGNMENT",
+      "pr": 5,
+      "description": "Flink, over every run summary of every shard: spec 710: the run's subscription is the routing manifest's; every station-topic record is on the stations' partitions (each present), every ledger record on them or partition 6"
+    },
+    {
+      "id": "R-TOPIC-RETENTION",
+      "pr": 5,
+      "description": "Flink, over every run summary of every shard: spec 711: every planned topic of every run exists with its planned partitions, timestamp type and retention as the broker reports them (no settings problem)"
+    },
+    {
+      "id": "R-RECONCILE",
+      "pr": 5,
+      "description": "Flink, over every run summary of every shard: the shared identity-bound reconciliation of every run's ledgers and row triggers with its recording holds at every completed cut and at the end"
+    },
+    {
+      "id": "FL-KEYGROUP-MAP",
+      "pr": 5,
+      "description": "Flink, over every run summary of every shard: spec 715: from the init records of both station operators, every station has exactly one owner subtask, at the key group Flink assigns it under max parallelism 128 and inside that subtask's key-group range, so every station output partition has exactly one owner; the routingDigest of run.json, cuts.json and the recording are one"
+    },
+    {
+      "id": "FL-WATERMARK-PER-RECORD",
+      "pr": 5,
+      "description": "Flink, over every run summary of every shard: spec 716: the stage-1 watermark emission is per record (the delegating generator), the automatic watermark interval 0 as the cluster reports it, idleness off in the job settings and in pins.job"
+    },
+    {
+      "id": "FL-ONE-SPLIT",
+      "pr": 5,
+      "description": "Flink, over every run summary of every shard: spec 717: every source subtask of both jobs received records of exactly one partition and every subscribed partition reached exactly one subtask, at a source parallelism equal to the number of subscribed partitions"
+    },
+    {
+      "id": "FL-JOB-SETTINGS",
+      "pr": 5,
+      "description": "Flink, over every run summary of every shard: spec 588-590: the observed job settings of both stages are the engine pins: EXACTLY_ONCE checkpoints every 1000 ms, one at a time, RocksDB with incremental checkpoints, no restart strategy, keyed parallelism 6 and max parallelism 128 as the operators saw them, two EXACTLY_ONCE transactional sinks, source parallelism the subscribed partitions"
+    },
+    {
+      "id": "FL-TIMER-INVARIANT",
+      "pr": 5,
+      "description": "Flink, over every run summary of every shard: reviewer decision 4: at every cut close of every stage-1 station writer, evaluated at the operator watermark W1 (Flink fires every timer at or below a watermark when it processes it), every deadline registered before the close and at or below W1 is held (its Flink timer fired); at least one close checked"
+    },
+    {
+      "id": "FL-INIT-EVIDENCE",
+      "pr": 5,
+      "description": "Flink, over every run summary of every shard: the first progress of every stage-1 progress writer of every run (work records, samples, the station ledgers and the stage-1 reject collector) carries initEvidence naming the run's recovery declaration, the control end offset H read in initializeState and the Flink restore evidence of a first start; no later progress and no stage-2 progress carries one"
+    },
+    {
+      "id": "FL-CUT-EVIDENCE",
+      "pr": 5,
+      "description": "Flink, over every run summary of every shard: every station entry of every cut of every run's cuts.json carries the onlineVisits its stage-1 operator recorded at that close (Stage1State.onlineVisits(), operator evidence, never derived from journal rows)"
     }
   ]
 }

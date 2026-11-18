@@ -61,15 +61,33 @@ final class FlinkCluster implements AutoCloseable {
   static final List<String> LOGGING = List.of("-Dorg.slf4j.simpleLogger.defaultLogLevel=info", "-Dorg.slf4j.simpleLogger.showDateTime=true",
       "-Dorg.slf4j.simpleLogger.dateTimeFormat=HH:mm:ss.SSS", "-Dorg.slf4j.simpleLogger.log.org.apache.kafka=warn");
 
-  /** The memory of one cluster: explicit components, so the JVM flags never depend on a fraction of a host default. */
+  /** The memory of one cluster: explicit components, so the JVM flags never depend on a fraction of a host default. A component is
+   *  {@code forseti.flink.<key>} (a system property), overridden per stage by {@code forseti.flink.stage<N>.<key>} and then by the
+   *  shard's engine settings ({@code "stage<N>": {"<key>": "5g"}} in {@code gate/flink-shards.json}: the horizon shards' stage-1 task
+   *  heap, measured on CI). */
   record Memory(String jmHeap, String jmOffHeap, String jmMetaspace, String jmOverhead, String tmFrameworkHeap, String tmTaskHeap, String tmFrameworkOffHeap,
                 String tmManaged, String tmNetwork, String tmMetaspace, String tmOverhead) {
-    static Memory defaults() {
-      return new Memory(prop("jm.heap", "192m"), prop("jm.offheap", "64m"), prop("jm.metaspace", "160m"), prop("jm.overhead", "96m"),
-          prop("tm.framework.heap", "64m"), prop("tm.task.heap", "224m"), prop("tm.framework.offheap", "64m"), prop("tm.managed", "128m"),
-          prop("tm.network", "64m"), prop("tm.metaspace", "192m"), prop("tm.overhead", "128m"));
+    static Memory defaults() { return forStage(0, null); }
+
+    static Memory forStage(int stage, JsonNode settings) {
+      JsonNode s = settings == null ? null : settings.path("stage" + stage);
+      return new Memory(prop(stage, s, "jm.heap", "192m"), prop(stage, s, "jm.offheap", "64m"), prop(stage, s, "jm.metaspace", "160m"), prop(stage, s, "jm.overhead", "96m"),
+          prop(stage, s, "tm.framework.heap", "64m"), prop(stage, s, "tm.task.heap", "224m"), prop(stage, s, "tm.framework.offheap", "64m"),
+          prop(stage, s, "tm.managed", "128m"), prop(stage, s, "tm.network", "64m"), prop(stage, s, "tm.metaspace", "192m"), prop(stage, s, "tm.overhead", "128m"));
     }
-    private static String prop(String k, String d) { return System.getProperty("forseti.flink." + k, d); }
+
+    private static String prop(int stage, JsonNode shard, String k, String d) {
+      String v = System.getProperty("forseti.flink." + k, d);
+      v = System.getProperty("forseti.flink.stage" + stage + "." + k, v);
+      if (shard != null && shard.path(k).isTextual()) v = shard.get(k).textValue();
+      return v;
+    }
+
+    ObjectNode toJson() {
+      return Json.object().put("jm.heap", jmHeap).put("jm.offheap", jmOffHeap).put("jm.metaspace", jmMetaspace).put("jm.overhead", jmOverhead)
+          .put("tm.framework.heap", tmFrameworkHeap).put("tm.task.heap", tmTaskHeap).put("tm.framework.offheap", tmFrameworkOffHeap).put("tm.managed", tmManaged)
+          .put("tm.network", tmNetwork).put("tm.metaspace", tmMetaspace).put("tm.overhead", tmOverhead);
+    }
   }
 
   final String name;
@@ -282,6 +300,37 @@ final class FlinkCluster implements AutoCloseable {
       try { v = (long) Double.parseDouble(m.path("value").asText()); } catch (NumberFormatException e) { continue; }
       heapPeak.merge(who + (id.endsWith("Used") ? "HeapUsedPeakBytes" : "HeapMaxBytes"), v, Math::max);
     }
+  }
+
+  /** The keys of the JobManager's effective configuration the job settings record (run-invariant engine pins, spec 588-590). */
+  static final List<String> OBSERVED_KEYS = List.of("execution.checkpointing.interval", "execution.checkpointing.mode", "execution.checkpointing.max-concurrent-checkpoints",
+      "execution.checkpointing.incremental", "state.backend.type", "pipeline.auto-watermark-interval", "pipeline.max-parallelism", "restart-strategy.type");
+
+  /** The job's settings as the cluster reports them over REST (reviewer decision 1 of 2026-11-18: observed, not only submitted): the
+   *  checkpoint configuration, the selected keys of the JobManager's effective configuration and every vertex's parallelism. */
+  ObjectNode observedSettings() {
+    ObjectNode n = Json.object();
+    JsonNode cp = get("/jobs/" + jobId.toHexString() + "/checkpoints/config");
+    n.set("checkpointConfig", cp == null ? com.fasterxml.jackson.databind.node.NullNode.getInstance() : cp);
+    ObjectNode conf = n.putObject("configuration");
+    JsonNode jc = get("/jobs/" + jobId.toHexString() + "/jobmanager/config");
+    if (jc != null) for (JsonNode e : jc) if (OBSERVED_KEYS.contains(e.path("key").asText())) conf.put(e.path("key").asText(), e.path("value").asText());
+    ObjectNode v = n.putObject("vertices");
+    JsonNode j = get("/jobs/" + jobId.toHexString());
+    if (j != null) for (JsonNode x : j.path("vertices")) Json.putSafe(v, x.path("name").asText(), x.path("parallelism").asLong());
+    return n;
+  }
+
+  /** The job's checkpoint statistics over REST (comparison item 8): counts, and the checkpointed size, state size and end-to-end
+   *  duration summaries. */
+  ObjectNode checkpointStatistics() {
+    ObjectNode n = Json.object();
+    JsonNode c = get("/jobs/" + jobId.toHexString() + "/checkpoints");
+    if (c == null) return n.put("error", "no checkpoint statistics");
+    n.set("counts", c.path("counts"));
+    ObjectNode s = n.putObject("summary");
+    for (String k : List.of("checkpointed_size", "state_size", "end_to_end_duration")) s.set(k, c.path("summary").path(k));
+    return n;
   }
 
   /** The resident set of both JVMs now and at their peak, as the operating system reports it. */

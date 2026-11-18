@@ -9,8 +9,13 @@ import java.util.*;
 import yggdrasil.forseti.cli.gate.RunFold.Disp;
 import yggdrasil.forseti.cli.gate.RunFold.Findings;
 import yggdrasil.forseti.cli.gate.RunFold.Mark;
+import yggdrasil.forseti.cli.recording.Recording;
+import yggdrasil.forseti.cli.recording.W1Form;
 import yggdrasil.forseti.core.Json;
+import yggdrasil.forseti.core.input.InputParser;
+import yggdrasil.forseti.core.input.Inputs;
 import yggdrasil.forseti.core.rules.RuleSet;
+import yggdrasil.forseti.core.stage1.Events;
 
 /** The integrity checks of a run that need the recording and the cut log beside the journals (plan Task 19; the journal-only checks are
  *  made by {@link RunFold} while it folds). Recorded into the fold's {@link Findings} under the assertion ids that aggregate them:
@@ -30,7 +35,20 @@ final class Integrity {
      *  {@code rules} only the disposition coverage of the delivered offsets is checked (the unit tests). */
     static Measures check(RunFold fold, Path recording, JsonNode cutLog, Map<String, List<Integer>> subscribed, RuleSet rules, JsonNode definitions,
                           Map<String, Integer> stationPartitions) throws IOException {
+        return check(fold, recording, cutLog, subscribed, rules, definitions, stationPartitions, W1Form.PER_STATION);
+    }
+
+    /** {@code form}: the engine's W1 formula (spec 620): {@link W1Form#PER_STATION} (the reference harness, Kafka Streams) or
+     *  {@link W1Form#MIN_OVER_PARTITIONS} (Flink: the minimum over the subscribed raw telemetry partitions of the largest {@code sourceTs}
+     *  delivered on that partition through the cut, every delivered message that parses counted whatever station or reject collector it
+     *  then goes to, minus {@code outOfOrdernessMs} minus 1); {@code J-W1-FORMULA} asserts the reported {@code W1} against it. */
+    static Measures check(RunFold fold, Path recording, JsonNode cutLog, Map<String, List<Integer>> subscribed, RuleSet rules, JsonNode definitions,
+                          Map<String, Integer> stationPartitions, W1Form form) throws IOException {
         Findings f = fold.findings;
+        Recording rec = form == W1Form.MIN_OVER_PARTITIONS ? Recording.open(recording) : null;
+        Map<Integer, Recording.Reader> clockReaders = new HashMap<>();
+        Map<Integer, Long> clockNext = new HashMap<>(), partitionMax = new HashMap<>();
+        List<Integer> telemetry = subscribed.getOrDefault("ot.messages", List.of());
         // every delivery's parts and judgements: "topic/partition/offset" -> part -> disposition
         Map<String, Map<String, String>> parts = new HashMap<>();
         for (Disp d : fold.dispositions()) parts.computeIfAbsent(d.topic() + "/" + d.partition() + "/" + d.offset(), k -> new HashMap<>()).put(d.part(), d.disposition());
@@ -86,9 +104,33 @@ final class Integrity {
                         }
                     }
                 }
+                Long minOver = null;
+                if (rec != null) {
+                    // the min-over-partitions form: every message of each subscribed raw telemetry partition through the cut, parsed as the
+                    // engine's source parses it (a value that does not parse, or a message without a valid member sourceTs, advances nothing)
+                    JsonNode tr = cut.path("offsetRanges").path("ot.messages");
+                    for (int p : telemetry) {
+                        JsonNode range = tr.path(Integer.toString(p));
+                        if (!range.isArray()) continue;
+                        long to = range.get(1).asLong();
+                        Recording.Reader reader = clockReaders.computeIfAbsent(p, x -> rec.reader("ot.messages", x));
+                        for (long off = clockNext.getOrDefault(p, 0L); off < to; off++) {
+                            Recording.Line l = reader.next();
+                            if (l == null || l.record().offset() != off) throw new IllegalStateException("ot.messages/" + p + " is not at offset " + off);
+                            InputParser.Read read = InputParser.read(new Inputs.Origin("ot.messages", p, off), l.record().key(), Recording.valueBytes(l.bytes()));
+                            Long t = read.rejected() ? null : Events.eventTime(read.record());
+                            if (t != null) partitionMax.merge(p, t, Math::max);
+                            clockNext.put(p, off + 1);
+                        }
+                    }
+                    long m = Long.MAX_VALUE;
+                    for (int p : telemetry) { Long t = partitionMax.get(p); if (t == null) { m = Long.MIN_VALUE; break; } m = Math.min(m, t); }
+                    minOver = m == Long.MIN_VALUE || telemetry.isEmpty() ? -Json.MAX_SAFE : m - ooo - 1;
+                }
                 for (String s : rules == null ? List.<String>of() : stationPartitions.keySet()) {
                     JsonNode x = per.path(s);
-                    long formula = maxTs.containsKey(s) ? maxTs.get(s) - ooo - 1 : -Json.MAX_SAFE;
+                    if (rec != null && !x.isObject()) continue;   // the station did not complete this cut (it is reported at the cut that merges it)
+                    long formula = minOver != null ? minOver : maxTs.containsKey(s) ? maxTs.get(s) - ooo - 1 : -Json.MAX_SAFE;
                     long want = Math.max(formula, w1.getOrDefault(s, -Json.MAX_SAFE));
                     w1.put(s, want);
                     if (x.path("W1").asLong() != want) f.add("J-W1-FORMULA", "cut " + cutId + " " + s + ": cuts.json W1 " + x.path("W1") + ", the formula " + want);
@@ -99,7 +141,7 @@ final class Integrity {
                     previousW1.put(s, x.path("W1").asLong());
                 }
             }
-        } finally { for (BufferedReader r : readers.values()) r.close(); }
+        } finally { for (BufferedReader r : readers.values()) r.close(); for (Recording.Reader r : clockReaders.values()) r.close(); }
         // the progress records against the cut log
         Map<Long, JsonNode> byCut = new HashMap<>();
         for (JsonNode cut : cutLog.path("cuts")) byCut.put(cut.path("cutId").asLong(), cut.path("perStation"));

@@ -93,6 +93,7 @@ final class Summaries {
             Long want = r.manifest == null ? null : Injections.heldBackLateness(r.manifest, a.outOfOrdernessMs());
             if (want == null) o.putNull("heldBackWantMs"); else Json.putSafe(o, "heldBackWantMs", want);
         }
+        if (r.replay != null) o.set("replay", r.replay.deepCopy());
         boolean complete = r.failure == null && r.tally != null && r.fold != null && r.outcome != null;
         if (r.synthetic && complete) {
             try { o.set("afterHorizon", afterHorizon(r)); }

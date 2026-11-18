@@ -26,8 +26,13 @@ import yggdrasil.forseti.core.Json;
 final class Injections {
     private Injections() {}
 
-    static final String S1 = "synthetic-site:line2:station1", S2 = "synthetic-site:line2:station2", N1 = S1 + ":nutrunner1", N2 = S1 + ":nutrunner2";
-    static final List<String> STATION1_DEVICES = List.of(S1, N1, N2);
+    /** The devices the injections name, under the run's hierarchy root ({@link Scenarios.Run#dev}): {@code synthetic-site} on a step-3
+     *  recording, the placement's site on an engine recording. */
+    static String S1(Run r) { return r.dev("line2:station1"); }
+    static String S2(Run r) { return r.dev("line2:station2"); }
+    static String N1(Run r) { return S1(r) + ":nutrunner1"; }
+    static String N2(Run r) { return S1(r) + ":nutrunner2"; }
+    static String[] station1Devices(Run r) { return new String[] {S1(r), N1(r), N2(r)}; }
     static final List<String> J = List.of("J-DISPOSITION-COVERAGE", "J-REVISION-CONTINUITY", "J-NO-EQUAL-CONSECUTIVE", "J-PROGRESS-ORDER", "J-W1-FORMULA",
         "J-W2-EQUALS-W1", "J-BASIS-CURRENT");
     /** Item 1 (spec 579): every compared cut of every run of the gate matched the oracle. */
@@ -185,7 +190,7 @@ final class Injections {
         String sa = status(r.fold.at(RunFold.WR, r.key("visit-2"), a)), sb = status(r.fold.at(RunFold.WR, r.key("visit-2"), b));
         p.equal("provisional", sa, "visit-2 at cutA " + a);
         p.equal("complete", sb, "visit-2 at cutB " + b);
-        return p.result("visit-2 provisional at cut " + a + " (W1 " + r.w1(a, S1) + ") -> complete at cut " + b + " (W1 " + r.w1(b, S1) + " >= leave + L " + t.path("at").asLong() + ")");
+        return p.result("visit-2 provisional at cut " + a + " (W1 " + r.w1(a, S1(r)) + ") -> complete at cut " + b + " (W1 " + r.w1(b, S1(r)) + " >= leave + L " + t.path("at").asLong() + ")");
     }
 
     static Result i2b(Context c) throws Exception {
@@ -233,14 +238,14 @@ final class Injections {
         Run r = run(c, "overlap");
         P p = new P(r);
         if (!p.sound()) return p.result("");
-        JsonNode v3 = r.visitAt(S1, 960000), extra = r.visitAt(S1, 1000000);
+        JsonNode v3 = r.visitAt(S1(r), 960000), extra = r.visitAt(S1(r), 1000000);
         String k3 = RunFold.keyText(v3.path("key")), kx = RunFold.keyText(extra.path("key"));
         for (JsonNode v : List.of(v3, extra)) {
             JsonNode b = last(r, ref(v));
             p.equal("retracted", status(b), ref(v) + " status");
             p.equal("overlap", b.path("retraction").path("reason").asText(null), ref(v) + " retraction.reason");
         }
-        Map<String, JsonNode> s = samples(r, device(STATION1_DEVICES.toArray(String[]::new)), in(r, 960000, 1060000));
+        Map<String, JsonNode> s = samples(r, device(station1Devices(r)), in(r, 960000, 1060000));
         int only3 = 0, onlyX = 0, ambiguous = 0;
         for (Map.Entry<String, JsonNode> e : s.entrySet()) {
             long t = rel(r, e.getValue().path("sourceTs").asLong());
@@ -248,13 +253,13 @@ final class Injections {
             else if (t < 1020000) { ambiguous++; p.equal("unattributed ambiguous", sr2(e.getValue()), "sample at " + t); }
             else { onlyX++; p.equal(kx, to(e.getValue()), "sample at " + t + " attributedTo"); }
         }
-        JsonNode a = r.visitAt(S2, 1500000), b = r.visitAt(S2, 1602000);
+        JsonNode a = r.visitAt(S2(r), 1500000), b = r.visitAt(S2(r), 1602000);
         for (JsonNode v : List.of(a, b)) {
             JsonNode body = last(r, ref(v));
             p.equal("complete", status(body), ref(v) + " status");
-            p.equal(3L, evidence(body, S2).path("coverage").path("unknownActivityPeriods").asLong(-1), ref(v) + " equipmentEvidence[station2].coverage.unknownActivityPeriods");
+            p.equal(3L, evidence(body, S2(r)).path("coverage").path("unknownActivityPeriods").asLong(-1), ref(v) + " equipmentEvidence[station2].coverage.unknownActivityPeriods");
         }
-        Map<String, JsonNode> s2 = samples(r, k -> k.path("device").asText().equals(S2) && k.path("metric").asText().equals("Running"), in(r, 1557000, 1605000));
+        Map<String, JsonNode> s2 = samples(r, k -> k.path("device").asText().equals(S2(r)) && k.path("metric").asText().equals("Running"), in(r, 1557000, 1605000));
         long amb2 = s2.values().stream().filter(x -> "unattributed ambiguous".equals(sr2(x))).count();
         p.equal(48, s2.size(), "station2 Running rows in [1557000, 1605000)");
         p.equal(48L, amb2, "of them unattributed ambiguous");
@@ -297,7 +302,7 @@ final class Injections {
             if (x != null && y != null && x.digest().equals(y.digest())) same++;
             else p.list.add(ref + " differs from baseline's");
         }
-        JsonNode v9 = r.visitAt(S1, 88_500_000);
+        JsonNode v9 = r.visitAt(S1(r), 88_500_000);
         List<Rev> h9 = history(r, ref(v9));
         List<String> st9 = new ArrayList<>();
         for (Rev x : h9) st9.add(x.deleted() ? "deleted" : status(x.node()));
@@ -310,8 +315,8 @@ final class Injections {
         p.equal("insufficient", status(v8), "visit-8 final status");
         p.require(reasons(v8).contains("missing-departure") && !reasons(v8).contains("overlap"), "visit-8 final reasons " + reasons(v8));
         p.require(noRetraction(v8), "visit-8 retraction " + (v8 == null ? null : v8.path("retraction")));
-        return p.result("visit-8 provisional at cut " + a + " (W1 " + r.w1(a, S1) + ", missingPeriods 0, reasons []) -> insufficient missing-departure at cut " + bb
-            + " (W1 " + r.w1(bb, S1) + " >= enter + H = T0 + 88260000); visits 1-7 digests = baseline's (" + same + "/7); " + ref(v9) + " [88500000, 88560000) " + st9
+        return p.result("visit-8 provisional at cut " + a + " (W1 " + r.w1(a, S1(r)) + ", missingPeriods 0, reasons []) -> insufficient missing-departure at cut " + bb
+            + " (W1 " + r.w1(bb, S1(r)) + " >= enter + H = T0 + 88260000); visits 1-7 digests = baseline's (" + same + "/7); " + ref(v9) + " [88500000, 88560000) " + st9
             + ", complete at its settlement cut " + t9.path("cutB").asLong() + " (T0 + 89280000); visit-8 final " + status(v8) + " " + reasons(v8));
     }
 
@@ -324,7 +329,7 @@ final class Injections {
         Run r = run(c, "session");
         P p = new P(r);
         if (!p.sound()) return p.result("");
-        Map<String, JsonNode> s = samples(r, device(N1), in(r, 2100000, 2160000));
+        Map<String, JsonNode> s = samples(r, device(N1(r)), in(r, 2100000, 2160000));
         long active = s.values().stream().filter(b -> "unattributed no-occupancy".equals(sr2(b)) && b.path("active").asBoolean(false)).count();
         p.equal(120L, active, "nutrunner1 rows in [2100000, 2160000) unattributed no-occupancy active true");
         p.equal(120, s.size(), "nutrunner1 rows in [2100000, 2160000)");
@@ -345,8 +350,8 @@ final class Injections {
         JsonNode v = last(r, "visit-3");
         p.equal("insufficient", status(v), "visit-3 status");
         p.require(reasons(v).contains("session-gap"), "visit-3 reasons " + reasons(v));
-        p.equal(1L, evidence(v, N1).path("coverage").path("sessionGaps").asLong(-1), "visit-3 equipmentEvidence[nutrunner1].coverage.sessionGaps");
-        return p.result("visit-3 " + status(v) + " " + reasons(v) + ", nutrunner1 sessionGaps " + evidence(v, N1).path("coverage").path("sessionGaps"));
+        p.equal(1L, evidence(v, N1(r)).path("coverage").path("sessionGaps").asLong(-1), "visit-3 equipmentEvidence[nutrunner1].coverage.sessionGaps");
+        return p.result("visit-3 " + status(v) + " " + reasons(v) + ", nutrunner1 sessionGaps " + evidence(v, N1(r)).path("coverage").path("sessionGaps"));
     }
 
     static Result i9(Context c) throws Exception {
@@ -368,7 +373,7 @@ final class Injections {
             if (x != null && t.equals(to(x.node()))) same++;
         }
         p.equal(inside, same, "samples inside [enter, leave) attributed to the baseline's visit");
-        Map<String, JsonNode> shifted = samples(r, device(STATION1_DEVICES.toArray(String[]::new)), x -> x.path("sourceTs").asLong() == r.t0() + 580000);
+        Map<String, JsonNode> shifted = samples(r, device(station1Devices(r)), x -> x.path("sourceTs").asLong() == r.t0() + 580000);
         int newly = 0;
         String k1 = r.key("visit-1");
         for (Map.Entry<String, JsonNode> e : shifted.entrySet()) {
@@ -436,7 +441,7 @@ final class Injections {
         if (!p.sound()) return p.result("");
         String k = r.key("visit-8");
         Long cut = null;
-        for (long x : r.cutIds()) if (r.w1(x, S1) == r.t0() + 2_640_999) cut = x;
+        for (long x : r.cutIds()) if (r.w1(x, S1(r)) == r.t0() + 2_640_999) cut = x;
         String atCut = null;
         if (cut == null) p.list.add("no cut with station1 W1 = T0 + 2640999");
         else { atCut = status(r.fold.at(RunFold.WR, k, cut)); p.equal("complete", atCut, "visit-8 at cut " + cut); }
@@ -491,7 +496,7 @@ final class Injections {
             }
         }
         JsonNode t = r.transition("visit-online-expiry", "visit-2");
-        long w = before == null ? 0 : r.w1(before, S1);
+        long w = before == null ? 0 : r.w1(before, S1(r));
         if (before == null) p.list.add("the declaration's cut not found");
         else {
             p.equal(r.t0() + 87_960_999, w, "W1 at the cut before the declaration's batch");
@@ -535,7 +540,7 @@ final class Injections {
         }
         p.require(corrected != null && after >= 1, "visit-6 has no revision at or after the correction's cut " + corrected + ": " + seq);
         JsonNode v = last(r, "visit-6");
-        long L = r.rules.attribution().allowedLatenessMs(), lastW = r.w1(r.lastCut(), S1);
+        long L = r.rules.attribution().allowedLatenessMs(), lastW = r.w1(r.lastCut(), S1(r));
         p.equal("complete", status(v), "visit-6 status at the last cut");
         p.equal(r.t0() + 1_565_000, v == null ? null : v.path("interval").path("leave").asLong(), "visit-6 leave");
         p.require(lastW >= r.t0() + 1_565_000 + L, "the last cut " + r.lastCut() + " has W1 " + lastW + " < leave + L");
@@ -563,18 +568,33 @@ final class Injections {
         return p.result(mismatch + " of " + s.size() + " V3 sample rows attributed with reason identity-mismatch, attributedTo V3 (unchanged)");
     }
 
+    /** The {@code plc-stamped}, {@code crossCheck none} stream of the run's placement: {@code line2-plc-nocheck} on a step-3 recording
+     *  ({@code synthetic-site}), the placement's {@code plcNocheckStream} of {@code engine-fixtures/engine-scenarios.json} on an engine
+     *  recording (its site). */
+    static String plcNocheckStream(Context c, Run r) throws java.io.IOException {
+        String site = r.dev("x").substring(0, r.dev("x").indexOf(':'));
+        if (site.equals("synthetic-site")) return "line2-plc-nocheck";
+        JsonNode placements = Json.read(c.path("engine-fixtures/engine-scenarios.json")).path("placements");
+        for (Iterator<Map.Entry<String, JsonNode>> it = placements.fields(); it.hasNext();) {
+            JsonNode pl = it.next().getValue();
+            if (site.equals(pl.path("site").asText())) return pl.path("plcNocheckStream").asText();
+        }
+        throw new IllegalStateException("no placement of site " + site + " in engine-fixtures/engine-scenarios.json");
+    }
+
     static Result i11b(Context c) throws Exception {
         Run a = run(c, "plc-held-back"), b = run(c, "plc-nocheck");
         P p = new P(a, b);
         if (!p.sound()) return p.result("");
-        p.equal("line2-plc-nocheck", a.manifest.path("rule").path("stream").asText(), "plc-held-back stream");
-        p.equal("line2-plc-nocheck", b.manifest.path("rule").path("stream").asText(), "plc-nocheck stream");
+        String nocheck = plcNocheckStream(c, a);
+        p.equal(nocheck, a.manifest.path("rule").path("stream").asText(), "plc-held-back stream");
+        p.equal(nocheck, b.manifest.path("rule").path("stream").asText(), "plc-nocheck stream");
         Long ca = a.settledCut(), cb = b.settledCut();
         if (ca == null || cb == null) { p.list.add("no settled cut"); return p.result(""); }
         String eq = direct(p, a, ca, b, cb, List.of(RunFold.WR, RunFold.SAMPLES), partitions(a, RunFold.WR));
         long complete = a.fold.live(RunFold.WR).values().stream().filter(x -> "complete".equals(status(x.node()))).count();
         p.require(complete > 0, "no complete visit");
-        return p.result("plc-held-back cut " + ca + " = plc-nocheck cut " + cb + " (settled, stream line2-plc-nocheck, occupancy not subscribed: " + a.runJson.path("subscribed").path("mfg.occupancy")
+        return p.result("plc-held-back cut " + ca + " = plc-nocheck cut " + cb + " (settled, stream " + nocheck + ", occupancy not subscribed: " + a.runJson.path("subscribed").path("mfg.occupancy")
             + "): " + eq + " digests equal; " + complete + " complete visits");
     }
 
@@ -611,8 +631,8 @@ final class Injections {
         p.equal("provisional", status(a), "V3 at cutA");
         p.equal("insufficient", status(b), "V3 at cutB");
         p.require(reasons(b).contains("missing-departure"), "V3 reasons at cutB " + reasons(b));
-        return p.result("V3 provisional at cut " + t.path("cutA") + " (W1 " + r.w1(t.path("cutA").asLong(), S1) + ") -> insufficient " + reasons(b) + " at cut " + t.path("cutB")
-            + " (W1 " + r.w1(t.path("cutB").asLong(), S1) + " >= enter + H " + t.path("at") + ")");
+        return p.result("V3 provisional at cut " + t.path("cutA") + " (W1 " + r.w1(t.path("cutA").asLong(), S1(r)) + ") -> insufficient " + reasons(b) + " at cut " + t.path("cutB")
+            + " (W1 " + r.w1(t.path("cutB").asLong(), S1(r)) + " >= enter + H " + t.path("at") + ")");
     }
 
     static JsonNode set(Run r, String inc) { Rev x = r.fold.live(RunFold.SETS).get(setKey(inc)); return x == null ? null : x.node(); }
@@ -657,15 +677,15 @@ final class Injections {
         long target = r.t0() + 2_310_000;
         if (settledAt == null) p.list.add("never settled");
         else {
-            p.require(r.w1(settledAt, S1) >= target, "settled at cut " + settledAt + " with W2 " + r.w1(settledAt, S1) + " < " + target);
+            p.require(r.w1(settledAt, S1(r)) >= target, "settled at cut " + settledAt + " with W2 " + r.w1(settledAt, S1(r)) + " < " + target);
             int i = r.cutIds().indexOf(settledAt);
-            p.require(i > 0 && r.w1(r.cutIds().get(i - 1), S1) < target, "W2 already >= " + target + " before the settling cut " + settledAt);
+            p.require(i > 0 && r.w1(r.cutIds().get(i - 1), S1(r)) < target, "W2 already >= " + target + " before the settling cut " + settledAt);
         }
         JsonNode last = h.get(h.size() - 1).node();
         p.equal("complete", last.path("coverage").path("status").asText(), "status at the last cut");
         p.equal(0L, last.path("coverage").path("unattributedActivityPeriods").asLong(-1), "unattributedActivityPeriods at the last cut");
         return p.result(h.size() + " set revisions: first at cut " + h.get(0).cut() + " units [] settled false unknown 990; unknownActivityPeriods " + compact(unknowns) + "; units grow to "
-            + prevUnits + " one at a time; settled at cut " + settledAt + " (W2 " + (settledAt == null ? null : r.w1(settledAt, S1)) + " >= T0 + 2310000); last " + last.path("coverage").path("status").asText());
+            + prevUnits + " one at a time; settled at cut " + settledAt + " (W2 " + (settledAt == null ? null : r.w1(settledAt, S1(r))) + " >= T0 + 2310000); last " + last.path("coverage").path("status").asText());
     }
 
     static String compact(List<Long> l) {
@@ -745,7 +765,7 @@ final class Injections {
         JsonNode s = set(r, "inc-1");
         p.equal(28L, s == null ? null : s.path("coverage").path("unattributedActivityPeriods").asLong(), "inc-1 unattributedActivityPeriods");
         p.equal("incomplete", s == null ? null : s.path("coverage").path("status").asText(), "inc-1 coverage.status");
-        Map<String, JsonNode> rows = samples(r, k -> k.path("device").asText().equals(N1), in(r, 1246000, 1274000));
+        Map<String, JsonNode> rows = samples(r, k -> k.path("device").asText().equals(N1(r)), in(r, 1246000, 1274000));
         long n = rows.values().stream().filter(b -> "unattributed no-occupancy".equals(sr2(b)) && b.path("active").asBoolean(false)).count();
         p.equal(56L, n, "nutrunner1 rows in [1246000, 1274000) unattributed no-occupancy active true");
         return p.result("inc-1 coverage unattributedActivityPeriods 28, status incomplete; " + n + " of " + rows.size() + " nutrunner1 rows (28 scans x Torque, Running) unattributed no-occupancy active true");
@@ -792,15 +812,15 @@ final class Injections {
         for (Rev x : sets) setCuts.add(x.cut());
         if (c1 == null || c2 == null) p.list.add("unit 5 revisions " + u5.stream().map(x -> x.deleted() ? "deleted" : sr(x.node()) + "@" + x.cut()).toList());
         else {
-            p.require(r.w1(c1, S1) < target, "unit 5 enters at cut " + c1 + " with W1 " + r.w1(c1, S1) + " >= " + target);
+            p.require(r.w1(c1, S1(r)) < target, "unit 5 enters at cut " + c1 + " with W1 " + r.w1(c1, S1(r)) + " >= " + target);
             p.equal("provisional", status(r.fold.at(RunFold.WR, r.key("visit-5"), c1)), "visit-5 at cut " + c1);
             int i = r.cutIds().indexOf(c2);
-            p.require(r.w1(c2, S1) >= target && i > 0 && r.w1(r.cutIds().get(i - 1), S1) < target, "unit 5 affected at cut " + c2 + " not the bracketing cut of " + target);
+            p.require(r.w1(c2, S1(r)) >= target && i > 0 && r.w1(r.cutIds().get(i - 1), S1(r)) < target, "unit 5 affected at cut " + c2 + " not the bracketing cut of " + target);
             p.require(setCuts.contains(c1) && setCuts.contains(c2), "no inc-2 set revision at cut " + c1 + " / " + c2 + " " + setCuts);
             p.require(c1 < c2, "cut order " + c1 + " / " + c2);
         }
         return p.result("inc-2 first set row without unit 5 (cut " + sets.get(0).cut() + "); unit 5 insufficient-evidence basis-provisional at cut " + c1 + " (W1 "
-            + (c1 == null ? null : r.w1(c1, S1)) + " < T0 + 2100000, visit-5 provisional), affected-candidate equipment-activity at cut " + c2 + " (W1 " + (c2 == null ? null : r.w1(c2, S1))
+            + (c1 == null ? null : r.w1(c1, S1(r))) + " < T0 + 2100000, visit-5 provisional), affected-candidate equipment-activity at cut " + c2 + " (W1 " + (c2 == null ? null : r.w1(c2, S1(r)))
             + "); set revisions at cuts " + setCuts);
     }
 
@@ -808,15 +828,15 @@ final class Injections {
         Run r = run(c, "session"), b = run(c, "baseline");
         P p = new P(r, b);
         if (!p.sound()) return p.result("");
-        String k2 = RunFold.keyText(r.visitAt(S2, 870000).path("key"));
+        String k2 = RunFold.keyText(r.visitAt(S2(r), 870000).path("key"));
         Rev x = r.fold.live(RunFold.WR).get(k2), y = b.fold.live(RunFold.WR).get(k2);
         p.require(x != null && y != null && x.digest().equals(y.digest()), "station2 visit 2 differs from baseline's");
         JsonNode v6 = last(r, "visit-6");
         p.equal("insufficient", status(v6), "visit-6 status");
         p.require(reasons(v6).contains("session-ambiguous"), "visit-6 reasons " + reasons(v6));
-        p.equal("unknown", evidence(v6, N2).path("coverage").path("status").asText(null), "visit-6 equipmentEvidence[nutrunner2].coverage.status");
+        p.equal("unknown", evidence(v6, N2(r)).path("coverage").path("status").asText(null), "visit-6 equipmentEvidence[nutrunner2].coverage.status");
         return p.result("stale-death: station2 visit 2 digest = baseline's; session-ambiguous: visit-6 " + status(v6) + " " + reasons(v6) + ", nutrunner2 coverage "
-            + evidence(v6, N2).path("coverage").path("status").asText());
+            + evidence(v6, N2(r)).path("coverage").path("status").asText());
     }
 
     static Result i26(Context c) throws Exception {
@@ -891,7 +911,7 @@ final class Injections {
      *  {@code planned-late-samples} injection, times after its T0), the non-accepted dispositions of that device's messages, and the
      *  number of {@code replay-required} dispositions of the whole run. */
     static ObjectNode capturePlannedLate(Context c, RunFold f, Run r) throws java.io.IOException {
-        JsonNode scenario = Json.read(c.fixtures().resolve("scenarios").resolve(r.name + ".json")), late = null;
+        JsonNode scenario = Json.read(c.scenarioDir().resolve(r.name + ".json")), late = null;
         for (JsonNode i : scenario.path("injections")) if ("planned-late-samples".equals(i.path("type").asText())) late = i;
         ObjectNode o = Json.object();
         if (late == null) return o.put("error", "the scenario has no planned-late-samples injection");
@@ -1142,7 +1162,7 @@ final class Injections {
         if (!expected.path("visits").isArray() || expected.path("visits").isEmpty())
             throw new IllegalStateException("no visit facts: expected.json (scope " + expected.path("scope").asText("none") + ") has no visits[] to compute the after-horizon need from");
         long need = Long.MIN_VALUE;
-        String station = S1;
+        String station = null;
         for (JsonNode v : expected.path("visits")) {
             if (!v.path("leave").isNull()) continue;
             long e = v.path("enter").asLong() + H + L;

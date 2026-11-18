@@ -106,6 +106,11 @@ public final class CoreGate {
         String control;
         /** What the assertions measure for {@code report.json} ({@code measurements}): item 2's reference values, revision counts. */
         final ObjectNode measurements = Json.object();
+        /** The runs an engine's replay gate made ({@link ReplayGate}), null on a core gate run (its own {@link Scenarios.Pipeline}). */
+        Scenarios.RunSource runs;
+        /** The scenario files the assertions read ({@code fixtures/scenarios} on a core gate run) and the trusted keys the releases
+         *  verify against ({@code fixtures/trusted-keys.jsonl}). */
+        Path scenarios, trustedKeys;
         Context(Path root, Path tmp, Path logs, String python) {
             this.root = root; this.tmp = tmp; this.logs = logs; this.python = python;
             this.out = logs.getParent();
@@ -113,6 +118,12 @@ public final class CoreGate {
         }
         public Path path(String relative) { return root.resolve(relative); }
         public Path fixtures() { return root.resolve("fixtures"); }
+        /** The directory of the scenario files this gate run's recordings are built from. */
+        Path scenarioDir() { return scenarios != null ? scenarios : fixtures().resolve("scenarios"); }
+        /** The trusted keys of this gate run's registry. */
+        yggdrasil.forseti.core.release.TrustedKeys trustedKeys() throws IOException {
+            return yggdrasil.forseti.core.release.TrustedKeys.load(trustedKeys != null ? trustedKeys : fixtures().resolve("trusted-keys.jsonl"));
+        }
         /** A new empty directory under the gate's temporary directory. */
         public synchronized Path newDir(String name) throws IOException { return Files.createDirectories(tmp.resolve(name + "-" + dirs++)); }
         /** A new temporary control store of the running assertion, {@code assertion:<ID>} ({@code #2}, {@code #3}, ... for its further

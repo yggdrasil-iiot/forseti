@@ -4,8 +4,9 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import java.util.*;
-import org.apache.flink.api.common.state.ValueState;
-import org.apache.flink.api.common.state.ValueStateDescriptor;
+import org.apache.flink.api.common.state.MapState;
+import org.apache.flink.api.common.state.MapStateDescriptor;
+import org.apache.flink.api.common.typeinfo.BasicTypeInfo;
 import org.apache.flink.api.common.typeinfo.PrimitiveArrayTypeInfo;
 import org.apache.flink.runtime.state.KeyGroupRange;
 import org.apache.flink.runtime.state.KeyGroupRangeAssignment;
@@ -19,7 +20,6 @@ import org.apache.flink.streaming.runtime.streamrecord.StreamRecord;
 import yggdrasil.forseti.cli.replay.OutputRecords;
 import yggdrasil.forseti.cli.replay.ReplayTopics;
 import yggdrasil.forseti.core.Json;
-import yggdrasil.forseti.core.canon.Canonical;
 import yggdrasil.forseti.core.cut.InputCodec;
 import yggdrasil.forseti.core.input.InputParser;
 import yggdrasil.forseti.core.input.Inputs;
@@ -33,6 +33,7 @@ import yggdrasil.forseti.core.stage2.Events2;
 import yggdrasil.forseti.core.stage2.ProgressTracker;
 import yggdrasil.forseti.core.stage2.Stage2;
 import yggdrasil.forseti.core.stage2.Stage2State;
+import yggdrasil.forseti.core.segment.Segments;
 
 /**
  * The stage-2 station writers (rule sheet T2, plan D4): a keyed operator over what stage 1 committed to {@code p(s)} of
@@ -43,20 +44,24 @@ import yggdrasil.forseti.core.stage2.Stage2State;
  * {@code W2}. Each evidence topic's records are kept in segments closed by their progress record; a ready cut applies the work-record
  * segment, then the sample segment (rows and deletes as written), then the incidents of the cut and of its merged cuts in incident order,
  * then the due deadlines, then the close, and writes every row, delete, disposition and progress to {@code p(s)} of
- * {@code forseti.affected}, {@code forseti.affected-sets} and {@code forseti.dispositions-stage2}. State: per station, versioned
- * canonical bytes in keyed {@link ValueState} (RocksDB), written for each changed station at every checkpoint.
+ * {@code forseti.affected}, {@code forseti.affected-sets} and {@code forseti.dispositions-stage2}. State: per station a keyed
+ * {@link MapState} (RocksDB) of segment id to canonical bytes, as stage 1 keeps it: {@value #ENGINE} (the tracker, the incidents and
+ * the queue of evidence segments, {@code stationStateVersion} {@value #STATE_VERSION}), {@code evidence/<topic>/<seq>} for each closed
+ * evidence segment (written once, removed when its cut is applied), {@code open/<topic>} for the lines after the last progress, and
+ * {@code state/<id>} for every segment of the core {@link Stage2State}; a checkpoint writes only what changed since the previous one.
  */
 public final class Stage2Stations extends AbstractStreamOperator<Out> implements OneInputStreamOperator<Msg, Out> {
   private static final long serialVersionUID = 1L;
-  public static final int STATE_VERSION = 1;
-  public static final String STATE_NAME = "forseti-stage2-station";
+  public static final int STATE_VERSION = 2;
+  public static final String STATE_NAME = "forseti-stage2-station-segments", ENGINE = "engine", STATE_PREFIX = "state/", EVIDENCE_PREFIX = "evidence/",
+      OPEN_PREFIX = "open/";
 
   private final JobSettings settings;
   private transient JobSettings.Runtime rt;
-  private transient ValueState<byte[]> stored;
+  private transient MapState<String, byte[]> stored;
   private transient Map<String, Station> stations;
   private transient ObjectNode initRecord;
-  private transient long appliedCuts;
+  private transient long appliedCuts, snapshots, segmentsWritten, segmentBytes, segmentBytesMax, segmentsRemoved;
 
   public Stage2Stations(JobSettings settings) { this.settings = settings; }
 
@@ -73,11 +78,17 @@ public final class Stage2Stations extends AbstractStreamOperator<Out> implements
     final int partition;
     Stage2State state;
     ProgressTracker tracker;
-    final Map<String, ArrayDeque<Segment>> segments = new TreeMap<>();
+    final Map<String, ArrayDeque<Long>> queued = new TreeMap<>();
+    final Map<Long, Segment> closedSegments = new HashMap<>();
     final Map<String, List<JsonNode>> open = new TreeMap<>();
     final TreeMap<Long, List<Inputs.InputRecord>> incidents = new TreeMap<>();
     final List<Inputs.InputRecord> pendingIncidents = new ArrayList<>();
-    boolean dirty = true;
+    long nextSeq;
+    /** What changed since the last checkpoint: the head, the open lines per topic, closed segments to write and to remove. */
+    boolean headDirty = true;
+    final Set<String> openDirty = new TreeSet<>();
+    final Set<Long> toWrite = new TreeSet<>(), toRemove = new TreeSet<>();
+    final Map<Long, String> topicOfSeq = new HashMap<>();
 
     Station(String name) {
       this.name = name;
@@ -86,22 +97,38 @@ public final class Stage2Stations extends AbstractStreamOperator<Out> implements
       if (state.partition() != partition) throw new IllegalStateException("station " + name + " partition " + state.partition() + " != routing " + partition);
       state.evidenceRanges(rt.evidenceRanges);
       this.tracker = new ProgressTracker();
-      for (String t : List.of(Stage1.WORK_RECORDS, Stage1.SAMPLES)) { segments.put(t, new ArrayDeque<>()); open.put(t, new ArrayList<>()); }
+      for (String t : List.of(Stage1.WORK_RECORDS, Stage1.SAMPLES)) { queued.put(t, new ArrayDeque<>()); open.put(t, new ArrayList<>()); openDirty.add(t); }
       tracker.track(name, state.deadlines());
     }
 
-    Station(JsonNode n) {
-      if (n.path("stationStateVersion").intValue() != STATE_VERSION) throw new IllegalArgumentException("stage-2 station state version " + n.path("stationStateVersion"));
-      this.name = Json.text(n, "station");
+    /** The station a stored segment map holds. */
+    Station(String name, Map<String, byte[]> stored) {
+      this.name = name;
       this.partition = rt.partitionOf(name);
-      this.state = Stage2State.fromJson(n.get("state"));
+      JsonNode n = Segments.read(ENGINE, Objects.requireNonNull(stored.get(ENGINE), "station " + name + " without an engine head"));
+      if (n.path("stationStateVersion").intValue() != STATE_VERSION) throw new IllegalArgumentException("stage-2 station state version " + n.path("stationStateVersion"));
+      if (!name.equals(n.path("station").asText())) throw new IllegalStateException("station " + name + " stored as " + n.path("station"));
+      Map<String, byte[]> core = new TreeMap<>();
+      stored.forEach((k, v) -> { if (k.startsWith(STATE_PREFIX)) core.put(k.substring(STATE_PREFIX.length()), v); });
+      this.state = Stage2State.fromSegments(core);
       this.tracker = ProgressTracker.fromJson(n.get("tracker"));
+      this.nextSeq = n.path("nextSeq").longValue();
       for (String t : List.of(Stage1.WORK_RECORDS, Stage1.SAMPLES)) {
-        ArrayDeque<Segment> q = new ArrayDeque<>();
-        for (JsonNode s : n.path("segments").path(t)) { List<JsonNode> l = new ArrayList<>(); s.path("lines").forEach(l::add); q.add(new Segment(s.get("progress"), l)); }
-        segments.put(t, q);
+        ArrayDeque<Long> q = new ArrayDeque<>();
+        for (JsonNode x : n.path("queued").path(t)) {
+          long seq = x.longValue();
+          String id = EVIDENCE_PREFIX + t + "/" + seq;
+          JsonNode sg = Segments.read(id, Objects.requireNonNull(stored.get(id), "station " + name + " without " + id));
+          List<JsonNode> l = new ArrayList<>();
+          sg.path("lines").forEach(l::add);
+          closedSegments.put(seq, new Segment(sg.get("progress"), l));
+          topicOfSeq.put(seq, t);
+          q.add(seq);
+        }
+        queued.put(t, q);
+        String oid = OPEN_PREFIX + t;
         List<JsonNode> o = new ArrayList<>();
-        n.path("open").path(t).forEach(o::add);
+        if (stored.containsKey(oid)) Segments.read(oid, stored.get(oid)).path("lines").forEach(o::add);
         open.put(t, o);
       }
       n.path("incidents").fields().forEachRemaining(e -> {
@@ -111,31 +138,63 @@ public final class Stage2Stations extends AbstractStreamOperator<Out> implements
       });
       n.path("pendingIncidents").forEach(x -> pendingIncidents.add(InputCodec.decode(x)));
       tracker.track(name, state.deadlines());
+      headDirty = false;
     }
 
-    byte[] bytes() {
-      ObjectNode n = Json.object().put("stationStateVersion", STATE_VERSION).put("station", name);
-      n.set("state", state.toJson());
+    Segment peek(String topic) { Long s = queued.get(topic).peek(); return s == null ? null : closedSegments.get(s); }
+
+    void poll(String topic) {
+      Long s = queued.get(topic).poll();
+      closedSegments.remove(s);
+      if (toWrite.remove(s)) topicOfSeq.remove(s); else toRemove.add(s);
+      headDirty = true;
+    }
+
+    void close(String topic, JsonNode progressLine) {
+      long seq = nextSeq++;
+      closedSegments.put(seq, new Segment(progressLine, open.get(topic)));
+      topicOfSeq.put(seq, topic);
+      queued.get(topic).add(seq);
+      open.put(topic, new ArrayList<>());
+      toWrite.add(seq);
+      openDirty.add(topic);
+      headDirty = true;
+    }
+
+    byte[] head() {
+      ObjectNode n = Segments.header(ENGINE).put("stationStateVersion", STATE_VERSION).put("station", name);
       n.set("tracker", tracker.toJson());
-      ObjectNode sg = n.putObject("segments"), op = n.putObject("open");
-      segments.forEach((t, q) -> {
-        ArrayNode a = sg.putArray(t);
-        for (Segment s : q) { ObjectNode x = a.addObject(); x.set("progress", s.progressLine()); s.lines().forEach(x.putArray("lines")::add); }
-      });
-      open.forEach((t, l) -> l.forEach(op.withArray(t)::add));
-      for (String t : List.of(Stage1.WORK_RECORDS, Stage1.SAMPLES)) if (!op.has(t)) op.putArray(t);
+      Json.putSafe(n, "nextSeq", nextSeq);
+      ObjectNode q = n.putObject("queued");
+      queued.forEach((t, d) -> { ArrayNode a = q.putArray(t); d.forEach(a::add); });
       ObjectNode inc = n.putObject("incidents");
       incidents.forEach((c, l) -> { ArrayNode a = inc.putArray(Long.toString(c)); l.forEach(r -> a.add(InputCodec.encode(r))); });
       ArrayNode p = n.putArray("pendingIncidents");
       pendingIncidents.forEach(r -> p.add(InputCodec.encode(r)));
-      return Canonical.bytes(n);
+      return Segments.bytes(n);
+    }
+
+    byte[] closedSegment(long seq) {
+      Segment sg = closedSegments.get(seq);
+      ObjectNode n = Segments.header(EVIDENCE_PREFIX + topicOfSeq.get(seq) + "/" + seq);
+      n.set("progress", sg.progressLine());
+      ArrayNode a = n.putArray("lines");
+      sg.lines().forEach(a::add);
+      return Segments.bytes(n);
+    }
+
+    byte[] openSegment(String topic) {
+      ObjectNode n = Segments.header(OPEN_PREFIX + topic);
+      ArrayNode a = n.putArray("lines");
+      open.get(topic).forEach(a::add);
+      return Segments.bytes(n);
     }
   }
 
   @Override public void initializeState(StateInitializationContext context) throws Exception {
     super.initializeState(context);
     rt = settings.runtime();
-    stored = context.getKeyedStateStore().getState(new ValueStateDescriptor<>(STATE_NAME, PrimitiveArrayTypeInfo.BYTE_PRIMITIVE_ARRAY_TYPE_INFO));
+    stored = context.getKeyedStateStore().getMapState(new MapStateDescriptor<>(STATE_NAME, BasicTypeInfo.STRING_TYPE_INFO, PrimitiveArrayTypeInfo.BYTE_PRIMITIVE_ARRAY_TYPE_INFO));
     var info = getContainingTask().getEnvironment().getTaskInfo();
     KeyGroupRange range = KeyGroupRangeAssignment.computeKeyGroupRangeForOperatorIndex(info.getMaxNumberOfParallelSubtasks(), info.getNumberOfParallelSubtasks(),
         info.getIndexOfThisSubtask());
@@ -147,8 +206,9 @@ public final class Stage2Stations extends AbstractStreamOperator<Out> implements
       }
       for (String k : keys) {
         setCurrentKey(k);
-        byte[] b = stored.value();
-        if (b != null) { Station st = new Station(Json.read(b)); stations.put(st.name, st); }
+        Map<String, byte[]> segs = new TreeMap<>();
+        for (Map.Entry<String, byte[]> e : stored.entries()) segs.put(e.getKey(), e.getValue());
+        if (!segs.isEmpty()) stations.put(k, new Station(k, segs));
       }
     }
     ObjectNode keyGroups = Json.object();
@@ -173,20 +233,19 @@ public final class Stage2Stations extends AbstractStreamOperator<Out> implements
     if (m.kind == Msg.INCIDENT_CUT) {
       st.incidents.computeIfAbsent(m.cutId, x -> new ArrayList<>()).addAll(st.pendingIncidents);
       st.pendingIncidents.clear();
+      st.headDirty = true;
       Json.read(m.value).fields().forEachRemaining(e -> st.tracker.observeIncidentBarrier(st.name, m.cutId, Integer.parseInt(e.getKey()), e.getValue().longValue()));
     } else if (m.kind == Msg.RECORD && InputParser.INCIDENTS.equals(m.topic)) {
       st.pendingIncidents.add(InputParser.read(new Inputs.Origin(m.topic, m.partition, m.offset), m.keyText(), m.value).record());
+      st.headDirty = true;
     } else if (m.kind == Msg.RECORD && (Stage1.WORK_RECORDS.equals(m.topic) || Stage1.SAMPLES.equals(m.topic))) {
       if (m.partition != st.partition) throw new IllegalStateException("station " + st.name + ": evidence of partition " + m.partition);
       Map<String, String> h = new TreeMap<>();
       if (m.generationHeader != null) h.put(OutputRecords.GENERATION_HEADER, m.generationHeader);
       ObjectNode line = OutputRecords.line(new OutputRecords.Transport(m.key, h, m.value), settings.generation());
-      if (OutputRecords.kind(line.get("value")) == OutputRecords.Kind.PROGRESS) {
-        st.segments.get(m.topic).add(new Segment(line, st.open.get(m.topic)));
-        st.open.put(m.topic, new ArrayList<>());
-      } else st.open.get(m.topic).add(line);
+      if (OutputRecords.kind(line.get("value")) == OutputRecords.Kind.PROGRESS) st.close(m.topic, line);
+      else { st.open.get(m.topic).add(line); st.openDirty.add(m.topic); }
     } else throw new IllegalStateException("stage-2 station: element " + m);
-    st.dirty = true;
     tryCuts(st);
   }
 
@@ -195,7 +254,7 @@ public final class Stage2Stations extends AbstractStreamOperator<Out> implements
 
   private void tryCuts(Station st) {
     while (true) {
-      Segment wr = st.segments.get(Stage1.WORK_RECORDS).peek(), sm = st.segments.get(Stage1.SAMPLES).peek();
+      Segment wr = st.peek(Stage1.WORK_RECORDS), sm = st.peek(Stage1.SAMPLES);
       if (wr == null || sm == null) return;
       Progress.Stage1 pw = wr.progress(), ps = sm.progress();
       if (pw.cutId() != ps.cutId() || !pw.mergedCutIds().equals(ps.mergedCutIds()))
@@ -203,10 +262,11 @@ public final class Stage2Stations extends AbstractStreamOperator<Out> implements
       long cutId = pw.cutId();
       st.tracker.observe(Stage1.WORK_RECORDS, st.name, pw);
       st.tracker.observe(Stage1.SAMPLES, st.name, ps);
+      st.headDirty = true;   // the tracker observed
       if (!st.tracker.ready(st.name, cutId)) return;
       apply(st, cutId, wr, sm, pw.mergedCutIds());
-      st.segments.get(Stage1.WORK_RECORDS).poll();
-      st.segments.get(Stage1.SAMPLES).poll();
+      st.poll(Stage1.WORK_RECORDS);
+      st.poll(Stage1.SAMPLES);
     }
   }
 
@@ -229,7 +289,7 @@ public final class Stage2Stations extends AbstractStreamOperator<Out> implements
     }
     apply(st, new Events2.CutClose(cutId, w2, st.tracker.stage1ProgressRefs(st.name, cutId, st.partition), st.tracker.incidentOffsets(st.name, cutId), merged), w2, raw);
     st.tracker.markProcessed(st.name, cutId);
-    for (Object o : raw) emit(st, o instanceof Row row ? Stage1.stamp(row, rt.pins, w2) : o);
+    for (Object o : raw) emit(st, o instanceof Row row ? Stage1.stamp(row, rt.stamped, w2) : o);
     appliedCuts++;
   }
 
@@ -269,18 +329,44 @@ public final class Stage2Stations extends AbstractStreamOperator<Out> implements
 
   @Override public void snapshotState(StateSnapshotContext context) throws Exception {
     super.snapshotState(context);
+    snapshots++;
     for (Station st : stations.values()) {
-      if (!st.dirty) continue;
       setCurrentKey(st.name);
-      stored.update(st.bytes());
-      st.dirty = false;
+      Segments.Drain d = st.state.drainChanged();
+      if (d.full()) {
+        List<String> old = new ArrayList<>();
+        for (String k : stored.keys()) if (k.startsWith(STATE_PREFIX)) old.add(k);
+        for (String k : old) stored.remove(k);
+      }
+      for (Map.Entry<String, byte[]> e : d.written().entrySet()) put(STATE_PREFIX + e.getKey(), e.getValue());
+      for (String id : d.removed()) { stored.remove(STATE_PREFIX + id); segmentsRemoved++; }
+      for (long seq : st.toWrite) put(EVIDENCE_PREFIX + st.topicOfSeq.get(seq) + "/" + seq, st.closedSegment(seq));
+      for (long seq : st.toRemove) { stored.remove(EVIDENCE_PREFIX + st.topicOfSeq.remove(seq) + "/" + seq); segmentsRemoved++; }
+      st.toWrite.clear();
+      st.toRemove.clear();
+      for (String t : st.openDirty) put(OPEN_PREFIX + t, st.openSegment(t));
+      st.openDirty.clear();
+      if (st.headDirty) { put(ENGINE, st.head()); st.headDirty = false; }
     }
     writeEvidence();
+  }
+
+  private void put(String id, byte[] b) throws Exception {
+    stored.put(id, b);
+    segmentsWritten++;
+    segmentBytes += b.length;
+    segmentBytesMax = Math.max(segmentBytesMax, b.length);
   }
 
   private void writeEvidence() {
     ObjectNode n = initRecord.deepCopy();
     Json.putSafe(n, "appliedCuts", appliedCuts);
+    ObjectNode seg = n.putObject("segments");
+    Json.putSafe(seg, "snapshots", snapshots);
+    Json.putSafe(seg, "written", segmentsWritten);
+    Json.putSafe(seg, "writtenBytes", segmentBytes);
+    Json.putSafe(seg, "largestBytes", segmentBytesMax);
+    Json.putSafe(seg, "removed", segmentsRemoved);
     Writers.evidence(settings, "stage2-stations-" + n.path("subtask").intValue() + "-attempt-" + n.path("attemptNumber").intValue(), n);
   }
 }

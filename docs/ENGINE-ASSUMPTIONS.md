@@ -51,6 +51,27 @@ to the subscribed raw partitions of each placement. Because the owner is a rotat
 the topic name whenever the subscribed partitions are pairwise distinct mod n, which holds for every row above; the step-3 placement
 {1, 2, 4, 5} at n = 4 has 1 and 5 equal mod 4, so one reader gets two splits and another none for any topic name.
 
+## Engine notes for comparison item 7: keyed subtasks of the stations
+
+The station operators of both jobs run at parallelism 6 with max parallelism 128 (spec 588, plan D6), and a station's subtask is the
+one whose key-group range holds `KeyGroupRangeAssignment.assignToKeyGroup(station, 128)`. The key groups and subtasks below are the
+ones the stage-1 operators recorded in their init records (step 6 PR 5 probe and runs; the gate asserts the same map on every run,
+`FL-KEYGROUP-MAP`, spec 715):
+
+| Placement | Station | Key group | Subtask |
+|---|---|---|---|
+| dedicated (site-071) | station1 | 115 | 5 |
+| dedicated (site-071) | station2 | 122 | 5 |
+| dedicated (site-071) | station3 | 118 | 5 |
+| shared (site-019) | station1 | 26 | 1 |
+| shared (site-019) | station2 | 37 | 1 |
+| shared (site-019) | station3 | 20 | 0 |
+
+So on the dedicated placement all three stations are one keyed subtask, and on the shared placement station1 and station2 share
+subtask 1 while station3 is on subtask 0; four (dedicated: five) of the six keyed subtasks own no station. Every station output
+partition still has exactly one writer, which is what spec 715 requires; the uneven spread is a property of three keys over 128 key
+groups, recorded under item 7 as an adapter cost (the keyed parallelism buys no spread for three stations), not a workaround.
+
 ## F2 to F5: how the spikes are built
 
 The Flink spikes run on an in-process `MiniCluster` (one TaskManager) with the gate's watermark settings: automatic watermark interval 0

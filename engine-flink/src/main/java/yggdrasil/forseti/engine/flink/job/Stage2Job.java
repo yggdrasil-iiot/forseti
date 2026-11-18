@@ -44,7 +44,8 @@ public final class Stage2Job {
       String id = "stage2-source-" + t;
       sources.put(t, Topology.sourceProperties(s, id));
       parallelism.put(t, ps.size());
-      DataStream<Msg> d = env.fromSource(Topology.source(s, t, ps, stationOf, id), WatermarkStrategy.noWatermarks(), id).setParallelism(ps.size()).uid("forseti-" + id);
+      DataStream<Msg> d = env.fromSource(Topology.source(s, t, ps, stationOf, id), WatermarkStrategy.noWatermarks(), id).setParallelism(ps.size()).uid("forseti-" + id)
+          .process(new SplitProbe(s, id), msg).setParallelism(ps.size()).name("split-probe-" + id).uid("forseti-split-probe-" + id);
       evidence = evidence == null ? d : evidence.union(d);
     }
     List<Integer> incidents = s.subscribed(InputParser.INCIDENTS);
@@ -52,7 +53,8 @@ public final class Stage2Job {
     sources.put(InputParser.INCIDENTS, Topology.sourceProperties(s, incId));
     parallelism.put(InputParser.INCIDENTS, incidents.size());
     DataStream<Msg> raw = env.fromSource(Topology.source(s, InputParser.INCIDENTS, incidents, null, incId), WatermarkStrategy.noWatermarks(), incId)
-        .setParallelism(incidents.size()).uid("forseti-" + incId);
+        .setParallelism(incidents.size()).uid("forseti-" + incId)
+        .process(new SplitProbe(s, incId), msg).setParallelism(incidents.size()).name("split-probe-" + incId).uid("forseti-split-probe-" + incId);
     SingleOutputStreamOperator<Msg> routed = raw.process(new IncidentRouter(s), msg).setParallelism(1).setMaxParallelism(1)
         .name("incident-router").uid("forseti-incident-router");
     SingleOutputStreamOperator<Out> stations = evidence.union(routed).keyBy(m -> m.station, Types.STRING)
