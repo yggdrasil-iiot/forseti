@@ -100,26 +100,35 @@ final class FlinkCluster implements AutoCloseable {
   final JobID jobId;
   private final ProcessSupervisor sup;
   private final String jobClass, checkpointUri;
-  private final Path jobSpec;
+  private Path jobSpec;
   private final Memory mem;
   private final java.util.function.IntSupplier ports;
   private volatile int restPort;
   private volatile ProcessSupervisor.Supervised jm, tm;
   private int starts;
   private boolean jobSeen;
+  /** The durable launch identity of the current launch (0 at the first, plus one at every {@link #relaunch}) and, when it restores,
+   *  the checkpoint it restores; every launch is recorded in {@code record.launches} before its JVMs start. */
+  private int launch;
+  private Long restoring;
+  private long launchedNanos;
   private final HttpClient http = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(5)).build();
   final ObjectNode record = Json.object();
   private final long startedNanos = System.nanoTime();
   long runningAfterMs = -1;
   private final Map<String, Long> heapPeak = new TreeMap<>();
 
-  private final Path tmp;
+  private Path tmp;
+  private final List<Path> tmps = new ArrayList<>();
 
   private FlinkCluster(ProcessSupervisor sup, String name, Path dir, String jobClass, Path jobSpec, String checkpointUri, Memory mem,
                        java.util.function.IntSupplier ports, Path tmp) {
     this.sup = sup; this.name = name; this.dir = dir; this.jobClass = jobClass; this.jobSpec = jobSpec; this.checkpointUri = checkpointUri;
     this.mem = mem; this.ports = ports; this.tmp = tmp; this.jobId = JobID.generate();
+    tmps.add(tmp);
   }
+
+  int launchId() { return launch; }
 
   int restPort() { return restPort; }
 
@@ -141,6 +150,8 @@ final class FlinkCluster implements AutoCloseable {
     FlinkCluster f = new FlinkCluster(sup, name, dir, jobClass, jobSpec, checkpointUri, mem, ports, tmp);
     f.record.put("jobId", f.jobId.toHexString()).put("jobClass", jobClass);
     f.record.putArray("startAttempts");
+    f.record.putArray("launches");
+    f.recordLaunch();
     f.launch();
     return f;
   }
@@ -150,6 +161,9 @@ final class FlinkCluster implements AutoCloseable {
     starts++;
     int rest = ports.getAsInt(), rpc = ports.getAsInt();
     Configuration c = Topology.configuration(checkpointUri);
+    // a relaunch restores the latest completed checkpoint of the job (plan D7, D8; reviewer decision 1 of PR 5): a real restore, the
+    // operators' UIDs and the sinks' transactional prefixes unchanged, never a fresh start
+    if (restoring != null) c.set(org.apache.flink.configuration.StateRecoveryOptions.SAVEPOINT_PATH, checkpointDir(restoring).toUri().toString());
     c.setString("jobmanager.rpc.address", "localhost");
     c.setString("jobmanager.bind-host", "localhost");
     c.setString("jobmanager.rpc.port", Integer.toString(rpc));
@@ -203,14 +217,88 @@ final class FlinkCluster implements AutoCloseable {
     tmCmd.addAll(List.of("-cp", cp, TASK_MANAGER, "--configDir", conf));
     tmCmd.addAll(split(TaskExecutorProcessUtils.generateDynamicConfigsStr(tmSpec)));
     restPort = rest;
-    jm = sup.start(name + "-jobmanager", jmCmd, Map.of(), dir.resolve("jobmanager.log"));
-    tm = sup.start(name + "-taskmanager", tmCmd, Map.of(), dir.resolve("taskmanager.log"));
+    String suffix = launch == 0 ? "" : "-l" + launch;
+    jm = sup.start(name + "-jobmanager", jmCmd, Map.of(), dir.resolve("jobmanager" + suffix + ".log"));
+    tm = sup.start(name + "-taskmanager", tmCmd, Map.of(), dir.resolve("taskmanager" + suffix + ".log"));
+    ObjectNode l = currentLaunch();
+    Json.putSafe(l, "jobManagerPid", jm.pid());
+    Json.putSafe(l, "taskManagerPid", tm.pid());
+    l.put("restPort", rest).put("starts", starts);
     record.put("restPort", rest).put("rpcPort", rpc).put("starts", starts);
     Json.putSafe(record, "jobManagerPid", jm.pid());
     Json.putSafe(record, "taskManagerPid", tm.pid());
     ArrayNode jc = record.putArray("jobManagerCommand"), tc = record.putArray("taskManagerCommand");
     jmCmd.forEach(x -> jc.add(x.equals(cp) ? "<engine class path>" : x));
     tmCmd.forEach(x -> tc.add(x.equals(cp) ? "<engine class path>" : x));
+  }
+
+  /** The record of the current launch, written before its JVMs start (the harness's durable launch identity, reviewer decision 3). */
+  private void recordLaunch() {
+    launchedNanos = System.nanoTime();
+    ObjectNode l = ((ArrayNode) record.get("launches")).addObject().put("launch", launch).put("jobSpec", jobSpec.getFileName().toString());
+    if (restoring == null) l.putNull("restoredCheckpointId"); else Json.putSafe(l, "restoredCheckpointId", restoring);
+    Json.putSafe(l, "startedAfterMs", TimeUnit.NANOSECONDS.toMillis(launchedNanos - startedNanos));
+  }
+
+  ObjectNode currentLaunch() { ArrayNode a = (ArrayNode) record.get("launches"); return (ObjectNode) a.get(a.size() - 1); }
+
+  /** The directory of completed checkpoint {@code id} of this job ({@code <checkpointDir>/<jobId>/chk-<id>}). */
+  Path checkpointDir(long id) { return checkpointRoot().resolve("chk-" + id); }
+
+  private Path checkpointRoot() { return Path.of(URI.create(checkpointUri)).resolve(jobId.toHexString()); }
+
+  /** The latest completed checkpoint of the job on disk: the highest {@code chk-<n>} with its {@code _metadata} (Flink writes the
+   *  metadata file last, when the checkpoint completes; a {@code chk-<n>} without one never completed), null when none completed. */
+  Long latestCompletedCheckpoint() {
+    Path root = checkpointRoot();
+    if (!Files.isDirectory(root)) return null;
+    Long best = null;
+    try (java.util.stream.Stream<Path> l = Files.list(root)) {
+      for (Path p : l.toList()) {
+        String n = p.getFileName().toString();
+        if (!n.startsWith("chk-") || !Files.isRegularFile(p.resolve("_metadata"))) continue;
+        long id = Long.parseLong(n.substring(4));
+        if (best == null || id > best) best = id;
+      }
+    } catch (IOException e) { throw new UncheckedIOException(e); }
+    return best;
+  }
+
+  /** The id of the latest checkpoint the JobManager reports completed over REST, null when it reports none or does not answer. */
+  Long reportedCompletedCheckpoint() {
+    JsonNode c = get("/jobs/" + jobId.toHexString() + "/checkpoints");
+    JsonNode id = c == null ? null : c.path("latest").path("completed").path("id");
+    return id == null || !id.isIntegralNumber() ? null : id.asLong();
+  }
+
+  ProcessSupervisor.Supervised jobManager() { return jm; }
+  ProcessSupervisor.Supervised taskManager() { return tm; }
+
+  /** SIGKILL to the JVMs named, then waits for them; the kill is recorded on the current launch. */
+  void kill(boolean jobManager, boolean taskManager, String why) {
+    ObjectNode l = currentLaunch();
+    Json.putSafe(l, "killedAfterMs", TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startedNanos));
+    String k = (jobManager && taskManager ? "JobManager and TaskManager" : jobManager ? "JobManager" : "TaskManager") + ": " + why;
+    l.put("killed", l.has("killed") ? l.get("killed").asText() + "; " + k : k);
+    if (taskManager) tm.signal(ProcessSupervisor.Signal.KILL);
+    if (jobManager) jm.signal(ProcessSupervisor.Signal.KILL);
+    if (taskManager && tm.waitFor(Duration.ofSeconds(60)).isEmpty()) throw new IllegalStateException(name + ": the TaskManager did not end after SIGKILL");
+    if (jobManager && jm.waitFor(Duration.ofSeconds(60)).isEmpty()) throw new IllegalStateException(name + ": the JobManager did not end after SIGKILL");
+  }
+
+  /** A new launch of both JVMs on {@code jobSpec} (its {@code launch} the next identity), restoring checkpoint {@code checkpoint} (null:
+   *  none completed, a fresh launch whose writers are still reinitialized by the launch identity). Both JVMs must have ended. */
+  void relaunch(Path jobSpec, Long checkpoint) {
+    if (jm.alive() || tm.alive()) throw new IllegalStateException(name + ": relaunch while a JVM of launch " + launch + " is alive");
+    launch++;
+    this.jobSpec = jobSpec;
+    this.restoring = checkpoint;
+    this.starts = 0;
+    this.jobSeen = false;
+    this.runningAfterMs = -1;
+    try { tmp = Files.createTempDirectory("fst-" + name + "-l" + launch + "-"); tmps.add(tmp); } catch (IOException e) { throw new UncheckedIOException(e); }
+    recordLaunch();
+    launch();
   }
 
   /** The line of the JobManager's log that says it could not bind a port, null when it says no such thing. */
@@ -319,7 +407,9 @@ final class FlinkCluster implements AutoCloseable {
         throw new IllegalStateException(name + ": job " + last.state() + " before RUNNING " + failure());
       if (last != null && last.state().equals("RUNNING") && last.allRunning()) {
         runningAfterMs = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startedNanos);
-        Json.putSafe(record, "runningAfterMs", runningAfterMs);
+        if (launch == 0) Json.putSafe(record, "runningAfterMs", runningAfterMs);
+        // the restart time of a relaunch: from its start to the job and every task RUNNING
+        Json.putSafe(currentLaunch(), "runningAfterLaunchMs", TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - launchedNanos));
         return;
       }
       sleep(200);
@@ -455,7 +545,7 @@ final class FlinkCluster implements AutoCloseable {
   @Override public void close() {
     if (jm.alive()) { jm.signal(ProcessSupervisor.Signal.KILL); jm.waitFor(Duration.ofSeconds(30)); }
     if (tm.alive()) { tm.signal(ProcessSupervisor.Signal.KILL); tm.waitFor(Duration.ofSeconds(30)); }
-    try (java.util.stream.Stream<Path> w = Files.walk(tmp)) {
+    for (Path t : tmps) try (java.util.stream.Stream<Path> w = Files.walk(t)) {
       for (Path p : w.sorted(Comparator.reverseOrder()).toList()) Files.deleteIfExists(p);
     } catch (IOException | UncheckedIOException ignored) { /* a temporary directory the operating system cleans up */ }
   }

@@ -62,12 +62,18 @@ public final class FlinkGate {
     });
     int sources = 0;
     for (String stage : List.of("stage1-pins", "stage2-pins")) {
-      JsonNode s = evidence.path("flink").path("jobs").path(stage).path("sources");
-      if (s.isMissingNode()) bad.add(stage + " (no job pins recorded)");
-      for (Iterator<Map.Entry<String, JsonNode>> it = s.fields(); it.hasNext();) {
-        Map.Entry<String, JsonNode> e = it.next();
-        sources++;
-        if (!"read_committed".equals(e.getValue().path("isolation.level").asText())) bad.add(stage + "/" + e.getKey());
+      // every launch's pins (stage<N>-pins-l<launch>) and the latest launch's under stage<N>-pins
+      List<String> names = new ArrayList<>();
+      evidence.path("flink").path("jobs").fieldNames().forEachRemaining(n -> { if (n.equals(stage) || n.startsWith(stage + "-l")) names.add(n); });
+      if (names.isEmpty()) bad.add(stage + " (no job pins recorded)");
+      for (String n : names) {
+        JsonNode s = evidence.path("flink").path("jobs").path(n).path("sources");
+        if (s.isMissingNode()) bad.add(n + " (no sources recorded)");
+        for (Iterator<Map.Entry<String, JsonNode>> it = s.fields(); it.hasNext();) {
+          Map.Entry<String, JsonNode> e = it.next();
+          sources++;
+          if (!"read_committed".equals(e.getValue().path("isolation.level").asText())) bad.add(n + "/" + e.getKey());
+        }
       }
     }
     if (sources == 0) bad.add("no job source recorded");
@@ -79,7 +85,7 @@ public final class FlinkGate {
    *  run's declaration, the control end offset H and Flink's restore evidence of a first start; no later progress and no stage-2 progress
    *  carries one. Returns the problems. */
   static List<String> initEvidence(Path run, long declaration, long end) throws IOException {
-    return yggdrasil.forseti.cli.gate.ReplayChecks.initEvidence(run, declaration, end, new RestoreEvidence(false, null, 0).encode());
+    return yggdrasil.forseti.cli.gate.ReplayChecks.initEvidence(run, declaration, end, RestoreEvidence.firstStart().encode());
   }
 
 }

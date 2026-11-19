@@ -18,6 +18,7 @@ import yggdrasil.forseti.cli.recording.Recording;
 import yggdrasil.forseti.cli.recording.ReplayRecording;
 import yggdrasil.forseti.cli.recording.ScenarioBuilder;
 import yggdrasil.forseti.cli.replay.ReplayEngine;
+import yggdrasil.forseti.cli.replay.Restarts;
 import yggdrasil.forseti.core.Json;
 import yggdrasil.forseti.core.canon.Canonical;
 
@@ -42,6 +43,9 @@ import yggdrasil.forseti.core.canon.Canonical;
  */
 public final class ReplayGate {
     private ReplayGate() {}
+
+    /** The integrity findings of the kinds spec 700 names for control theta: duplicates, losses and revision gaps. */
+    static final List<String> THETA_FINDINGS = List.of("J-REVISION-CONTINUITY", "J-NO-EQUAL-CONSECUTIVE", "J-PROGRESS-ORDER", "J-DISPOSITION-COVERAGE");
 
     /** The engine's gate files. */
     public record GateFiles(String manifest, String shards, String controls) {}
@@ -90,7 +94,9 @@ public final class ReplayGate {
     /** A shard plan with a shard that runs or asserts nothing: the gate fails (exit 1), not a usage error. */
     static final class EmptyShard extends IllegalStateException { EmptyShard(String m) { super(m); } }
 
-    record Shard(String name, List<String> scenarios, List<String> generationRuns, List<String> assertions, JsonNode settings) {}
+    /** One shard: its scenarios, generation runs, restart runs ({@code <scenario>@restart-<kind>}, {@link Restarts}: each a run of a
+     *  scenario the shard also runs, on generations of its own), its assertions and its engine settings. */
+    record Shard(String name, List<String> scenarios, List<String> generationRuns, List<String> restartRuns, List<String> assertions, JsonNode settings) {}
 
     static final class Plan {
         final List<Shard> shards = new ArrayList<>();
@@ -103,7 +109,11 @@ public final class ReplayGate {
         /** Every scenario and generation run of the plan, in plan order. */
         List<String> everything() {
             List<String> l = new ArrayList<>();
-            for (Shard s : shards) { for (String x : s.scenarios) if (!l.contains(x)) l.add(x); for (String x : s.generationRuns) if (!l.contains(x)) l.add(x); }
+            for (Shard s : shards) {
+                for (String x : s.scenarios) if (!l.contains(x)) l.add(x);
+                for (String x : s.generationRuns) if (!l.contains(x)) l.add(x);
+                for (String x : s.restartRuns) if (!l.contains(x)) l.add(x);
+            }
             return l;
         }
 
@@ -117,8 +127,8 @@ public final class ReplayGate {
             p.sha256 = Canonical.digestOf(bytes);
             Set<String> seen = new HashSet<>();
             for (JsonNode s : n.path("shards")) {
-                Shard sh = new Shard(Json.text(s, "name"), Shards.texts(s, "scenarios"), Shards.texts(s, "generationRuns"), Shards.texts(s, "assertions"),
-                    s.path("settings").isObject() ? s.get("settings") : Json.object());
+                Shard sh = new Shard(Json.text(s, "name"), Shards.texts(s, "scenarios"), Shards.texts(s, "generationRuns"),
+                    s.has("restartRuns") ? Shards.texts(s, "restartRuns") : List.of(), Shards.texts(s, "assertions"), s.path("settings").isObject() ? s.get("settings") : Json.object());
                 if (!seen.add(sh.name)) throw new IllegalArgumentException(file + ": shard " + sh.name + " twice");
                 // spec 705: zero scenarios fail the gate; a shard that runs nothing or asserts nothing is refused (exit 1)
                 if (sh.scenarios.isEmpty() || sh.assertions.isEmpty()) throw new EmptyShard(file + ": shard " + sh.name + " has " + sh.scenarios.size() + " scenarios and "
@@ -127,6 +137,11 @@ public final class ReplayGate {
                     Scenarios.GenerationRun gr = Scenarios.generationRun(g);
                     if (gr == null) throw new IllegalArgumentException(file + ": no generation run " + g);
                     if (!sh.scenarios.contains(gr.scenario())) throw new IllegalArgumentException(file + ": shard " + sh.name + " plans " + g + " without " + gr.scenario());
+                }
+                for (String g : sh.restartRuns) {
+                    Restarts.RunName rr = Restarts.parse(g);
+                    if (rr == null) throw new IllegalArgumentException(file + ": no restart run " + g + " (<scenario>@restart-<21|22i|22ii|22iii|22iv>)");
+                    if (!sh.scenarios.contains(rr.scenario())) throw new IllegalArgumentException(file + ": shard " + sh.name + " plans " + g + " without " + rr.scenario());
                 }
                 p.shards.add(sh);
             }
@@ -159,7 +174,7 @@ public final class ReplayGate {
             for (JsonNode c : n.path("controls")) {
                 Control x = new Control(Json.text(c, "name"), Shards.texts(c, "intended"), Shards.texts(c, "shards"));
                 List<String> wrong = new ArrayList<>();
-                if (!yggdrasil.forseti.cli.harness.Controls.NAMES.contains(x.name)) wrong.add("control " + x.name + " is not implemented");
+                if (!yggdrasil.forseti.cli.harness.Controls.ENGINE_NAMES.contains(x.name)) wrong.add("control " + x.name + " is not implemented");
                 for (String id : x.intended) if (!ids.contains(id)) wrong.add(x.name + ": intended " + id + " is not a manifest id");
                 Set<String> covered = new HashSet<>();
                 for (String s : x.shards) {
@@ -270,6 +285,8 @@ public final class ReplayGate {
                 Files.createDirectories(state);
                 c.pipeline = new GateEvidence.Store(GateEvidence.PIPELINE, state, control == null);
                 List<Check> checks = new ArrayList<>(Injections.checks());
+                checks.add(new Check("I-21", RestartAssertions::i21));
+                checks.add(new Check("I-22", RestartAssertions::i22));
                 for (String id : plan.aggregate) if (!Injections.AGGREGATE.contains(id)) checks.add(new Check(id, x -> perRun(x, id)));
                 if (aggregate != null) {
                     ObjectNode merged = Json.object();
@@ -281,7 +298,7 @@ public final class ReplayGate {
                     for (Check k : checks) if (plan.aggregate.contains(k.id())) check(c, acc, k);
                 } else {
                     List<String> names = new ArrayList<>();
-                    if (shard != null) { Shard s = plan.shard(shard); names.addAll(s.scenarios); names.addAll(s.generationRuns); }
+                    if (shard != null) { Shard s = plan.shard(shard); names.addAll(s.scenarios); names.addAll(s.generationRuns); names.addAll(s.restartRuns); }
                     else names.addAll(plan.everything());
                     EngineRuns runs = new EngineRuns(names);
                     c.runs = runs;
@@ -289,6 +306,9 @@ public final class ReplayGate {
                     Map<String, String> engineFlags = new HashMap<>(flags);
                     try (ReplayEngine e = open.apply(engineFlags)) {
                         c.w1Form = e.w1Form();
+                        Map<String, String> na = new TreeMap<>();
+                        e.notApplicable().forEach((kk, why) -> na.put(kk.spec(), why));
+                        c.notApplicable = na;
                         List<Planned> planned = new ArrayList<>();
                         for (String n : names) planned.add(prepare(c, n));
                         ReplayEngine.ControlStore pipeline = e.controlStore(GateEvidence.PIPELINE);
@@ -305,7 +325,7 @@ public final class ReplayGate {
                         ObjectNode s = Summaries.of(r);
                         s.put("name", n);
                         if (shard != null) s.put("shard", shard);
-                        if (Scenarios.generationRun(n) != null) mine.generationRuns.put(n, s); else mine.runs.put(n, s);
+                        if (Scenarios.generationRun(n) != null || Restarts.parse(n) != null) mine.generationRuns.put(n, s); else mine.runs.put(n, s);
                     }
                     evaluated = mine;
                     c.aggregate = shard == null ? mine : null;
@@ -367,6 +387,9 @@ public final class ReplayGate {
             Run r = new Run();
             Path work;
             ReplayEngine.Registered reg;
+            /** A restart run: its name's parts, and the generations of its attempts (the first is {@link #reg}). */
+            Restarts.RunName restart;
+            final List<ReplayEngine.Registered> attempts = new ArrayList<>();
             /** The rule change's first generation (its store's generation 1, on the recording's rule). */
             ReplayEngine.Registered previous;
             GateEvidence.Store store;
@@ -378,12 +401,13 @@ public final class ReplayGate {
             Planned p = new Planned();
             p.name = name;
             p.g = Scenarios.generationRun(name);
+            p.restart = p.g == null ? Restarts.parse(name) : null;
             Run r = p.r;
-            r.name = p.g == null ? name : p.g.scenario();
+            r.name = p.g != null ? p.g.scenario() : p.restart != null ? p.restart.scenario() : name;
             r.label = name.replace('/', '.').replace('@', '.');
             try {
                 p.work = Files.createDirectories(out.resolve("runs").resolve(r.label));
-                if (p.g == null) prepare(c, r, scenarioFile(name), p.work.resolve("recording"));
+                if (p.g == null && p.restart == null) prepare(c, r, scenarioFile(name), p.work.resolve("recording"));
             } catch (Exception | Error x) { r.failure = "crashed: " + x; }
             return p;
         }
@@ -396,7 +420,7 @@ public final class ReplayGate {
             Map<String, Planned> byName = new HashMap<>();
             for (Planned p : planned) byName.put(p.name, p);
             for (Planned p : planned) {
-                if (p.g != null || p.r.failure != null) continue;
+                if (p.g != null || p.restart != null || p.r.failure != null) continue;
                 try {
                     p.reg = e.register(pipeline, c.pipeline.dir(), keys, p.r.manifest.get("rule"), new ReplayEngine.Registration(registry, null, GateEvidence.ONLINE), p.r.recording);
                     p.store = c.pipeline;
@@ -424,6 +448,23 @@ public final class ReplayGate {
                     listed(generations, p, p.reg);
                 } catch (Exception | Error x) { p.r.failure = "crashed: registration: " + x; }
             }
+            // the restart runs, after the generation runs in plan order: one generation per attempt it may take (plan D8: an invalid
+            // attempt repeats on a fresh run), each on the pipeline store with its scenario's recording and rule, before any run starts
+            for (Planned p : planned) {
+                if (p.restart == null) continue;
+                Planned base = byName.get(p.restart.scenario());
+                try {
+                    if (base == null || base.r.failure != null) throw new IllegalStateException("its scenario's recording failed or is not made: " + (base == null ? "absent" : base.r.failure));
+                    p.store = c.pipeline;
+                    for (int i = 0; i < Restarts.ATTEMPTS; i++) {
+                        ReplayEngine.Registered x = e.register(pipeline, c.pipeline.dir(), keys, base.r.manifest.get("rule"), new ReplayEngine.Registration(registry, null, GateEvidence.ONLINE),
+                            base.r.recording);
+                        p.attempts.add(x);
+                        listed(generations, p, x);
+                    }
+                    p.reg = p.attempts.get(0);
+                } catch (Exception | Error x) { p.r.failure = "crashed: registration: " + x; }
+            }
         }
 
         static void listed(ArrayNode generations, Planned p, ReplayEngine.Registered x) {
@@ -445,17 +486,21 @@ public final class ReplayGate {
             try {
                 if (r.failure != null) throw new IllegalStateException(r.failure);
                 if (p.reg == null) throw new IllegalStateException("not registered");
-                ReplayEngine.Request req = g == null ? new ReplayEngine.Request(name, scenarioFile(name), r.recording, registry, p.reg, c.control, "input", p.work, settings)
-                    : generationRequest(c, runs, byName, p, settings);
+                ReplayEngine.Request req = g != null ? generationRequest(c, runs, byName, p, settings)
+                    : p.restart != null ? restartRequest(c, runs, p, settings)
+                    : new ReplayEngine.Request(name, scenarioFile(name), r.recording, registry, p.reg, c.control, "input", p.work, settings);
                 ReplayEngine.Run er = e.run(req);
                 runs.engineRuns.put(name, er);
-                r.generation = new GateEvidence.Registered(p.store, p.reg.generation(), p.reg.scope(), p.reg.rulesDigest(), p.reg.registeredRowSha256());
+                // the generation the run's files belong to: a restart run's valid attempt
+                ReplayEngine.Registered ran = er.generation();
+                r.generation = new GateEvidence.Registered(p.store, ran.generation(), ran.scope(), ran.rulesDigest(), ran.registeredRowSha256());
+                if (p.restart != null) r.restart = Json.read(er.out().resolve(ReplayEngine.INJECTIONS));
                 if (p.previous != null) r.previous = new GateEvidence.Registered(p.store, p.previous.generation(), p.previous.scope(), p.previous.rulesDigest(), p.previous.registeredRowSha256());
-                r.controlEvidence = p.reg.store().toJson();
-                Json.putSafe(r.controlEvidence, "generation", p.reg.generation());
+                r.controlEvidence = ran.store().toJson();
+                Json.putSafe(r.controlEvidence, "generation", ran.generation());
                 Json.putSafe(r.controlEvidence, "declarationOffset", er.declarationOffset());
                 Json.putSafe(r.controlEvidence, "controlEnd", er.controlEnd());
-                r.rulesDigest = p.reg.rulesDigest();
+                r.rulesDigest = ran.rulesDigest();
                 r.cutLog = Json.read(er.out().resolve("cuts.json"));
                 r.runJson = Json.read(er.out().resolve("run.json"));
                 r.ms.put("engine", (System.nanoTime() - t) / 1_000_000);
@@ -481,12 +526,15 @@ public final class ReplayGate {
                     x.put("describe", l.isEmpty() ? "" : String.join("; ", l.subList(0, Math.min(5, l.size()))) + (l.size() > 5 ? "; ... " + (l.size() - 5) + " more" : ""));
                 });
                 engineSummary.set(name, er.summary());
-                ObjectNode ro = runsOut.addObject().put("run", name).put("scenario", r.name).put("store", p.reg.store().name());
+                ObjectNode ro = runsOut.addObject().put("run", name).put("scenario", r.name).put("store", ran.store().name());
                 ro.set("controlStore", r.controlEvidence);
-                Json.putSafe(ro, "generation", p.reg.generation());
+                Json.putSafe(ro, "generation", ran.generation());
                 ro.put("runId", r.runJson.path("runId").asText(null)).put("runRecordSha256", Canonical.digestOf(Files.readAllBytes(er.out().resolve("run.json"))));
                 // the run directory keeps the run record, the cut log and the evidence; the journals only where an assertion reads them again
-                if (!keep) { CoreGate.delete(er.out().resolve("journals")); CoreGate.delete(er.out().resolve("quarantine")); CoreGate.delete(p.work.resolve("recording")); }
+                if (!keep) {
+                    CoreGate.delete(er.out().resolve("journals")); CoreGate.delete(er.out().resolve("quarantine"));
+                    if (!restartBase(name)) CoreGate.delete(p.work.resolve("recording"));   // a restart run of this scenario reads it later
+                }
             } catch (Exception | Error x) {
                 if (r.failure == null || !r.failure.startsWith("crashed")) r.failure = "crashed: " + x;
                 stderr.println(name + ": " + x);
@@ -497,6 +545,29 @@ public final class ReplayGate {
             try { Files.createDirectories(c.logs); Files.writeString(c.logs.resolve("run-" + r.label + ".log"), r.summary() + "\n" + r.ms + "\n" + (r.replay == null ? "" : r.replay.toString()) + "\n"); }
             catch (IOException | RuntimeException ignored) { /* for reading */ }
             stdout.println("    " + (r.failure != null ? "FAILED " + r.failure : (r.ok() ? "ok " : "NOT OK ") + r.summary()));
+        }
+
+        /** Whether a restart run of this gate run runs on scenario {@code name}'s recording. */
+        boolean restartBase(String name) {
+            List<String> l = shard != null ? plan.shard(shard).restartRuns : plan.everything();
+            for (String x : l) { Restarts.RunName rr = Restarts.parse(x); if (rr != null && rr.scenario().equals(name)) return true; }
+            return false;
+        }
+
+        /** The request of a restart run: its scenario's built and lock-checked recording, after the scenario's own uninterrupted run, on
+         *  the generations of its attempts. */
+        ReplayEngine.Request restartRequest(Context c, EngineRuns runs, Planned p, JsonNode settings) {
+            Run r = p.r, base = runs.runs.get(p.restart.scenario());
+            if (base == null || base.failure != null) throw new IllegalStateException("its scenario's run failed or is not made: " + (base == null ? "absent" : base.failure));
+            r.recording = base.recording;
+            r.registry = registry;
+            r.manifest = base.manifest;
+            r.expected = base.expected;
+            r.manifestSha256 = base.manifestSha256;
+            r.synthetic = base.synthetic;
+            r.lockLine = base.lockLine;
+            return new ReplayEngine.Request(p.name, scenarioFile(p.restart.scenario()), base.recording, registry, p.reg, c.control, "input", p.work, settings,
+                new Restarts.Restart(p.restart.kind(), p.attempts));
         }
 
         boolean keepsJournals(String name) {
@@ -604,6 +675,27 @@ public final class ReplayGate {
                 if (f.path("count").asLong() > 0) bad.add(n + ": " + f.path("count").asLong() + " findings: " + f.path("describe").asText());
             }
             if (checked == 0) bad.add("no run checked");
+            if (id.equals("C-3-RESTART-SKIPS")) {
+                // comparison item 3 (spec 726): the restart skips of every run, as (logical writer, cut) pairs, the reject collectors apart
+                ObjectNode m = Json.object();
+                long pairs = 0, rejects = 0;
+                for (JsonNode r : Injections.concat(all.runs.values(), all.generationRuns.values())) {
+                    JsonNode a = r.path("cutAccounting");
+                    if (!a.isObject()) continue;
+                    String n = (r.path("shard").isTextual() ? r.path("shard").asText() + "/" : "") + r.path("name").asText();
+                    if (a.path("item3").asLong() > 0 || a.path("item3RejectCollectors").asLong() > 0) {
+                        ObjectNode x = m.putObject(n);
+                        x.set("restartSkips", a.path("restartSkips"));
+                        x.set("rejectRestartSkips", a.path("rejectRestartSkips"));
+                    }
+                    pairs += a.path("item3").asLong();
+                    rejects += a.path("item3RejectCollectors").asLong();
+                }
+                Json.putSafe(m, "restartSkipPairs", pairs);
+                Json.putSafe(m, "rejectCollectorRestartSkips", rejects);
+                c.measure("item3", m);
+                where.add(pairs + " restart skip pairs, " + rejects + " of the reject collectors");
+            }
             return new Result(bad.isEmpty(), (bad.isEmpty() ? "" : "PROBLEMS: " + String.join("; ", bad) + " || ") + id + " holds on " + checked + " executions " + where);
         }
 
@@ -659,6 +751,7 @@ public final class ReplayGate {
                 });
                 for (String x : sh.scenarios) if (!mine.contains(x)) s.missing.add(sh.name + "/" + x + " (no summary in its shard)");
                 for (String x : sh.generationRuns) if (!mineGen.contains(x)) s.missing.add(sh.name + "/" + x + " (no summary in its shard)");
+                for (String x : sh.restartRuns) if (!mineGen.contains(x)) s.missing.add(sh.name + "/" + x + " (no summary in its shard)");
                 for (String x : mine) if (!sh.scenarios.contains(x)) problems.add("shard " + sh.name + ": a summary of " + x + ", which it does not plan");
             }
             if (!problems.isEmpty()) {
@@ -689,6 +782,21 @@ public final class ReplayGate {
                 for (JsonNode r : Injections.concat(evaluated.runs.values(), evaluated.generationRuns.values()))
                     if (Summaries.failed(r)) problems.add(r.path("name").asText() + ": " + r.path("failure").asText());
                     else if (!r.path("plannedCutIds").equals(r.path("comparedCutIds"))) problems.add(r.path("name").asText() + ": not every cut compared with the oracle");
+            }
+            if (control.name.equals(yggdrasil.forseti.cli.harness.Controls.NON_TRANSACTIONAL_OUTPUT) && evaluated != null) {
+                // theta (spec 700): the intended failure must come from duplicates, losses or revision gaps the gate found in a restart
+                // run (an integrity finding of that kind, or an oracle difference), never from any other failure of I-21 or I-22
+                ArrayNode tf = v.putArray("thetaFindings");
+                for (JsonNode r : evaluated.generationRuns.values()) {
+                    String n = r.path("name").asText();
+                    if (Restarts.parse(n) == null) continue;
+                    List<String> kinds = new ArrayList<>();
+                    for (String id : THETA_FINDINGS) if (r.path("findings").path(id).path("count").asLong() > 0) kinds.add(id + " " + r.path("findings").path(id).path("count").asLong());
+                    if (r.has("equal") && !r.path("equal").asBoolean(true)) kinds.add("oracle differences");
+                    tf.addObject().put("run", n).put("findings", String.join(", ", kinds));
+                    if (kinds.isEmpty()) problems.add(n + ": failed without a duplicate, loss or revision-gap finding (spec 700)");
+                }
+                if (tf.isEmpty()) problems.add("theta: no restart run evaluated");
             }
             if (!owned.isEmpty() && exit != 1) problems.add("exit " + exit + ", 1 expected");
             v.put("held", problems.isEmpty());

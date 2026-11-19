@@ -46,7 +46,7 @@ class FlinkGateChecksTest {
   }
 
   @Test void theFirstProgressOfEveryStageOneWriterCarriesTheRunsInitEvidenceAndNothingElseDoes() throws Exception {
-    String first = new RestoreEvidence(false, null, 0).encode();
+    String first = RestoreEvidence.firstStart().encode();
     assertEquals(List.of(), FlinkGate.initEvidence(run(init(0, 2, first), null, null), 0, 2));
 
     List<String> missing = FlinkGate.initEvidence(run(null, null, null), 0, 2);
@@ -56,7 +56,7 @@ class FlinkGateChecksTest {
     assertFalse(FlinkGate.initEvidence(run(init(1, 2, first), null, null), 0, 2).isEmpty(), "another declaration");
     assertFalse(FlinkGate.initEvidence(run(init(0, 3, first), null, null), 0, 2).isEmpty(), "another H");
     assertFalse(FlinkGate.initEvidence(run(init(0, 2, "none"), null, null), 0, 2).isEmpty(), "the reference harness's restore");
-    assertFalse(FlinkGate.initEvidence(run(init(0, 2, new RestoreEvidence(true, 4L, 1).encode()), null, null), 0, 2).isEmpty(), "a restore at a first start");
+    assertFalse(FlinkGate.initEvidence(run(init(0, 2, new RestoreEvidence(0, true, 4L, 1).encode()), null, null), 0, 2).isEmpty(), "a restore at a first start");
   }
 
   @Test void everyRecordedConsumerReadsCommitted() {

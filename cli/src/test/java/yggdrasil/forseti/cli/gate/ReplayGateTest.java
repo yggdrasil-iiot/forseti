@@ -28,14 +28,16 @@ class ReplayGateTest {
         List<String> ids = ids();
         ReplayGate.Plan plan = ReplayGate.Plan.load(ROOT.resolve("gate/flink-shards.json"), ids);
         Map<String, ReplayGate.Control> controls = ReplayGate.Control.load(ROOT.resolve("gate/flink-negative-controls.json"), plan, ids);
-        // the eight engine-independent controls of spec 689-700 (theta comes with PR 6)
-        assertEquals(List.of("processing-time", "drop-late", "no-cascade", "lenient-oracle", "first-wins", "station-granularity", "ignore-session-gap", "wrong-rules-pin"),
-            new ArrayList<>(controls.keySet()));
-        // every engine-independent injection of spec 705 but 21, 22 and 24
+        // the nine controls of spec 689-700, theta (non-transactional-output, plan D9) on the restart shards only
+        assertEquals(List.of("processing-time", "drop-late", "no-cascade", "lenient-oracle", "first-wins", "station-granularity", "ignore-session-gap",
+            "non-transactional-output", "wrong-rules-pin"), new ArrayList<>(controls.keySet()));
+        assertEquals(List.of("I-21", "I-22"), controls.get("non-transactional-output").intended());
+        assertEquals(List.of("restart-21", "restart-22"), controls.get("non-transactional-output").shards());
+        // every injection of spec 705 but 24 (36 ids)
         Set<String> inj = new TreeSet<>();
         for (String id : ids) if (id.startsWith("I-")) inj.add(id);
-        assertEquals(34, inj.size(), inj.toString());
-        assertFalse(inj.contains("I-21") || inj.contains("I-22") || inj.contains("I-24"));
+        assertEquals(36, inj.size(), inj.toString());
+        assertTrue(inj.contains("I-21") && inj.contains("I-22") && !inj.contains("I-24"));
         // each horizon recording runs in a shard of its own
         for (String h : Scenarios.HORIZON) {
             long n = plan.shards.stream().filter(s -> s.scenarios().contains(h)).count();
@@ -43,6 +45,18 @@ class ReplayGateTest {
             ReplayGate.Shard s = plan.shards.stream().filter(x -> x.scenarios().contains(h)).findFirst().orElseThrow();
             for (String o : Scenarios.HORIZON) if (!o.equals(h)) assertFalse(s.scenarios().contains(o), h + " shares a shard with " + o);
         }
+        // plan D13: the restart injections run alone, each assertion's restart runs in a shard of their own beside their scenario only
+        for (ReplayGate.Shard s : plan.shards) {
+            if (s.restartRuns().isEmpty()) continue;
+            assertEquals(1, s.assertions().size(), s.name());
+            assertTrue(s.assertions().get(0).equals("I-21") || s.assertions().get(0).equals("I-22"), s.name());
+            assertEquals(List.of(RestartAssertions.SCENARIO), s.scenarios(), s.name());
+            assertTrue(s.generationRuns().isEmpty(), s.name());
+        }
+        assertEquals(List.of("stage2-early@restart-21"), plan.shard("restart-21").restartRuns());
+        assertEquals(List.of("stage2-early@restart-22i", "stage2-early@restart-22ii", "stage2-early@restart-22iv"), plan.shard("restart-22").restartRuns());
+        for (String a : List.of("R-MERGED-EXACT", "R-MERGED-JUSTIFIED", "R-RECOVERY-WINDOW", "R-RECOVERED-EPOCH", "R-BARRIER-REFS", "C-3-RESTART-SKIPS", "R-INIT-EVIDENCE"))
+            assertTrue(plan.aggregate.contains(a), a);
         for (String a : List.of("R-READ-COMMITTED", "FL-KEYGROUP-MAP", "FL-ONE-SPLIT", "FL-WATERMARK-PER-RECORD", "J-W1-FORMULA")) assertTrue(plan.aggregate.contains(a), a);
     }
 
@@ -59,6 +73,23 @@ class ReplayGateTest {
         Json.write(f, plan);
         e = assertThrows(IllegalArgumentException.class, () -> ReplayGate.Plan.load(f, ids));
         assertTrue(e.getMessage().contains("owned twice"), e.getMessage());
+    }
+
+    @Test void aRestartRunWithoutItsScenarioOrOfAnUnknownKindIsRefused() throws Exception {
+        List<String> ids = ids();
+        ObjectNode plan = (ObjectNode) Json.read(ROOT.resolve("gate/flink-shards.json"));
+        for (com.fasterxml.jackson.databind.JsonNode s : plan.get("shards"))
+            if (s.path("name").asText().equals("restart-21")) ((ArrayNode) s.get("scenarios")).removeAll().add("baseline");
+        Path f = tmp.resolve("plan.json");
+        Json.write(f, plan);
+        IllegalArgumentException e = assertThrows(IllegalArgumentException.class, () -> ReplayGate.Plan.load(f, ids));
+        assertTrue(e.getMessage().contains("without stage2-early"), e.getMessage());
+        plan = (ObjectNode) Json.read(ROOT.resolve("gate/flink-shards.json"));
+        for (com.fasterxml.jackson.databind.JsonNode s : plan.get("shards"))
+            if (s.path("name").asText().equals("restart-21")) ((ArrayNode) s.get("restartRuns")).add("stage2-early@restart-23");
+        Json.write(f, plan);
+        e = assertThrows(IllegalArgumentException.class, () -> ReplayGate.Plan.load(f, ids));
+        assertTrue(e.getMessage().contains("no restart run stage2-early@restart-23"), e.getMessage());
     }
 
     @Test void aControlOnAShardThatOwnsNoneOfItsIdsIsRefused() throws Exception {

@@ -73,16 +73,16 @@ public final class RejectCollectorFunction extends ProcessFunction<Msg, Out> imp
     if (!cuts.required().equals(required)) throw new IllegalStateException("reject collector " + stage + ": restored required barriers " + cuts.required());
     if (stage == 2) { init = null; return; }
     int attempt = getRuntimeContext().getTaskInfo().getAttemptNumber();
-    RestoreEvidence restore = RestoreEvidence.of(context.isRestored(), context.getRestoredCheckpointId(), attempt);
+    RestoreEvidence restore = RestoreEvidence.of(settings.launch(), context.isRestored(), context.getRestoredCheckpointId(), attempt);
     RecoveryControlStore.Snapshot control = Writers.readControl(settings);
     CutAssembler.Declaration declaration = control.assemblerDeclaration(settings.generation());
     if (declaration == null) throw new IllegalStateException("no recovery declaration of generation " + settings.generation());
     init = control.initEvidence(settings.generation(), restore.encode());
     if (restore.reinitialized()) cuts.reinitialize(declaration);
-    ObjectNode e = Json.object().put("operator", "stage1-rejects").put("attemptNumber", attempt).put("restore", restore.encode());
+    ObjectNode e = Json.object().put("operator", "stage1-rejects").put("attemptNumber", attempt).put("launch", settings.launch()).put("restore", restore.encode());
     e.set("initEvidence", Writers.initJson(init));
     e.set("required", Writers.origins(required).get("origins"));
-    Writers.evidence(settings, "stage1-rejects-attempt-" + attempt, e);
+    Writers.evidence(settings, "stage1-rejects-" + restore.incarnation(), e);
   }
 
   @Override public void snapshotState(FunctionSnapshotContext context) throws Exception {

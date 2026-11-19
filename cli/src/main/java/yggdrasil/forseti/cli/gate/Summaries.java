@@ -94,6 +94,13 @@ final class Summaries {
             if (want == null) o.putNull("heldBackWantMs"); else Json.putSafe(o, "heldBackWantMs", want);
         }
         if (r.replay != null) o.set("replay", r.replay.deepCopy());
+        if (r.accounting != null) o.set("cutAccounting", r.accounting.deepCopy());
+        if (r.restart != null) {
+            ObjectNode x = o.putObject("restart").put("kind", r.restart.path("kind").asText()).put("status", r.restart.path("status").asText());
+            Json.putSafe(x, "placedAt", r.restart.path("placedAt").asLong());
+            Json.putSafe(x, "attempt", r.restart.path("attempt").asLong());
+            x.set("invalidAttempts", r.restart.path("invalidAttempts").deepCopy());
+        }
         if (r.controlEvidence != null) o.set("controlStore", r.controlEvidence.deepCopy());
         boolean complete = r.failure == null && r.tally != null && r.fold != null && r.outcome != null;
         if (r.synthetic && complete) {

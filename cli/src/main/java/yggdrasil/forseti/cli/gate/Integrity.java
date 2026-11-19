@@ -44,7 +44,17 @@ final class Integrity {
      *  then goes to, minus {@code outOfOrdernessMs} minus 1); {@code J-W1-FORMULA} asserts the reported {@code W1} against it. */
     static Measures check(RunFold fold, Path recording, JsonNode cutLog, Map<String, List<Integer>> subscribed, RuleSet rules, JsonNode definitions,
                           Map<String, Integer> stationPartitions, W1Form form) throws IOException {
+        return check(fold, recording, cutLog, subscribed, rules, definitions, stationPartitions, form, false);
+    }
+
+    /** {@code merges}: whether the run may merge cuts (a replay-gate run, spec 418: restart recovery and the receive-order trigger); a
+     *  core run never merges, so on it every progress of every partition has empty {@code mergedCutIds} ({@code J-PROGRESS-ORDER}), and
+     *  the stage-2 count of 6 x (1 + merged) incidentOffsets stays exactly six. */
+    static Measures check(RunFold fold, Path recording, JsonNode cutLog, Map<String, List<Integer>> subscribed, RuleSet rules, JsonNode definitions,
+                          Map<String, Integer> stationPartitions, W1Form form, boolean merges) throws IOException {
         Findings f = fold.findings;
+        if (!merges) for (Map.Entry<String, List<RunFold.Mark>> e : fold.marks().entrySet())
+            for (RunFold.Mark m : e.getValue()) if (m.merged() != 0) f.add("J-PROGRESS-ORDER", e.getKey() + " cut " + m.cutId() + ": " + m.merged() + " mergedCutIds on a core run, which never merges");
         Recording rec = form == W1Form.MIN_OVER_PARTITIONS ? Recording.open(recording) : null;
         Map<Integer, Recording.Reader> clockReaders = new HashMap<>();
         Map<Integer, Long> clockNext = new HashMap<>(), partitionMax = new HashMap<>();
@@ -158,7 +168,9 @@ final class Integrity {
                 JsonNode x = byCut.getOrDefault(m.cutId(), Json.object()).path(s);
                 if (stage2) {
                     if (m.w() == null || m.w() != x.path("W1").asLong()) f.add("J-W2-EQUALS-W1", e.getKey() + " cut " + m.cutId() + ": W2 " + m.w() + ", the cut's W1 " + x.path("W1"));
-                    if (m.incidentOffsets() != 6) f.add("J-W2-EQUALS-W1", e.getKey() + " cut " + m.cutId() + ": " + m.incidentOffsets() + " incidentOffsets, not 6");
+                    // six per cut, the merged ones included (spec 725: 6 x (1 + number of mergedCutIds))
+                    int want = 6 * (1 + m.merged());
+                    if (m.incidentOffsets() != want) f.add("J-W2-EQUALS-W1", e.getKey() + " cut " + m.cutId() + ": " + m.incidentOffsets() + " incidentOffsets, not " + want);
                 } else {
                     if (m.w() == null || m.w() != x.path("W1").asLong()) f.add("J-W1-FORMULA", e.getKey() + " cut " + m.cutId() + ": progress W1 " + m.w() + ", cuts.json " + x.path("W1"));
                     if (!Objects.equals(prev, m.admissionW())) f.add("J-W1-FORMULA", e.getKey() + " cut " + m.cutId() + ": progress admissionW " + m.admissionW() + ", the previous W1 " + prev);

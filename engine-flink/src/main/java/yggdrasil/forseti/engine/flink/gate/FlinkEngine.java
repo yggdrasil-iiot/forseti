@@ -37,11 +37,15 @@ import yggdrasil.forseti.engine.flink.job.RestoreEvidence;
  *  <li>{@code FL-TIMER-INVARIANT} (reviewer decision 4): the native timers are reconciled with the authoritative deadline index at
  *  every cut close: every distinct deadline of the index has exactly one Flink registration or a held mark, Flink's own timer queue holds
  *  exactly the registered ones, every held mark is at or below the watermark, and every deadline registered before the close and at or
- *  below {@code W1} is held; on a run whose stations had deadlines, timers were registered, fired and drained as held (no vacuous pass).</li></ul>
+ *  below {@code W1} is held; on a run whose stations had deadlines, timers were registered, fired and drained as held (no vacuous pass),
+ *  and a horizon run (a synthetic recording) had deadlines and fired timers (reviewer decision 6 of PR 5).</li></ul>
+ *  A restart run has several incarnations of each restarted job (one per launch, reviewer decision 2 of PR 5): the key-group map holds in
+ *  every one and is the same in all, every incarnation's source subtasks own one split each (the first and the last launch on every
+ *  subscribed partition), and the timer evidence of every incarnation is summed.
  *  The engine-independent init and cut evidence are the gate's {@code R-INIT-EVIDENCE} and {@code R-CUT-EVIDENCE}.
  */
 final class FlinkEngine implements ReplayEngine {
-  static final List<String> IDS = List.of("FL-KEYGROUP-MAP", "FL-WATERMARK-PER-RECORD", "FL-ONE-SPLIT", "FL-JOB-SETTINGS", "FL-TIMER-INVARIANT");
+  static final List<String> IDS = List.of("FL-KEYGROUP-MAP", "FL-WATERMARK-PER-RECORD", "FL-ONE-SPLIT", "FL-JOB-SETTINGS", "FL-TIMER-INVARIANT", "FL-RESTORE");
 
   private final Path root;
   private final DockerBroker broker;
@@ -63,6 +67,15 @@ final class FlinkEngine implements ReplayEngine {
 
   @Override public String w1Form() { return "min-over-partitions"; }
 
+  @Override public Map<yggdrasil.forseti.cli.replay.Restarts.Kind, String> notApplicable() {
+    return Map.of(yggdrasil.forseti.cli.replay.Restarts.Kind.I22_III, "spec 685: 22(iii) is a Kafka Streams stage-1 rebalance; a Flink job has no rebalance (recorded, not a skip)");
+  }
+
+  /** Spec 412, the Flink form: every subscribed raw telemetry partition and the occupancy and session partitions that feed the station. */
+  @Override public List<yggdrasil.forseti.core.journal.Progress.Origin> stationBarriers(String station, RoutingManifest routing, Map<String, List<Integer>> subscribed) {
+    return EngineContract.stationRequired(station, routing, subscribed);
+  }
+
   @Override public ControlStore controlStore(String name) throws Exception {
     String prefix = "flink-store-" + name.replaceAll("[^a-z0-9.-]", "-") + "-" + java.util.UUID.randomUUID().toString().substring(0, 8) + ".";
     List<ReplayTopics.Spec> specs = new ArrayList<>();
@@ -80,7 +93,7 @@ final class FlinkEngine implements ReplayEngine {
     return FlinkRun.register(bootstrap, store, state, trustedKeys, rule, registration, recording);
   }
 
-  @Override public String firstStartRestore() { return new RestoreEvidence(false, null, 0).encode(); }
+  @Override public String firstStartRestore() { return RestoreEvidence.firstStart().encode(); }
 
   /** From the split probes of both jobs: the partitions each source consumed (the stage-1 raw topics and {@code quality.incidents}). */
   @Override public Map<String, List<Integer>> observedSubscription(Run run) {
@@ -112,15 +125,22 @@ final class FlinkEngine implements ReplayEngine {
     RoutingManifest routing = Recording.open(recording).routing();
     List<String> stations = new ArrayList<>(new TreeMap<>(routing.stations()).keySet());
 
-    // 715: the key-group and subtask map of both station operators, and the routing digest
+    // 715: the key-group and subtask map of both station operators, and the routing digest: in every incarnation of the job (each
+    // launch its own init records, reviewer decision 2 of PR 5), the same map
     List<String> km = f.get("FL-KEYGROUP-MAP");
     for (String op : List.of("stage1-stations", "stage2-stations")) {
+     Map<Integer, List<JsonNode>> byLaunch = new TreeMap<>();
+     for (Iterator<Map.Entry<String, JsonNode>> it = jobs.fields(); it.hasNext();) {
+       Map.Entry<String, JsonNode> e = it.next();
+       if (e.getKey().startsWith(op + "-")) byLaunch.computeIfAbsent(e.getValue().path("launch").asInt(0), x -> new ArrayList<>()).add(e.getValue());
+     }
+     if (byLaunch.isEmpty()) byLaunch.put(0, List.of());
+     Map<String, Integer> firstOwner = null;
+     for (Map.Entry<Integer, List<JsonNode>> inc : byLaunch.entrySet()) {
+      String where = op + (byLaunch.size() > 1 ? " (launch " + inc.getKey() + ")" : "");
       Map<String, Integer> owner = new TreeMap<>();
       int subtasks = 0;
-      for (Iterator<Map.Entry<String, JsonNode>> it = jobs.fields(); it.hasNext();) {
-        Map.Entry<String, JsonNode> e = it.next();
-        if (!e.getKey().startsWith(op + "-")) continue;
-        JsonNode n = e.getValue();
+      for (JsonNode n : inc.getValue()) {
         subtasks++;
         int sub = n.path("subtask").intValue(), max = n.path("maxParallelism").intValue(), par = n.path("parallelism").intValue();
         KeyGroupRange want = KeyGroupRangeAssignment.computeKeyGroupRangeForOperatorIndex(max, par, sub);
@@ -137,12 +157,15 @@ final class FlinkEngine implements ReplayEngine {
           if (max != JobSettings.MAX_PARALLELISM) km.add(op + " subtask " + sub + ": max parallelism " + max);
         }
       }
-      if (subtasks != JobSettings.KEYED_PARALLELISM) km.add(op + ": " + subtasks + " init records, " + JobSettings.KEYED_PARALLELISM + " subtasks expected");
-      if (!owner.keySet().equals(new TreeSet<>(stations))) km.add(op + ": owned stations " + owner.keySet() + ", the routing's " + stations);
+      if (subtasks != JobSettings.KEYED_PARALLELISM) km.add(where + ": " + subtasks + " init records, " + JobSettings.KEYED_PARALLELISM + " subtasks expected");
+      if (!owner.keySet().equals(new TreeSet<>(stations))) km.add(where + ": owned stations " + owner.keySet() + ", the routing's " + stations);
       // each station output partition: exactly one owner
       Map<Integer, Set<Integer>> partitionOwners = new TreeMap<>();
       owner.forEach((st, sub) -> partitionOwners.computeIfAbsent(routing.partitionOf(st), x -> new TreeSet<>()).add(sub));
-      partitionOwners.forEach((p, subs) -> { if (subs.size() != 1) km.add(op + ": output partition " + p + " owned by subtasks " + subs); });
+      partitionOwners.forEach((p, subs) -> { if (subs.size() != 1) km.add(where + ": output partition " + p + " owned by subtasks " + subs); });
+      if (firstOwner == null) firstOwner = owner;
+      else if (!firstOwner.equals(owner)) km.add(where + ": station owners " + owner + " differ from the first launch's " + firstOwner);
+     }
     }
     String rd = routing.routingDigest();
     if (!rd.equals(runJson.path("pins").path("job").path("routingDigest").asText(null))) km.add("run.json routingDigest " + runJson.path("pins").path("job").path("routingDigest") + ", the recording's " + rd);
@@ -168,25 +191,38 @@ final class FlinkEngine implements ReplayEngine {
     List<Integer> stationPartitions = new ArrayList<>(new TreeSet<>(routing.stations().values()));
     for (String t : List.of("forseti.work-records", "forseti.samples")) want.put("stage2-source-" + t, stationPartitions);
     for (Map.Entry<String, List<Integer>> w : want.entrySet()) {
-      Map<Integer, Set<Integer>> bySubtask = new TreeMap<>();
-      Set<Long> parallelism = new TreeSet<>();
+      // per incarnation (launch) of the job: every source subtask one split; the first and the last launch received records on every
+      // subscribed partition (a launch killed again before batch k+1 may have received nothing, injection 22(iv))
+      Map<Integer, Map<Integer, Set<Integer>>> launches = new TreeMap<>();
+      Map<Integer, Set<Long>> parallelisms = new TreeMap<>();
       for (Iterator<Map.Entry<String, JsonNode>> it = jobs.fields(); it.hasNext();) {
         Map.Entry<String, JsonNode> e = it.next();
         if (!e.getKey().startsWith("split-" + w.getKey() + "-")) continue;
         JsonNode n = e.getValue();
         if (!w.getKey().equals(n.path("source").asText())) continue;
-        parallelism.add(n.path("parallelism").asLong());
-        Set<Integer> ps = bySubtask.computeIfAbsent(n.path("subtask").intValue(), x -> new TreeSet<>());
+        int launch = n.path("launch").asInt(0);
+        parallelisms.computeIfAbsent(launch, x -> new TreeSet<>()).add(n.path("parallelism").asLong());
+        Set<Integer> ps = launches.computeIfAbsent(launch, x -> new TreeMap<>()).computeIfAbsent(n.path("subtask").intValue(), x -> new TreeSet<>());
         n.path("partitions").forEach(x -> ps.add(x.intValue()));
       }
-      if (!parallelism.equals(Set.of((long) w.getValue().size()))) sp.add(w.getKey() + ": source parallelism " + parallelism + ", subscribed partitions " + w.getValue());
-      if (bySubtask.size() != w.getValue().size()) sp.add(w.getKey() + ": " + bySubtask.size() + " subtasks received records, " + w.getValue().size() + " expected " + bySubtask);
-      Map<Integer, Integer> ownerOf = new TreeMap<>();
-      bySubtask.forEach((sub, ps) -> {
-        if (ps.size() != 1) sp.add(w.getKey() + " subtask " + sub + " owns " + ps.size() + " splits " + ps);
-        for (int p : ps) { Integer o = ownerOf.put(p, sub); if (o != null) sp.add(w.getKey() + ": partition " + p + " on subtasks " + o + " and " + sub); }
-      });
-      if (!ownerOf.keySet().equals(new TreeSet<>(w.getValue()))) sp.add(w.getKey() + ": partitions " + ownerOf.keySet() + ", subscribed " + w.getValue());
+      if (!launches.containsKey(0)) launches.put(0, new TreeMap<>());
+      int lastLaunch = Collections.max(launches.keySet());
+      for (Map.Entry<Integer, Map<Integer, Set<Integer>>> l : launches.entrySet()) {
+        String where = w.getKey() + (launches.size() > 1 ? " (launch " + l.getKey() + ")" : "");
+        Map<Integer, Set<Integer>> bySubtask = l.getValue();
+        Set<Long> parallelism = parallelisms.getOrDefault(l.getKey(), Set.of());
+        boolean full = l.getKey() == 0 || l.getKey() == lastLaunch;
+        if (full && !parallelism.equals(Set.of((long) w.getValue().size())) || !full && !parallelism.isEmpty() && !parallelism.equals(Set.of((long) w.getValue().size())))
+          sp.add(where + ": source parallelism " + parallelism + ", subscribed partitions " + w.getValue());
+        if (full && bySubtask.size() != w.getValue().size()) sp.add(where + ": " + bySubtask.size() + " subtasks received records, " + w.getValue().size() + " expected " + bySubtask);
+        Map<Integer, Integer> ownerOf = new TreeMap<>();
+        bySubtask.forEach((sub, ps) -> {
+          if (ps.size() != 1) sp.add(where + " subtask " + sub + " owns " + ps.size() + " splits " + ps);
+          for (int p : ps) { Integer o = ownerOf.put(p, sub); if (o != null) sp.add(where + ": partition " + p + " on subtasks " + o + " and " + sub); }
+        });
+        if (full && !ownerOf.keySet().equals(new TreeSet<>(w.getValue()))) sp.add(where + ": partitions " + ownerOf.keySet() + ", subscribed " + w.getValue());
+        if (!full && !new TreeSet<>(w.getValue()).containsAll(ownerOf.keySet())) sp.add(where + ": partitions " + ownerOf.keySet() + " outside " + w.getValue());
+      }
     }
 
     // 588-590: the observed job settings are the engine pins
@@ -215,6 +251,35 @@ final class FlinkEngine implements ReplayEngine {
       if (!engineMatches(s)) js.add(stage + " engine " + s.path("engine") + " " + s.path("engineVersion"));
     }
 
+    // every launch the harness made of each job (its cluster record, written before the launch started) against the engine's own
+    // restore evidence of that incarnation: every stations subtask of both stages and the stage-1 reject collector initialized in it,
+    // restored from exactly the checkpoint the harness restored (none at launch 0), so a relaunch is a real restore
+    List<String> rs = f.get("FL-RESTORE");
+    for (String stage : List.of("stage1", "stage2")) {
+      JsonNode launches = ev.path("flink").path("clusters").path(stage).path("launches");
+      if (!launches.isArray() || launches.isEmpty()) { rs.add(stage + ": no launch recorded by the harness"); continue; }
+      Map<Integer, Long> made = new TreeMap<>();
+      for (JsonNode l : launches) made.put(l.path("launch").asInt(), l.path("restoredCheckpointId").isIntegralNumber() ? l.get("restoredCheckpointId").asLong() : null);
+      List<String> ops = stage.equals("stage1") ? List.of("stage1-stations-", "stage1-rejects-") : List.of("stage2-stations-");
+      for (String op : ops) {
+        Map<Integer, Integer> seen = new TreeMap<>();
+        for (Iterator<Map.Entry<String, JsonNode>> it = jobs.fields(); it.hasNext();) {
+          Map.Entry<String, JsonNode> e = it.next();
+          if (!e.getKey().startsWith(op)) continue;
+          RestoreEvidence r;
+          try { r = RestoreEvidence.decode(e.getValue().path("restore").asText("")); }
+          catch (RuntimeException x) { rs.add(e.getKey() + ": no restore evidence (" + x.getMessage() + ")"); continue; }
+          seen.merge(r.launch(), 1, Integer::sum);
+          if (!made.containsKey(r.launch())) { rs.add(e.getKey() + ": launch " + r.launch() + ", which the harness never made"); continue; }
+          Long cp = made.get(r.launch());
+          if (r.isRestored() != (cp != null) || !Objects.equals(r.restoredCheckpointId(), cp))
+            rs.add(e.getKey() + ": launch " + r.launch() + " restored " + r.restoredCheckpointId() + ", the harness restored " + cp);
+        }
+        int per = op.endsWith("rejects-") ? 1 : JobSettings.KEYED_PARALLELISM;
+        for (int l : made.keySet()) if (seen.getOrDefault(l, 0) != per) rs.add(stage + " launch " + l + ": " + seen.getOrDefault(l, 0) + " " + op + "* initializations, " + per + " expected");
+      }
+    }
+
     // reviewer decision 4: native registrations and held marks reconciled with the deadline index, with coverage
     List<String> ti = f.get("FL-TIMER-INVARIANT");
     long closes = 0, deadlines = 0, registrations = 0, fired = 0, drained = 0;
@@ -232,6 +297,10 @@ final class FlinkEngine implements ReplayEngine {
       if (v != 0) ti.add(e.getKey() + ": " + v + " timer invariant violations " + n.path("timerInvariantExamples"));
     }
     if (closes == 0) ti.add("no cut close checked");
+    // reviewer decision 6 of PR 5: a horizon run (a synthetic recording) has deadlines, and its timers must have fired
+    boolean horizon = Recording.open(recording).manifest().path("synthetic").asBoolean(false);
+    if (horizon && deadlines == 0) ti.add("a horizon run with no deadline in any index");
+    if (horizon && fired == 0) ti.add("a horizon run on which no Flink timer fired (" + registrations + " registered)");
     if (deadlines > 0) {
       if (registrations == 0) ti.add(deadlines + " deadlines in the index, no Flink timer registered");
       if (fired == 0) ti.add(registrations + " timers registered, none fired");

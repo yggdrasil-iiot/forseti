@@ -29,9 +29,13 @@ import yggdrasil.forseti.core.Json;
  *  reported them;</li>
  *  <li>{@code R-RECONCILE}: the shared identity-bound reconciliation of the ledgers and row triggers with the recording at every
  *  completed cut and at the end;</li>
- *  <li>{@code R-INIT-EVIDENCE} (spec 723): the first progress of every stage-1 progress writer carries {@code initEvidence} naming the
- *  run's recovery declaration, the control end offset H and the engine's restore evidence of a first start; no later progress and no
- *  stage-2 progress carries one;</li>
+ *  <li>{@code R-INIT-EVIDENCE} (spec 723, {@link RestartChecks}): the first progress of every stage-1 progress writer after each
+ *  initialization carries {@code initEvidence} (at the first start the run's recovery declaration, the control end offset H and the
+ *  engine's restore evidence of a first start; after a restart injection its declaration and the restore evidence the harness recorded);
+ *  no other progress and no stage-2 progress carries one; the attributed set of every restart injection is the set of writers whose
+ *  {@code initEvidence} points to its declaration;</li>
+ *  <li>{@code R-MERGED-EXACT}, {@code R-MERGED-JUSTIFIED}, {@code R-RECOVERY-WINDOW}, {@code R-RECOVERED-EPOCH}, {@code R-BARRIER-REFS},
+ *  {@code C-3-RESTART-SKIPS} (spec 719-722, 725, 726): {@link RestartChecks};</li>
  *  <li>{@code R-CUT-EVIDENCE}: every cut of {@code cuts.json} has stations and every station entry carries its {@code onlineVisits}.</li></ul>
  *  {@code R-PARTITION-ASSIGNMENT} compares the run record's subscription with what the engine observed its jobs consume
  *  ({@link ReplayEngine#observedSubscription}), every input topic, an empty one included; rows without an envelope or without
@@ -39,8 +43,8 @@ import yggdrasil.forseti.core.Json;
 public final class ReplayChecks {
     private ReplayChecks() {}
 
-    public static final List<String> IDS = List.of("R-READ-COMMITTED", "R-JOB-SETTINGS", "R-TIMESTAMP-SOURCE", "R-PARTITION-ASSIGNMENT", "R-TOPIC-RETENTION", "R-RECONCILE",
-        "R-INIT-EVIDENCE", "R-CUT-EVIDENCE");
+    public static final List<String> IDS = java.util.stream.Stream.concat(java.util.stream.Stream.of("R-READ-COMMITTED", "R-JOB-SETTINGS", "R-TIMESTAMP-SOURCE",
+        "R-PARTITION-ASSIGNMENT", "R-TOPIC-RETENTION", "R-RECONCILE", "R-INIT-EVIDENCE", "R-CUT-EVIDENCE"), RestartChecks.IDS.stream()).toList();
     static final List<String> STATION_TOPICS = List.of("forseti.work-records", "forseti.samples", "forseti.affected", "forseti.affected-sets");
     static final List<String> LEDGERS = List.of("forseti.dispositions-stage1", "forseti.dispositions-stage2");
     /** Keys whose values differ between two runs of one recording: never in {@code jobSettings} (spec 590). */
@@ -120,14 +124,22 @@ public final class ReplayChecks {
         for (JsonNode x : r.cutLog.path("cuts")) f.get("R-RECONCILE").addAll(rc.cut(x.path("cutId").asLong()));
         f.get("R-RECONCILE").addAll(rc.finish());
 
-        // initEvidence of the first progress only, with the engine's first-start restore evidence
-        f.get("R-INIT-EVIDENCE").addAll(initEvidence(er.out(), er.declarationOffset(), er.controlEnd(), engine.firstStartRestore()));
+        // spec 719-723, 725, 726: merged cuts, recovery, initEvidence after every initialization, barrier references, restart skips
+        // (RestartChecks), on every run, a restart run's from its injection manifest; the cut accounting kept on the run
+        RestartChecks.Inputs in = new RestartChecks.Inputs(r.recording, er.out(), r.cutLog, runJson, er.declarationOffset(), er.controlEnd(), engine.firstStartRestore(), engine);
+        r.accounting = Json.object();
+        RestartChecks.findings(in, r.measures, r.accounting).forEach((id, l) -> f.get(id).addAll(l));
+        Set<String> skipped = new HashSet<>();
+        r.accounting.path("restartSkips").forEach(x -> skipped.add(x.asText()));
+        r.accounting.path("starvationSkips").forEach(x -> skipped.add(x.asText()));
 
-        // the cut log's per-station entries and their onlineVisits
+        // the cut log's per-station entries and their onlineVisits (a cut every station merged into a later progress has none)
         List<String> ce = f.get("R-CUT-EVIDENCE");
         if (r.cutLog.path("cuts").isEmpty()) ce.add("cuts.json has no cut");
         for (JsonNode c : r.cutLog.path("cuts")) {
-            if (!c.path("perStation").isObject() || c.path("perStation").isEmpty()) { if (ce.size() < 20) ce.add("cut " + c.path("cutId") + ": no station entry"); continue; }
+            boolean allSkipped = true;
+            for (String st : routing.stations().keySet()) if (!skipped.contains(st + "@" + c.path("cutId").asLong())) allSkipped = false;
+            if (!c.path("perStation").isObject() || c.path("perStation").isEmpty()) { if (!allSkipped && ce.size() < 20) ce.add("cut " + c.path("cutId") + ": no station entry"); continue; }
             c.path("perStation").fields().forEachRemaining(e -> {
                 if (!e.getValue().path("onlineVisits").isIntegralNumber() && ce.size() < 20) ce.add("cut " + c.path("cutId") + " " + e.getKey() + ": no onlineVisits");
             });

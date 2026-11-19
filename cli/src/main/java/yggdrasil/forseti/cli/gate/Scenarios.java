@@ -201,6 +201,11 @@ final class Scenarios {
         com.fasterxml.jackson.databind.node.ObjectNode controlEvidence;
         /** Replay-gate findings of this run ({@link ReplayChecks}): assertion id -> {count, describe}; null on a core gate run. */
         com.fasterxml.jackson.databind.node.ObjectNode replay;
+        /** A replay-gate restart run's injection manifest ({@code injections.json}, spec 685), null on any other run. */
+        JsonNode restart;
+        /** A replay-gate run's cut accounting ({@link ReplayChecks#accounting}): completed cuts, and the (writer, cut) pairs merged into a
+         *  later progress, kept apart from them (spec 418, 620); null on a core gate run. */
+        com.fasterxml.jackson.databind.node.ObjectNode accounting;
         long t0() { return manifest.path("T0").asLong(); }
         JsonNode rule() { return rule != null ? rule : manifest.get("rule"); }
         JsonNode visit(String ref) {
@@ -670,7 +675,7 @@ final class Scenarios {
             if (c.w1Form != null && !c.w1Form.equals(declared))
                 throw new IllegalStateException("cuts.json declares the W1 form " + declared + ", the engine reports " + c.w1Form);
             W1Form form = W1Form.of(c.w1Form != null ? c.w1Form : declared);
-            r.measures = Integrity.check(f, r.recording, r.cutLog, subscribed, r.rules, r.manifest.path("definitions"), stations, form);
+            r.measures = Integrity.check(f, r.recording, r.cutLog, subscribed, r.rules, r.manifest.path("definitions"), stations, form, c.w1Form != null);
             r.outcome = Expectations.check(f, r.expected, r::perStation);
             if (r.name.equals(Injections.PLANNED_LATE)) r.plannedLate = Injections.capturePlannedLate(c, f, r);
             if (r.journals != null) r.foldDigest = f.digest();

@@ -50,6 +50,9 @@ public final class Topology {
     c.set(PipelineOptions.AUTO_WATERMARK_INTERVAL, Duration.ZERO);
     c.set(PipelineOptions.MAX_PARALLELISM, JobSettings.MAX_PARALLELISM);
     c.set(RestartStrategyOptions.RESTART_STRATEGY, "none");
+    // a completed checkpoint outlives its job's failure and cancellation, so the harness can restore the job from it after an injected
+    // kill (plan D7, D8: a restart is a restore of the latest completed checkpoint, never a fresh launch); the harness deletes the run
+    c.set(CheckpointingOptions.EXTERNALIZED_CHECKPOINT_RETENTION, org.apache.flink.configuration.ExternalizedCheckpointRetention.RETAIN_ON_CANCELLATION);
     return c;
   }
 
@@ -81,11 +84,25 @@ public final class Topology {
     return p;
   }
 
-  public static String transactionalPrefix(JobSettings s, String writer) { return s.prefix() + "forseti-flink-g" + s.generation() + "-" + writer; }
+  public static String transactionalPrefix(JobSettings s, String writer) { return transactionalPrefix(s.prefix(), s.generation(), writer); }
+
+  /** The transactional-id prefix of {@code writer}'s sink in the run of topic prefix {@code prefix} on {@code generation}: stable across
+   *  every launch of the job (the harness identifies the sink's transactions by it, plan D8). */
+  public static String transactionalPrefix(String prefix, long generation, String writer) { return prefix + "forseti-flink-g" + generation + "-" + writer; }
+
+  /** The delivery guarantee of every sink of the job: {@code EXACTLY_ONCE}, or {@code AT_LEAST_ONCE} (non-transactional) under
+   *  control theta (spec 700, plan D9). */
+  public static DeliveryGuarantee guarantee(JobSettings s) { return s.nonTransactional() ? DeliveryGuarantee.AT_LEAST_ONCE : DeliveryGuarantee.EXACTLY_ONCE; }
 
   static KafkaSink<Out> sink(JobSettings s, String writer) {
-    return KafkaSink.<Out>builder().setBootstrapServers(s.bootstrap()).setDeliveryGuarantee(DeliveryGuarantee.EXACTLY_ONCE)
-        .setTransactionalIdPrefix(transactionalPrefix(s, writer)).setKafkaProducerConfig(sinkProperties(s, writer)).setRecordSerializer(new OutSerializer()).build();
+    var b = KafkaSink.<Out>builder().setBootstrapServers(s.bootstrap()).setDeliveryGuarantee(guarantee(s)).setRecordSerializer(new OutSerializer());
+    if (s.nonTransactional()) {
+      // control theta: plain idempotent producers, every record visible to read_committed consumers as soon as it is appended
+      Properties p = sinkProperties(s, writer);
+      p.remove(ProducerConfig.TRANSACTION_TIMEOUT_CONFIG);
+      return b.setKafkaProducerConfig(p).build();
+    }
+    return b.setTransactionalIdPrefix(transactionalPrefix(s, writer)).setKafkaProducerConfig(sinkProperties(s, writer)).build();
   }
 
   /** Each output record to its run topic and its writer's explicit partition, with the {@code forseti-generation} header. */
@@ -101,7 +118,7 @@ public final class Topology {
   /** The job's engine pins as recorded evidence (spec 588-590, plan D10): the job configuration, the watermark emission mode, the
    *  source parallelism, the effective source consumer properties and the sink producer properties. */
   static ObjectNode pins(JobSettings s, Configuration conf, Map<String, Integer> sourceParallelism, Map<String, Properties> sources, Map<String, Properties> sinks) {
-    ObjectNode n = Json.object().put("engine", JobSettings.ENGINE).put("engineVersion", JobSettings.ENGINE_VERSION).put("stage", s.stage());
+    ObjectNode n = Json.object().put("engine", JobSettings.ENGINE).put("engineVersion", JobSettings.ENGINE_VERSION).put("stage", s.stage()).put("launch", s.launch());
     ObjectNode c = n.putObject("configuration");
     new TreeMap<>(conf.toMap()).forEach(c::put);
     // job constants: the per-record delegating generator and no idleness are how the jobs are built, and an idle status on the
@@ -117,7 +134,8 @@ public final class Topology {
     sinks.forEach((k, p) -> {
       ObjectNode x = si.putObject(k);
       new TreeMap<>(p).forEach((a, b) -> x.put(a.toString(), b.toString()));
-      x.put("deliveryGuarantee", DeliveryGuarantee.EXACTLY_ONCE.name()).put("transactionalIdPrefix", transactionalPrefix(s, k));
+      x.put("deliveryGuarantee", guarantee(s).name());
+      if (!s.nonTransactional()) x.put("transactionalIdPrefix", transactionalPrefix(s, k));
     });
     return n;
   }

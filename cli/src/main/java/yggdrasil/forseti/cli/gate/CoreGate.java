@@ -104,6 +104,8 @@ public final class CoreGate {
         /** The negative control of this gate run ({@code --negative-control}), null otherwise: the harness applies it (or, for
          *  {@code lenient-oracle}, the oracle) on every run this gate run makes. */
         String control;
+        /** The restart injections the replay gate's engine declares not applicable, with the reasons (spec 685); empty on a core run. */
+        Map<String, String> notApplicable = Map.of();
         /** What the assertions measure for {@code report.json} ({@code measurements}): item 2's reference values, revision counts. */
         final ObjectNode measurements = Json.object();
         /** The runs an engine's replay gate made ({@link ReplayGate}), null on a core gate run (its own {@link Scenarios.Pipeline}). */
