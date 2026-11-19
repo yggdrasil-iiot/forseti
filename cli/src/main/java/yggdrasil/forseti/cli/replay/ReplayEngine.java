@@ -86,6 +86,14 @@ public interface ReplayEngine extends AutoCloseable {
      *  any run must be returned for every run, and none may be an engine-independent id of the gate. */
     Map<String, List<String>> findings(Run run, Path recording) throws Exception;
 
+    /** The restart injections that do not apply to this engine, each with the reason (spec 685: the Flink run records 22(iii) as not
+     *  applicable, which is not a skip). The gate records them; a kind listed here is never run. */
+    Map<Restarts.Kind, String> notApplicable();
+
+    /** The required barrier set of station {@code station}'s stage-1 writer under this engine (spec 412: Flink and Kafka Streams differ),
+     *  on the routing {@code routing} and the run's stage-1 subscription {@code subscribed}. */
+    List<yggdrasil.forseti.core.journal.Progress.Origin> stationBarriers(String station, yggdrasil.forseti.cli.recording.RoutingManifest routing, Map<String, List<Integer>> subscribed);
+
     /** The W1 form the engine reports (spec 620): {@code per-station} or {@code min-over-partitions}; the gate requires every run's
      *  {@code cuts.json} to declare it. */
     String w1Form();

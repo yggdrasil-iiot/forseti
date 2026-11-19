@@ -325,6 +325,11 @@
       "id": "C-3-RESTART-SKIPS",
       "pr": 6,
       "description": "Flink, over every execution of every shard: spec 726: comparison item 3 counts only restart skips, as (logical writer, cut) pairs (a station's two evidence topics and ledger once, an unfinished recovery attempt not again, the reject collectors apart); cuts.json lists a station at a cut exactly when the cut is neither a restart skip nor a starvation of it; report.json measurements.item3"
+    },
+    {
+      "id": "FL-RESTORE",
+      "pr": 6,
+      "description": "Flink, over every execution of every shard: plan D7, D8 (reviewer decision 1 of PR 5): every launch the harness made of each job, as its cluster record lists it before the launch starts, against the engine's own restore evidence of that incarnation: every stations subtask of both stages and the stage-1 reject collector initialized in it, restored from exactly the checkpoint the harness restored (nothing at launch 0), and no initialization of a launch the harness never made"
     }
   ]
 }

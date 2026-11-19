@@ -22,6 +22,9 @@ public final class Restarts {
         I22_I("restart-22i", List.of("injection-22i"), true, false),
         /** Injection 22(ii): kill of stage 2 after stage-1 output is committed and before stage-2 processing; stage 1 untouched. */
         I22_II("restart-22ii", List.of("injection-22ii"), false, true),
+        /** Injection 22(iii): a Kafka Streams stage-1 rebalance (a stage-1 restart; only the reinitialized tasks recover). An engine
+         *  without rebalances declares it not applicable ({@link ReplayEngine#notApplicable}), which is not a skip. */
+        I22_III("restart-22iii", List.of("injection-22iii"), true, false),
         /** Injection 22(iv): 22(i), then a second stage-1 kill once every job is RUNNING and before batch k+1 (chained). */
         I22_IV("restart-22iv", List.of("injection-22iv-first", "injection-22iv-second"), true, false);
 
@@ -32,7 +35,7 @@ public final class Restarts {
 
         /** The spec's name of the injection ({@code 21}, {@code 22(i)}, ...). */
         public String spec() {
-            return switch (this) { case I21 -> "21"; case I22_I -> "22(i)"; case I22_II -> "22(ii)"; case I22_IV -> "22(iv)"; };
+            return switch (this) { case I21 -> "21"; case I22_I -> "22(i)"; case I22_II -> "22(ii)"; case I22_III -> "22(iii)"; case I22_IV -> "22(iv)"; };
         }
 
         public static Kind ofSuffix(String suffix) {
@@ -45,8 +48,6 @@ public final class Restarts {
      *  up to N, then the status is error, never pass). */
     public static final int ATTEMPTS = 3;
 
-    /** Injection 22(iii) (a Kafka Streams rebalance) as a Flink run records it (spec 685): not applicable, which is not a skip. */
-    public static final String NOT_APPLICABLE_22III = "22(iii): not applicable to Flink (spec 685: a Kafka Streams stage-1 rebalance; a Flink job has no rebalance), recorded, not a skip";
 
     /** A restart run name {@code <scenario>@restart-<kind>}: its scenario and kind, null when {@code name} is not one. */
     public record RunName(String name, String scenario, Kind kind) {

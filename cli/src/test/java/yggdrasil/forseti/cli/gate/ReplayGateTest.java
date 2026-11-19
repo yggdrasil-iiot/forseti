@@ -86,10 +86,10 @@ class ReplayGateTest {
         assertTrue(e.getMessage().contains("without stage2-early"), e.getMessage());
         plan = (ObjectNode) Json.read(ROOT.resolve("gate/flink-shards.json"));
         for (com.fasterxml.jackson.databind.JsonNode s : plan.get("shards"))
-            if (s.path("name").asText().equals("restart-21")) ((ArrayNode) s.get("restartRuns")).add("stage2-early@restart-22iii");
+            if (s.path("name").asText().equals("restart-21")) ((ArrayNode) s.get("restartRuns")).add("stage2-early@restart-23");
         Json.write(f, plan);
         e = assertThrows(IllegalArgumentException.class, () -> ReplayGate.Plan.load(f, ids));
-        assertTrue(e.getMessage().contains("no restart run stage2-early@restart-22iii"), e.getMessage());
+        assertTrue(e.getMessage().contains("no restart run stage2-early@restart-23"), e.getMessage());
     }
 
     @Test void aControlOnAShardThatOwnsNoneOfItsIdsIsRefused() throws Exception {

@@ -72,9 +72,18 @@ final class RestartChecks {
         final String firstStart;
         final Map<String, List<Integer>> subscribed = new LinkedHashMap<>();
 
+        /** The engine's required barrier set of a station's stage-1 writer (spec 412; {@link ReplayEngine#stationBarriers}). */
+        final java.util.function.BiFunction<String, Map<String, List<Integer>>, List<yggdrasil.forseti.core.journal.Progress.Origin>> stationBarriers;
+
         Inputs(Path recording, Path out, JsonNode cutLog, JsonNode runJson, long declaration, long controlEnd, String firstStart) throws IOException {
+            this(recording, out, cutLog, runJson, declaration, controlEnd, firstStart, null);
+        }
+
+        /** {@code engine}: the run's engine, whose station barrier sets 725 checks against; null for the Flink form (unit tests). */
+        Inputs(Path recording, Path out, JsonNode cutLog, JsonNode runJson, long declaration, long controlEnd, String firstStart, ReplayEngine engine) throws IOException {
             this.rec = Recording.open(recording);
             this.routing = rec.routing();
+            this.stationBarriers = engine == null ? (st, sub) -> EngineContract.stationRequired(st, routing, sub) : (st, sub) -> engine.stationBarriers(st, routing, sub);
             this.cutLog = cutLog;
             this.declaration = declaration;
             this.controlEnd = controlEnd;
@@ -135,6 +144,20 @@ final class RestartChecks {
         }
 
         boolean stage1(String part) { return part.startsWith(WR + "/") || part.startsWith(SAMPLES + "/") || part.startsWith(DISP1 + "/"); }
+
+        /** The barrier origins ({@code topic/partition}) the writer of partition {@code part} requires (spec 412): a station's stage-1
+         *  writer the engine's set, the stage-1 reject collector every subscribed stage-1 partition, a stage-2 ledger every subscribed
+         *  incident partition; the stage-2 evidence journals carry no barrier reference. */
+        Set<String> required(String part) {
+            Map<String, List<Integer>> s1 = new LinkedHashMap<>();
+            for (String t : EngineContract.STAGE1_TOPICS) s1.put(t, subscribed.getOrDefault(t, List.of()));
+            Set<String> r = new TreeSet<>();
+            String w = writerOf(part);
+            if (stage1(part) && w.equals(Restarts.REJECTS)) for (var o : EngineContract.required(s1, null)) r.add(o.topic() + "/" + o.partition());
+            else if (stage1(part)) for (var o : stationBarriers.apply(w, s1)) r.add(o.topic() + "/" + o.partition());
+            else if (part.startsWith(DISP2 + "/")) for (int p : subscribed.getOrDefault(EngineContract.STAGE1_TOPICS_AND_INCIDENTS.get(3), List.of())) r.add(EngineContract.STAGE1_TOPICS_AND_INCIDENTS.get(3) + "/" + p);
+            return r;
+        }
 
         /** The planned cuts strictly between {@code a} and {@code b}. */
         List<Long> between(long a, long b) {
@@ -232,6 +255,10 @@ final class RestartChecks {
         }
         List<JsonNode> injections = in.stage1Injections();
         Map<String, Set<String>> pointing = new HashMap<>();
+        // per writer partition: the progress indices that carry initEvidence beyond the first, and those allowed to (the first progress
+        // after each initialization of the writer, from the harness's records); every other one carrying it is a finding
+        Map<String, List<Integer>> carrying = new TreeMap<>();
+        Map<String, Set<Integer>> allowed = new HashMap<>();
         // the first start: every writer's first progress
         for (String w : Restarts.stage1Writers(in.stations().keySet())) for (String part : in.partitions(w)) {
             List<JsonNode> l = in.progress.getOrDefault(part, List.of());
@@ -247,6 +274,7 @@ final class RestartChecks {
             for (int i = 1; i < l.size(); i++) {
                 JsonNode x = l.get(i).get("initEvidence");
                 if (x == null) continue;
+                carrying.computeIfAbsent(part, z -> new ArrayList<>()).add(i);
                 long d = x.path("declarationOffset").asLong(-1);
                 JsonNode inj = null;
                 for (JsonNode j : injections) if (j.path("declaration").path("offset").asLong(-2) == d) inj = j;
@@ -254,7 +282,10 @@ final class RestartChecks {
                 else pointing.computeIfAbsent(inj.path("injectionId").asText(), z -> new TreeSet<>()).add(w);
             }
         }
-        if (injections.isEmpty()) return;
+        if (injections.isEmpty()) {
+            carrying.forEach((part, l) -> { for (int i : l) add(init, part + " progress " + in.progress.get(part).get(i).path("cutId") + " carries initEvidence: only the first progress after an initialization does"); });
+            return;
+        }
         // the restart injections: from the harness's progress log with Kafka offsets, checked equal to the dumped journals first
         JsonNode log = in.manifest.path("progress");
         for (String w : Restarts.stage1Writers(in.stations().keySet())) for (String part : in.partitions(w)) {
@@ -286,15 +317,20 @@ final class RestartChecks {
                     // the recovered progress: its writer's first after the kill
                     JsonNode v = j.get(xi);
                     if (contains(inj.path("attributed"), w)) {
+                        allowed.computeIfAbsent(part, z -> new HashSet<>()).add(xi);
                         JsonNode ie = v.get("initEvidence");
                         String where = part + " recovered progress " + c;
                         if (ie == null) add(init, where + ": no initEvidence after the restart " + inj.path("injectionId").asText());
                         else {
                             if (ie.path("declarationOffset").asLong(-1) != inj.path("declaration").path("offset").asLong(-2))
                                 add(init, where + ": declarationOffset " + ie.path("declarationOffset") + ", the injection's " + inj.path("declaration").path("offset"));
-                            if (ie.path("endOffset").asLong(-1) <= inj.path("declaration").path("offset").asLong()) add(init, where + ": endOffset " + ie.path("endOffset") + " not above its declaration");
-                            String restore = inj.path("launches").path("stage1").path("restore").asText(null);
-                            if (!Objects.equals(restore, ie.path("restore").asText(null))) add(init, where + ": restore " + ie.path("restore") + ", the harness's record of the launch " + restore);
+                            // H: the control end offset the harness read right after committing the declaration (nothing else writes the
+                            // control topic of the run, so a writer initialized after the injection reads exactly it)
+                            long h1 = inj.path("declaration").path("controlEndAfter").asLong(-1);
+                            if (h1 < 0 || ie.path("endOffset").asLong(-2) != h1) add(init, where + ": endOffset " + ie.path("endOffset") + ", the control end after its declaration " + h1);
+                            // the restore evidence per writer, as the engine's harness records it for the writer (engine-neutral)
+                            String restore = inj.path("restore").path(w).asText(null);
+                            if (restore == null || !restore.equals(ie.path("restore").asText(null))) add(init, where + ": restore " + ie.path("restore") + ", the harness's record for " + w + " " + restore);
                         }
                         if (v.path("restartEpoch").asLong(-1) != target || !inj.path("injectionId").asText().equals(text(v.get("recoveryRef"))))
                             add(epoch, where + ": restartEpoch/recoveryRef " + v.path("restartEpoch") + "/" + v.get("recoveryRef") + ", its writer fixed " + target + "/" + inj.path("injectionId").asText());
@@ -302,6 +338,10 @@ final class RestartChecks {
                 }
             }
         }
+        carrying.forEach((part, l) -> {
+            for (int i : l) if (!allowed.getOrDefault(part, Set.of()).contains(i))
+                add(init, part + " progress " + in.progress.get(part).get(i).path("cutId") + " carries initEvidence but is not the first progress after an initialization");
+        });
         // the attributed set of every injection is the set of writers whose initEvidence points to its declaration, and the harness's own
         // record of that set agrees
         for (JsonNode inj : injections) {
@@ -325,15 +365,13 @@ final class RestartChecks {
 
     // --- 725 -------------------------------------------------------------------------------------------------------------------------
 
-    static final Set<String> INPUTS = new HashSet<>(EngineContract.STAGE1_TOPICS_AND_INCIDENTS);
-
     static void barrierRefs(Inputs in, Integrity.Measures measures, List<String> f) {
         boolean anyMerged = false;
         for (Map.Entry<String, List<JsonNode>> e : in.progress.entrySet()) {
             String part = e.getKey();
             long prev = 0;
-            // the writer's required barrier set as its first progress closed with it: every later close lists the same origins
-            Set<String> required = null;
+            // the writer's required barrier set, from the routing, the subscription and the writer type (never from what it listed)
+            Set<String> required = in.required(part);
             for (JsonNode v : e.getValue()) {
                 long c = v.path("cutId").asLong();
                 if (!v.path("mergedCutIds").isEmpty()) anyMerged = true;
@@ -343,7 +381,7 @@ final class RestartChecks {
                     int p = r.path("origin").path("partition").asInt();
                     long rc = r.path("cutId").asLong();
                     if (!seen.add(rc + " " + topic + "/" + p)) add(f, part + " progress " + c + ": barrier of cut " + rc + " on " + topic + "/" + p + " listed twice");
-                    if (!INPUTS.contains(topic)) continue;
+                    if (!required.contains(topic + "/" + p)) { add(f, part + " progress " + c + ": barrier of cut " + rc + " on " + topic + "/" + p + ", not a barrier this writer requires " + required); continue; }
                     if (rc <= prev || rc > c) add(f, part + " progress " + c + ": barrier of cut " + rc + " outside (" + prev + ", " + c + "]");
                     Recording.Batch b = in.batch.get(rc);
                     if (b == null) add(f, part + " progress " + c + ": barrier of cut " + rc + ", which the harness never wrote");
@@ -353,10 +391,9 @@ final class RestartChecks {
                     if (rc == c) closing.add(topic + "/" + p);
                 }
                 // the closing cut: every required barrier listed (a writer closes a cut only with all of them, spec 412)
-                if (v.path("barrierRefs").isArray() && !closing.isEmpty()) {
-                    if (required == null) required = closing;
-                    else if (!required.equals(closing)) add(f, part + " progress " + c + ": the closing cut lists the barriers " + new TreeSet<>(closing) + ", the writer's required set " + new TreeSet<>(required));
-                } else if (v.path("barrierRefs").isArray() && in.stage1(part)) add(f, part + " progress " + c + ": no barrier of its own cut listed");
+                if (!required.isEmpty() && !required.equals(closing))
+                    add(f, part + " progress " + c + ": the closing cut lists the barriers " + new TreeSet<>(closing) + ", the writer requires " + required);
+                if (required.isEmpty() && v.path("barrierRefs").size() > 0) add(f, part + " progress " + c + ": barrier references on a journal whose progress carries none");
                 if ((part.startsWith(AFFECTED + "/") || part.startsWith(SETS + "/")) && v.has("incidentOffsets")) {
                     int want = 6 * (1 + v.path("mergedCutIds").size());
                     if (v.path("incidentOffsets").size() != want) add(f, part + " progress " + c + ": " + v.path("incidentOffsets").size() + " incidentOffsets, 6 x (1 + " + v.path("mergedCutIds").size() + ") expected");

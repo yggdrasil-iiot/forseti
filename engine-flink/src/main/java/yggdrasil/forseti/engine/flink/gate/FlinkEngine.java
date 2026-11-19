@@ -45,7 +45,7 @@ import yggdrasil.forseti.engine.flink.job.RestoreEvidence;
  *  The engine-independent init and cut evidence are the gate's {@code R-INIT-EVIDENCE} and {@code R-CUT-EVIDENCE}.
  */
 final class FlinkEngine implements ReplayEngine {
-  static final List<String> IDS = List.of("FL-KEYGROUP-MAP", "FL-WATERMARK-PER-RECORD", "FL-ONE-SPLIT", "FL-JOB-SETTINGS", "FL-TIMER-INVARIANT");
+  static final List<String> IDS = List.of("FL-KEYGROUP-MAP", "FL-WATERMARK-PER-RECORD", "FL-ONE-SPLIT", "FL-JOB-SETTINGS", "FL-TIMER-INVARIANT", "FL-RESTORE");
 
   private final Path root;
   private final DockerBroker broker;
@@ -66,6 +66,15 @@ final class FlinkEngine implements ReplayEngine {
   @Override public String name() { return JobSettings.ENGINE; }
 
   @Override public String w1Form() { return "min-over-partitions"; }
+
+  @Override public Map<yggdrasil.forseti.cli.replay.Restarts.Kind, String> notApplicable() {
+    return Map.of(yggdrasil.forseti.cli.replay.Restarts.Kind.I22_III, "spec 685: 22(iii) is a Kafka Streams stage-1 rebalance; a Flink job has no rebalance (recorded, not a skip)");
+  }
+
+  /** Spec 412, the Flink form: every subscribed raw telemetry partition and the occupancy and session partitions that feed the station. */
+  @Override public List<yggdrasil.forseti.core.journal.Progress.Origin> stationBarriers(String station, RoutingManifest routing, Map<String, List<Integer>> subscribed) {
+    return EngineContract.stationRequired(station, routing, subscribed);
+  }
 
   @Override public ControlStore controlStore(String name) throws Exception {
     String prefix = "flink-store-" + name.replaceAll("[^a-z0-9.-]", "-") + "-" + java.util.UUID.randomUUID().toString().substring(0, 8) + ".";
@@ -240,6 +249,35 @@ final class FlinkEngine implements ReplayEngine {
         if (w == null || e.getValue().asLong(-1) != w.size()) js.add(stage + " source " + e.getKey() + " parallelism " + e.getValue() + " (observed), subscribed " + w);
       });
       if (!engineMatches(s)) js.add(stage + " engine " + s.path("engine") + " " + s.path("engineVersion"));
+    }
+
+    // every launch the harness made of each job (its cluster record, written before the launch started) against the engine's own
+    // restore evidence of that incarnation: every stations subtask of both stages and the stage-1 reject collector initialized in it,
+    // restored from exactly the checkpoint the harness restored (none at launch 0), so a relaunch is a real restore
+    List<String> rs = f.get("FL-RESTORE");
+    for (String stage : List.of("stage1", "stage2")) {
+      JsonNode launches = ev.path("flink").path("clusters").path(stage).path("launches");
+      if (!launches.isArray() || launches.isEmpty()) { rs.add(stage + ": no launch recorded by the harness"); continue; }
+      Map<Integer, Long> made = new TreeMap<>();
+      for (JsonNode l : launches) made.put(l.path("launch").asInt(), l.path("restoredCheckpointId").isIntegralNumber() ? l.get("restoredCheckpointId").asLong() : null);
+      List<String> ops = stage.equals("stage1") ? List.of("stage1-stations-", "stage1-rejects-") : List.of("stage2-stations-");
+      for (String op : ops) {
+        Map<Integer, Integer> seen = new TreeMap<>();
+        for (Iterator<Map.Entry<String, JsonNode>> it = jobs.fields(); it.hasNext();) {
+          Map.Entry<String, JsonNode> e = it.next();
+          if (!e.getKey().startsWith(op)) continue;
+          RestoreEvidence r;
+          try { r = RestoreEvidence.decode(e.getValue().path("restore").asText("")); }
+          catch (RuntimeException x) { rs.add(e.getKey() + ": no restore evidence (" + x.getMessage() + ")"); continue; }
+          seen.merge(r.launch(), 1, Integer::sum);
+          if (!made.containsKey(r.launch())) { rs.add(e.getKey() + ": launch " + r.launch() + ", which the harness never made"); continue; }
+          Long cp = made.get(r.launch());
+          if (r.isRestored() != (cp != null) || !Objects.equals(r.restoredCheckpointId(), cp))
+            rs.add(e.getKey() + ": launch " + r.launch() + " restored " + r.restoredCheckpointId() + ", the harness restored " + cp);
+        }
+        int per = op.endsWith("rejects-") ? 1 : JobSettings.KEYED_PARALLELISM;
+        for (int l : made.keySet()) if (seen.getOrDefault(l, 0) != per) rs.add(stage + " launch " + l + ": " + seen.getOrDefault(l, 0) + " " + op + "* initializations, " + per + " expected");
+      }
     }
 
     // reviewer decision 4: native registrations and held marks reconciled with the deadline index, with coverage

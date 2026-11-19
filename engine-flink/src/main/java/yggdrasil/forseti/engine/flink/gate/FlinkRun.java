@@ -92,10 +92,13 @@ final class FlinkRun {
       catch (RestartInjector.Invalid e) {
         ObjectNode a = attempts.addObject().put("attempt", i + 1).put("valid", false).put("reason", e.getMessage());
         Json.putSafe(a, "generation", restart.attempts().get(i).generation());
+        // every phase observation of the abandoned attempt (describeTransactions, offsets, snapshots, timeline), on disk before the next
+        a.set("injections", e.records);
         Path flink = req.work().resolve("flink"), kept = req.work().resolve("flink-attempt-" + (i + 1));
         delete(kept);
         if (Files.exists(flink)) Files.move(flink, kept);
         a.put("logs", kept.getFileName().toString());
+        Json.write(req.work().resolve("attempt-" + (i + 1) + ".json"), a);
       }
     }
     throw new IllegalStateException("error: injection " + restart.kind().spec() + ": " + attempts.size() + " invalid attempts, never a pass (plan D8): " + attempts);
@@ -216,6 +219,7 @@ final class FlinkRun {
           for (Recording.Batch b : rec.batches()) {
             if (inj != null && b.cutId() == k) inj.beforeBatch();
             var w = writer.write(b, epoch.epoch(), epoch.ref());
+            if (inj != null && b.cutId() == k) inj.batchWritten();
             ObjectNode ce = Json.putSafe(Json.object(), "cutId", b.cutId());
             Json.putSafe(ce, "restartEpoch", epoch.epoch());
             ce.put("recoveryRef", epoch.ref());

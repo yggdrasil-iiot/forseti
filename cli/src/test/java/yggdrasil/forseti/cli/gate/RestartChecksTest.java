@@ -223,10 +223,12 @@ class RestartChecksTest {
         Json.putSafe(inj, "lastWrittenCutId", k);
         Json.putSafe(inj, "firstCutAtTarget", k + 1);
         inj.put("epochBefore", 0).put("targetEpoch", 1);
-        Json.putSafe(inj.putObject("declaration"), "offset", declOffset);
-        inj.putObject("launches").putObject("stage1").put("restore", restored);
+        ObjectNode decl = inj.putObject("declaration");
+        Json.putSafe(decl, "offset", declOffset);
+        Json.putSafe(decl, "controlEndAfter", declOffset + 1);
         ArrayNode ex = inj.putArray("expected"), at = inj.putArray("attributed"), iw = inj.putArray("initEvidenceWriters");
-        for (String w : writers) { ex.add(w); at.add(w); iw.add(w); }
+        ObjectNode rs = inj.putObject("restore");
+        for (String w : writers) { ex.add(w); at.add(w); iw.add(w); rs.put(w, restored); }
         ObjectNode hw = inj.putObject("atKill").putObject("highWatermark"), last = ((ObjectNode) inj.get("atKill")).putObject("lastProgressCutId");
         ObjectNode log = manifest.putObject("progress");
         for (String w : writers) {
@@ -274,6 +276,28 @@ class RestartChecksTest {
         Json.putSafe((ObjectNode) mc.get("injections").get(0).get("atKill").get("highWatermark"), WR + "/0", 0);
         Json.write(c.resolve(ReplayEngine.INJECTIONS), mc);
         assertTrue(check(c).get("R-RECOVERY-WINDOW").stream().anyMatch(x -> x.contains("below the first cut " + (k + 1))), check(c).toString());
+
+        // initEvidence repeated on a later progress, an H that is not the control end after the declaration, another writer's restore
+        Path d = copyOf(run);
+        editProgress(d, SAMPLES, 2, k + 3, n -> { ((ObjectNode) n.get("value")).set("initEvidence", ie); return n; });
+        ObjectNode md = (ObjectNode) Json.read(d.resolve(ReplayEngine.INJECTIONS));
+        // the harness log follows the journal so only the repeated evidence differs
+        for (com.fasterxml.jackson.databind.JsonNode x : md.get("progress").get(SAMPLES + "/2")) if (x.path("cutId").asLong() == k + 3) ((ObjectNode) x).set("initEvidence", ie);
+        Json.putSafe((ObjectNode) md.get("injections").get(0).get("declaration"), "controlEndAfter", declOffset + 5);
+        ((ObjectNode) md.get("injections").get(0).get("restore")).put(S2, "{\"other\":true}");
+        Json.write(d.resolve(ReplayEngine.INJECTIONS), md);
+        List<String> fd = check(d).get("R-INIT-EVIDENCE");
+        assertTrue(fd.stream().anyMatch(x -> x.contains("progress " + (k + 3)) && x.contains("not the first progress after an initialization")), fd.toString());
+        assertTrue(fd.stream().anyMatch(x -> x.contains("the control end after its declaration")), fd.toString());
+        assertTrue(fd.stream().anyMatch(x -> x.contains("the harness's record for " + S2)), fd.toString());
+    }
+
+    @Test void aBarrierOfAnOriginTheWriterDoesNotRequireOrAMissingRequiredOneIsFound() throws IOException {
+        Path run = copy();
+        editProgress(run, WR, 0, 3, n -> { ((ObjectNode) n.get("value").get("barrierRefs").get(0).get("origin")).put("topic", "forseti.unknown"); return n; });
+        List<String> f = check(run).get("R-BARRIER-REFS");
+        assertTrue(f.stream().anyMatch(x -> x.contains("forseti.unknown") && x.contains("not a barrier this writer requires")), f.toString());
+        assertTrue(f.stream().anyMatch(x -> x.contains("progress 3") && x.contains("the writer requires")), "the closing cut misses a required barrier: " + f);
     }
 
     Path copyOf(Path run) throws IOException {

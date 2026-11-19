@@ -222,7 +222,9 @@ public final class Stage2Stations extends AbstractStreamOperator<Out> implements
         .put("maxParallelism", info.getMaxNumberOfParallelSubtasks()).put("attemptNumber", info.getAttemptNumber()).put("isRestored", context.isRestored())
         .put("launch", settings.launch());
     // stage 2 never reads the recovery control and carries no initEvidence; its incarnation names its evidence file all the same
-    incarnation = RestoreEvidence.of(settings.launch(), context.isRestored(), context.getRestoredCheckpointId(), info.getAttemptNumber()).incarnation();
+    RestoreEvidence restore = RestoreEvidence.of(settings.launch(), context.isRestored(), context.getRestoredCheckpointId(), info.getAttemptNumber());
+    incarnation = restore.incarnation();
+    initRecord.put("restore", restore.encode());   // the engine's own restore evidence of this incarnation (FL-RESTORE)
     initRecord.putArray("keyGroupRange").add(range.getStartKeyGroup()).add(range.getEndKeyGroup());
     initRecord.set("stationKeyGroups", keyGroups);
     ArrayNode owned = initRecord.putArray("stations");

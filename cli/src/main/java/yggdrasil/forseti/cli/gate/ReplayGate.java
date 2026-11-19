@@ -44,6 +44,9 @@ import yggdrasil.forseti.core.canon.Canonical;
 public final class ReplayGate {
     private ReplayGate() {}
 
+    /** The integrity findings of the kinds spec 700 names for control theta: duplicates, losses and revision gaps. */
+    static final List<String> THETA_FINDINGS = List.of("J-REVISION-CONTINUITY", "J-NO-EQUAL-CONSECUTIVE", "J-PROGRESS-ORDER", "J-DISPOSITION-COVERAGE");
+
     /** The engine's gate files. */
     public record GateFiles(String manifest, String shards, String controls) {}
 
@@ -137,7 +140,7 @@ public final class ReplayGate {
                 }
                 for (String g : sh.restartRuns) {
                     Restarts.RunName rr = Restarts.parse(g);
-                    if (rr == null) throw new IllegalArgumentException(file + ": no restart run " + g + " (<scenario>@restart-<21|22i|22ii|22iv>)");
+                    if (rr == null) throw new IllegalArgumentException(file + ": no restart run " + g + " (<scenario>@restart-<21|22i|22ii|22iii|22iv>)");
                     if (!sh.scenarios.contains(rr.scenario())) throw new IllegalArgumentException(file + ": shard " + sh.name + " plans " + g + " without " + rr.scenario());
                 }
                 p.shards.add(sh);
@@ -303,6 +306,9 @@ public final class ReplayGate {
                     Map<String, String> engineFlags = new HashMap<>(flags);
                     try (ReplayEngine e = open.apply(engineFlags)) {
                         c.w1Form = e.w1Form();
+                        Map<String, String> na = new TreeMap<>();
+                        e.notApplicable().forEach((kk, why) -> na.put(kk.spec(), why));
+                        c.notApplicable = na;
                         List<Planned> planned = new ArrayList<>();
                         for (String n : names) planned.add(prepare(c, n));
                         ReplayEngine.ControlStore pipeline = e.controlStore(GateEvidence.PIPELINE);
@@ -776,6 +782,21 @@ public final class ReplayGate {
                 for (JsonNode r : Injections.concat(evaluated.runs.values(), evaluated.generationRuns.values()))
                     if (Summaries.failed(r)) problems.add(r.path("name").asText() + ": " + r.path("failure").asText());
                     else if (!r.path("plannedCutIds").equals(r.path("comparedCutIds"))) problems.add(r.path("name").asText() + ": not every cut compared with the oracle");
+            }
+            if (control.name.equals(yggdrasil.forseti.cli.harness.Controls.NON_TRANSACTIONAL_OUTPUT) && evaluated != null) {
+                // theta (spec 700): the intended failure must come from duplicates, losses or revision gaps the gate found in a restart
+                // run (an integrity finding of that kind, or an oracle difference), never from any other failure of I-21 or I-22
+                ArrayNode tf = v.putArray("thetaFindings");
+                for (JsonNode r : evaluated.generationRuns.values()) {
+                    String n = r.path("name").asText();
+                    if (Restarts.parse(n) == null) continue;
+                    List<String> kinds = new ArrayList<>();
+                    for (String id : THETA_FINDINGS) if (r.path("findings").path(id).path("count").asLong() > 0) kinds.add(id + " " + r.path("findings").path(id).path("count").asLong());
+                    if (r.has("equal") && !r.path("equal").asBoolean(true)) kinds.add("oracle differences");
+                    tf.addObject().put("run", n).put("findings", String.join(", ", kinds));
+                    if (kinds.isEmpty()) problems.add(n + ": failed without a duplicate, loss or revision-gap finding (spec 700)");
+                }
+                if (tf.isEmpty()) problems.add("theta: no restart run evaluated");
             }
             if (!owned.isEmpty() && exit != 1) problems.add("exit " + exit + ", 1 expected");
             v.put("held", problems.isEmpty());

@@ -35,9 +35,20 @@ final class RestartAssertions {
 
     static Result i21(Context c) throws Exception { return check(c, List.of(Restarts.Kind.I21), ""); }
 
+    /** Injection 22: (i), (ii), (iii) and (iv), each run unless the engine declares it not applicable (spec 685: recorded with the
+     *  engine's reason, never a skip). */
     static Result i22(Context c) throws Exception {
-        c.measure("injection22iii", Json.object().put("status", "not-applicable").put("why", Restarts.NOT_APPLICABLE_22III));
-        return check(c, List.of(Restarts.Kind.I22_I, Restarts.Kind.I22_II, Restarts.Kind.I22_IV), Restarts.NOT_APPLICABLE_22III + "; ");
+        List<Restarts.Kind> run = new ArrayList<>();
+        StringBuilder na = new StringBuilder();
+        ObjectNode m = Json.object();
+        for (Restarts.Kind k : List.of(Restarts.Kind.I22_I, Restarts.Kind.I22_II, Restarts.Kind.I22_III, Restarts.Kind.I22_IV)) {
+            String why = c.notApplicable.get(k.spec());
+            if (why == null) { run.add(k); continue; }
+            m.putObject(k.spec()).put("status", "not-applicable").put("why", why);
+            na.append(k.spec()).append(": not applicable (").append(why).append("); ");
+        }
+        c.measure("injection22NotApplicable", m);
+        return check(c, run, na.toString());
     }
 
     static Result check(Context c, List<Restarts.Kind> kinds, String prefix) throws Exception {
@@ -88,13 +99,31 @@ final class RestartAssertions {
                 p.equal(List.of("stage1", "stage2"), texts(x.path("jobsRestarted")), n + " jobs restarted");
                 p.require(x.path("launches").path("stage2").path("restoredCheckpointId").asLong(0) > 0, n + ": stage 2 restored no checkpoint");
             }
-            if ((kind == Restarts.Kind.I22_I || kind == Restarts.Kind.I22_IV) && i == 0 && !mf.path("theta").asBoolean()) {
-                JsonNode d8 = x.path("d8");
-                p.require(d8.path("phase1").path("openRecords").asBoolean(false) && isOngoing(d8.path("phase1")), n + ": D8 phase 1 not an Ongoing transaction with open records: " + d8.path("phase1"));
-                p.require(isOngoing(d8.path("phase2")) && d8.path("phase2").path("producerEpoch").equals(d8.path("phase1").path("producerEpoch"))
-                    && d8.path("phase2").path("producerId").equals(d8.path("phase1").path("producerId")), n + ": D8 phase 2 not the same Ongoing transaction: " + d8.path("phase2"));
-                String outcome = x.path("outcome").path("outcome").asText("");
-                p.require(outcome.equals("aborted") || outcome.equals("committed by the restored committer"), n + ": post-restart outcome " + outcome);
+            if (kind.stage1 && i == 0) {
+                // the kill point, one for the run and for control theta: after cut k's output reached the stage-1 sink, before it committed
+                if (mf.path("theta").asBoolean()) p.require(x.path("theta").path("kill").isTextual(), n + ": no theta kill point recorded: " + x.path("theta"));
+                else {
+                    JsonNode d8 = x.path("d8");
+                    p.require(d8.path("published").isTextual(), n + ": cut " + k + "'s output never seen in the sink before the kill");
+                    p.require(d8.path("phase1").path("openRecords").asBoolean(false) && isOngoing(d8.path("phase1")), n + ": D8 phase 1 not an Ongoing transaction with open records: " + d8.path("phase1"));
+                    p.require(isOngoing(d8.path("phase2")) && d8.path("phase2").path("openRecords").asBoolean(false)
+                        && d8.path("phase2").path("producerEpoch").equals(d8.path("phase1").path("producerEpoch"))
+                        && d8.path("phase2").path("producerId").equals(d8.path("phase1").path("producerId")), n + ": D8 phase 2 not the same Ongoing transaction with open records: " + d8.path("phase2"));
+                    p.require(d8.path("uncommittedAtKill").size() > 0, n + ": no stage-1 writer had cut " + k + " uncommitted at the kill");
+                    String outcome = x.path("outcome").path("outcome").asText("");
+                    p.require(outcome.equals("aborted") || outcome.equals("committed by the restored committer"), n + ": post-restart outcome " + outcome);
+                }
+            }
+            if (kind.stage1) {
+                // the declaration committed before the kill (spec 416), as the timeline records the order
+                int decl = -1, kill = -1, t = 0;
+                for (JsonNode ev : x.path("timeline")) {
+                    String e = ev.path("event").asText();
+                    if (decl < 0 && e.startsWith("declaration committed")) decl = t;
+                    if (kill < 0 && e.startsWith("SIGKILL")) kill = t;
+                    t++;
+                }
+                p.require(decl >= 0 && kill > decl, n + " " + id + ": the declaration is not recorded committed before the kill: " + x.path("timeline"));
             }
             if (kind == Restarts.Kind.I22_II) {
                 p.equal(List.of("stage2"), texts(x.path("jobsRestarted")), n + " jobs restarted");

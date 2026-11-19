@@ -675,7 +675,7 @@ final class Scenarios {
             if (c.w1Form != null && !c.w1Form.equals(declared))
                 throw new IllegalStateException("cuts.json declares the W1 form " + declared + ", the engine reports " + c.w1Form);
             W1Form form = W1Form.of(c.w1Form != null ? c.w1Form : declared);
-            r.measures = Integrity.check(f, r.recording, r.cutLog, subscribed, r.rules, r.manifest.path("definitions"), stations, form);
+            r.measures = Integrity.check(f, r.recording, r.cutLog, subscribed, r.rules, r.manifest.path("definitions"), stations, form, c.w1Form != null);
             r.outcome = Expectations.check(f, r.expected, r::perStation);
             if (r.name.equals(Injections.PLANNED_LATE)) r.plannedLate = Injections.capturePlannedLate(c, f, r);
             if (r.journals != null) r.foldDigest = f.digest();

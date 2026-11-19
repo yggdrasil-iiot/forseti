@@ -126,7 +126,7 @@ public final class ReplayChecks {
 
         // spec 719-723, 725, 726: merged cuts, recovery, initEvidence after every initialization, barrier references, restart skips
         // (RestartChecks), on every run, a restart run's from its injection manifest; the cut accounting kept on the run
-        RestartChecks.Inputs in = new RestartChecks.Inputs(r.recording, er.out(), r.cutLog, runJson, er.declarationOffset(), er.controlEnd(), engine.firstStartRestore());
+        RestartChecks.Inputs in = new RestartChecks.Inputs(r.recording, er.out(), r.cutLog, runJson, er.declarationOffset(), er.controlEnd(), engine.firstStartRestore(), engine);
         r.accounting = Json.object();
         RestartChecks.findings(in, r.measures, r.accounting).forEach((id, l) -> f.get(id).addAll(l));
         Set<String> skipped = new HashSet<>();

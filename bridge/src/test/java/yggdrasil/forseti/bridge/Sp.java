@@ -36,13 +36,15 @@ final class Sp {
     static String topic(String type, String edge) { return "spBv1.0/" + GROUP + "/" + type + "/" + edge; }
     static String topic(String type, String edge, String device) { return topic(type, edge) + "/" + device; }
 
+    // Every metric carries an explicit timestamp: Tahu's MetricBuilder stamps a metric with the wall clock when none is given, so two
+    // frames built a millisecond apart would differ in bytes (and payload digest), and an "identical redelivery" would not be identical.
     static Frame nbirth(String edge, long bdSeq, long ts) { return nbirth(edge, bdSeq, ts, DEF); }
     static Frame nbirth(String edge, long bdSeq, long ts, byte[] def) {
         try {
             SparkplugBPayload p = new SparkplugBPayloadBuilder().setTimestamp(new Date(ts)).setSeq(0L)
-                .addMetric(new MetricBuilder(SparkplugPayloads.GOVERNED_DEFINITION, MetricDataType.Bytes, def).createMetric())
-                .addMetric(new MetricBuilder(SparkplugPayloads.BD_SEQ, MetricDataType.Int64, bdSeq).createMetric())
-                .addMetric(new MetricBuilder(SparkplugPayloads.REBIRTH, MetricDataType.Boolean, false).createMetric())
+                .addMetric(new MetricBuilder(SparkplugPayloads.GOVERNED_DEFINITION, MetricDataType.Bytes, def).timestamp(new Date(ts)).createMetric())
+                .addMetric(new MetricBuilder(SparkplugPayloads.BD_SEQ, MetricDataType.Int64, bdSeq).timestamp(new Date(ts)).createMetric())
+                .addMetric(new MetricBuilder(SparkplugPayloads.REBIRTH, MetricDataType.Boolean, false).timestamp(new Date(ts)).createMetric())
                 .createPayload();
             return new Frame(topic("NBIRTH", edge), encode(p), ts + 5);
         } catch (Exception e) { throw new IllegalStateException(e); }
@@ -51,7 +53,7 @@ final class Sp {
     static Frame ndeath(String edge, long bdSeq, long ts) {
         try {
             SparkplugBPayload p = new SparkplugBPayloadBuilder().setTimestamp(new Date(ts))
-                .addMetric(new MetricBuilder(SparkplugPayloads.BD_SEQ, MetricDataType.Int64, bdSeq).createMetric()).createPayload();
+                .addMetric(new MetricBuilder(SparkplugPayloads.BD_SEQ, MetricDataType.Int64, bdSeq).timestamp(new Date(ts)).createMetric()).createPayload();
             return new Frame(topic("NDEATH", edge), encode(p), ts + 5);
         } catch (Exception e) { throw new IllegalStateException(e); }
     }
@@ -59,7 +61,7 @@ final class Sp {
     static Frame ncmdRebirth(String edge) {
         try {
             SparkplugBPayload p = new SparkplugBPayloadBuilder().setTimestamp(new Date(1))
-                .addMetric(new MetricBuilder(SparkplugPayloads.REBIRTH, MetricDataType.Boolean, true).createMetric()).createPayload();
+                .addMetric(new MetricBuilder(SparkplugPayloads.REBIRTH, MetricDataType.Boolean, true).timestamp(new Date(1)).createMetric()).createPayload();
             return new Frame(topic("NCMD", edge), encode(p), 1);
         } catch (Exception e) { throw new IllegalStateException(e); }
     }
