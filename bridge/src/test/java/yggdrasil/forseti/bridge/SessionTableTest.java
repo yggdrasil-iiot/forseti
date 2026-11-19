@@ -7,6 +7,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.stream.Stream;
+import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.MethodSource;
 
@@ -119,7 +120,7 @@ class SessionTableTest {
     /** The rows' identical redeliveries are identical: a frame built twice, a few milliseconds apart, has the same bytes (Tahu stamps a
      *  metric without a timestamp with the wall clock, which made the C9 redelivery row depend on whether its two NDEATH frames were
      *  built within one millisecond). */
-    @org.junit.jupiter.api.Test void aFrameBuiltTwiceIsByteIdentical() throws InterruptedException {
+    @Test void aFrameBuiltTwiceIsByteIdentical() throws InterruptedException {
         Frame a = Sp.ndeath(E, 5, B1 + 3000), n = Sp.nbirth(E, 0, B1);
         Thread.sleep(5);
         assertArrayEquals(a.payload(), Sp.ndeath(E, 5, B1 + 3000).payload(), "NDEATH");
