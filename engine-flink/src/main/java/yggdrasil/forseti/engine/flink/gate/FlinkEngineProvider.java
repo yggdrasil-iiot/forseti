@@ -4,8 +4,9 @@ import java.io.PrintStream;
 import yggdrasil.forseti.cli.replay.EngineProvider;
 
 /** The {@code flink} engine of {@code forseti gate --engine flink} (spec 705, plan D1), found by {@link java.util.ServiceLoader} on the
- *  engine path ({@code engine-flink/target/engine}). The gate runs the replay gate's shards, aggregate and controls ({@link FlinkGate}); a single
- *  {@code run} and {@code requirements} (PR 7) are not offered yet and answer with a usage error. */
+ *  engine path ({@code engine-flink/target/engine}). The gate runs the replay gate's shards, aggregate and controls ({@link FlinkGate}); {@code requirements}
+ *  runs injection 24 and comparison item 5 ({@link FlinkRequirements}); a single {@code run} is not offered and answers with a usage
+ *  error. */
 public final class FlinkEngineProvider implements EngineProvider {
   @Override public String name() { return "flink"; }
 
@@ -16,8 +17,5 @@ public final class FlinkEngineProvider implements EngineProvider {
     return 2;
   }
 
-  @Override public int requirements(String[] args, PrintStream out, PrintStream err) {
-    err.println("forseti requirements --engine flink comes with step 6 PR 7 (spec 705)");
-    return 2;
-  }
+  @Override public int requirements(String[] args, PrintStream out, PrintStream err) { return FlinkRequirements.main(args, out, err); }
 }

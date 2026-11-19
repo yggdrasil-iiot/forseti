@@ -17,7 +17,7 @@ public interface EngineProvider {
     /** {@code forseti run --engine <name> ...}. */
     int run(String[] args, PrintStream out, PrintStream err);
 
-    /** {@code forseti requirements --engine <name> ...} (spec 705; implemented by step 6 PR 7, until then a provider may answer
-     *  "not implemented" with exit 2). */
+    /** {@code forseti requirements --engine <name> ...} (spec 705): injection 24 and comparison item 5, each requirement recorded as
+     *  pass, miss or error; exit 0 when every requirement is recorded, a miss included (plan D14). */
     int requirements(String[] args, PrintStream out, PrintStream err);
 }

@@ -12,6 +12,10 @@ executable spikes come with the Kafka Streams adapter (step 7, PR 1).
 Pins: `org.apache.flink:flink-streaming-java:2.2.1` (with `flink-runtime`, `flink-core`, `flink-connector-base` 2.2.1),
 `org.apache.flink:flink-connector-kafka:5.0.0-2.2`, `org.apache.kafka:kafka-streams:4.2.2`, `org.apache.kafka:kafka-clients:4.2.2`.
 
+The replay gate and `forseti requirements` that run on these assumptions are described in `docs/FLINK-GATE.md`. F2 and F3 are why the
+Flink stage-1 `W1` is the minimum over every subscribed raw telemetry partition; injection 24 on the dedicated placement measures what that
+costs (item 5 (c), the miss spec Decision 18 predicts).
+
 ## Summary
 
 | Id | Assumption (spec line 762) | Pinned artifact | Classes and methods read | Finding | Test |

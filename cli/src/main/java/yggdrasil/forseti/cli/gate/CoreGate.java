@@ -116,6 +116,10 @@ public final class CoreGate {
         /** The W1 form the engine of a replay gate reports ({@code ReplayEngine#w1Form}): every run's cut log must declare it; null on a
          *  core gate run (the reference harness reports the per-station form and declares none). */
         String w1Form;
+        /** Every generation a replay gate run registered, in registration order, as its report lists them ({@code generations}: store,
+         *  control store, generation, run, variant, registeredRowSha256), null on a core gate run: the evidence injection 23 identifies
+         *  its base and replay generations by. */
+        com.fasterxml.jackson.databind.node.ArrayNode registrations;
         Context(Path root, Path tmp, Path logs, String python) {
             this.root = root; this.tmp = tmp; this.logs = logs; this.python = python;
             this.out = logs.getParent();

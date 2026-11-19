@@ -61,6 +61,13 @@ public final class KafkaBatchWriter implements BatchWriter {
     @Override public Written write(Recording.Batch b, long restartEpoch, String recoveryRef) {
         List<CutAssembler.Idle> idle = new ArrayList<>();
         for (JsonNode x : b.idleInputs()) idle.add(CutAssembler.Idle.fromJson(x));
+        // the batch's first append (spec 681), on the harness clock: the earliest broker append time (LogAppendTime) of its records,
+        // mapped from the wall clock to System.nanoTime through an anchor taken before the first send, and clamped into the write's own
+        // window [the instant before the first send, the earliest acknowledgement] so a skew between the broker's and the harness's
+        // clocks can never move it outside the interval in which the append really happened
+        long preNanos = System.nanoTime(), preWallMs = System.currentTimeMillis();
+        java.util.concurrent.atomic.AtomicLong firstAck = new java.util.concurrent.atomic.AtomicLong(Long.MAX_VALUE);
+        org.apache.kafka.clients.producer.Callback acked = (md, ex) -> { long now = System.nanoTime() - preNanos; firstAck.accumulateAndGet(now, Math::min); };
         // (1) the business records
         record Sent(String topic, int partition, long recordingOffset, Future<RecordMetadata> f) {}
         List<Sent> sent = new ArrayList<>();
@@ -74,14 +81,15 @@ public final class KafkaBatchWriter implements BatchWriter {
                 for (long off = from; off <= to; off++) {
                     Recording.Line l = reader.next();
                     if (l == null || l.record().offset() != off) throw new IllegalStateException("recording reader of " + k + " is not at offset " + off);
-                    sent.add(new Sent(t, p, off, producer.send(record(names.get(t), p, l))));
+                    sent.add(new Sent(t, p, off, producer.send(record(names.get(t), p, l), acked)));
                 }
                 previous.put(k, to);
                 through.computeIfAbsent(t, x -> new TreeMap<>()).put(p, to);
             }
         }
         producer.flush();
-        for (Sent s : sent) offsets.put(s.topic(), s.partition(), s.recordingOffset(), get(s.f()).offset());
+        long firstAppendMs = Long.MAX_VALUE;
+        for (Sent s : sent) { RecordMetadata md = get(s.f()); offsets.put(s.topic(), s.partition(), s.recordingOffset(), md.offset()); if (md.hasTimestamp()) firstAppendMs = Math.min(firstAppendMs, md.timestamp()); }
         // (2) the barriers
         Map<String, Map<Integer, Long>> brokerThrough = new LinkedHashMap<>();
         List<Future<RecordMetadata>> barriers = new ArrayList<>();
@@ -93,11 +101,13 @@ public final class KafkaBatchWriter implements BatchWriter {
                     new CutAssembler.Barrier(b.cutId(), new Progress.Origin(e.getKey(), x.getKey()), bt, restartEpoch, recoveryRef, idle));
                 List<Header> hs = List.of(new RecordHeader(CutBarrierRecord.TYPE_HEADER, CutBarrierRecord.TYPE.getBytes(StandardCharsets.UTF_8)),
                     new RecordHeader(CutBarrierRecord.GENERATION_HEADER, Long.toString(generation).getBytes(StandardCharsets.UTF_8)));
-                barriers.add(producer.send(new ProducerRecord<>(names.get(e.getKey()), x.getKey(), null, null, Canonical.bytes(br.toJson()), hs)));
+                barriers.add(producer.send(new ProducerRecord<>(names.get(e.getKey()), x.getKey(), null, null, Canonical.bytes(br.toJson()), hs), acked));
             }
         producer.flush();
-        for (Future<RecordMetadata> f : barriers) get(f);
-        return new Written(b.cutId(), sent.size(), barriers.size(), brokerThrough);
+        for (Future<RecordMetadata> f : barriers) { RecordMetadata md = get(f); if (sent.isEmpty() && md.hasTimestamp()) firstAppendMs = Math.min(firstAppendMs, md.timestamp()); }
+        long ack = firstAck.get() == Long.MAX_VALUE ? System.nanoTime() - preNanos : firstAck.get();
+        long mapped = firstAppendMs == Long.MAX_VALUE ? ack : (firstAppendMs - preWallMs) * 1_000_000L;
+        return new Written(b.cutId(), sent.size(), barriers.size(), brokerThrough, preNanos + Math.max(0, Math.min(ack, mapped)));
     }
 
     private static ProducerRecord<byte[], byte[]> record(String topic, int partition, Recording.Line l) {

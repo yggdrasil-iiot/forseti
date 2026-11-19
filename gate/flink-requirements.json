@@ -1,0 +1,28 @@
+{
+  "engine": "flink",
+  "requirements": [
+    {"id": "R-5A", "item": "5 (a)", "description": "Occupancy silent 5 min during an open visit: no change. Recorded from the semantic gate's result for injection 26 (spec 705)."},
+    {"id": "R-5B", "item": "5 (b)", "description": "Activity true with no open visit: zero false complete. Recorded from the semantic gate's result for injection 7 (spec 705)."},
+    {"id": "R-24-DEDICATED", "item": "injection 24", "description": "Dedicated placement (site-071), starved-station3: the run equals the oracle at every cut with clean integrity and ground truth, the starved station completes no cut while starved, and none of its visits changes during the starvation (its visits not settled before stay not settled)."},
+    {"id": "R-24-SHARED", "item": "injection 24", "description": "Shared placement (site-019), starved-station3: as R-24-DEDICATED."},
+    {"id": "R-5C-DEDICATED", "item": "5 (c)", "description": "Dedicated placement, starved-station3: every checked deadline of every other station settles (committed stage-1 W1 and stage-2 W2 at or past it) within 60 s of the append of its counting batch, the first batch in which every non-starved station's routed telemetry reaches the deadline + outOfOrdernessMs + expectedPeriodMs (spec 681)."},
+    {"id": "R-5C-SHARED", "item": "5 (c)", "description": "Shared placement, starved-station3: as R-5C-DEDICATED."},
+    {"id": "R-5D-RESUME-DEDICATED", "item": "5 (d)", "description": "Dedicated placement: after injection 24's resume, starved-station3 and baseline have the same bodies at every cut both completed (cuts of equal W1 at every station, compared where comparable, spec 624)."},
+    {"id": "R-5D-RESUME-SHARED", "item": "5 (d)", "description": "Shared placement: as R-5D-RESUME-DEDICATED."},
+    {"id": "R-5D-RESTART", "item": "5 (d)", "description": "After restart: recorded from the semantic gate's results for injections 21 and 22, which compare the restart runs with the uninterrupted run at every comparable cut both completed, skipped cuts excluded (spec 705)."},
+    {"id": "R-5D-SPEED-X2-DEDICATED", "item": "5 (d)", "description": "Dedicated placement: baseline-batch-x2 (batch interval x2) and baseline have the same bodies at every cut both completed."},
+    {"id": "R-5D-SPEED-HALF-DEDICATED", "item": "5 (d)", "description": "Dedicated placement: baseline-batch-half (batch interval x1/2) and baseline have the same bodies at every cut both completed."},
+    {"id": "R-5D-SPEED-X2-SHARED", "item": "5 (d)", "description": "Shared placement: baseline-batch-x2 and baseline have the same bodies at every cut both completed."},
+    {"id": "R-5D-SPEED-HALF-SHARED", "item": "5 (d)", "description": "Shared placement: baseline-batch-half and baseline have the same bodies at every cut both completed."}
+  ],
+  "runs": [
+    {"name": "dedicated/baseline", "settings": {"stage1": {"tm.task.heap": "512m"}, "stage2": {"tm.task.heap": "512m"}}},
+    {"name": "dedicated/starved-station3", "settings": {"stage1": {"tm.task.heap": "512m"}, "stage2": {"tm.task.heap": "512m"}}},
+    {"name": "dedicated/baseline-batch-x2", "settings": {"stage1": {"tm.task.heap": "512m"}, "stage2": {"tm.task.heap": "512m"}}},
+    {"name": "dedicated/baseline-batch-half", "settings": {"stage1": {"tm.task.heap": "512m"}, "stage2": {"tm.task.heap": "512m"}}},
+    {"name": "baseline", "settings": {"stage1": {"tm.task.heap": "512m"}, "stage2": {"tm.task.heap": "512m"}}},
+    {"name": "starved-station3", "settings": {"stage1": {"tm.task.heap": "512m"}, "stage2": {"tm.task.heap": "512m"}}},
+    {"name": "baseline-batch-x2", "settings": {"stage1": {"tm.task.heap": "512m"}, "stage2": {"tm.task.heap": "512m"}}},
+    {"name": "baseline-batch-half", "settings": {"stage1": {"tm.task.heap": "512m"}, "stage2": {"tm.task.heap": "512m"}}}
+  ]
+}

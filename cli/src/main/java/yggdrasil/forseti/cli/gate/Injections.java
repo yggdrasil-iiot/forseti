@@ -1023,25 +1023,60 @@ final class Injections {
         p.require(a.generation.store().shared() == c.pipeline.shared() && b.generation.store().shared() == c.pipeline.shared(), "both generations " + state);
         String store = "";
         if (a.controlEvidence != null || b.controlEvidence != null) {
-            // a replay gate run: from the runs' own evidence, the replay generation is a row of the base's forseti.generations topic, the
-            // next number after it (the shard registers its one scenario, then the replay), and its declaration a later record of the
-            // same forseti.recovery-control topic
+            // a replay gate run: from the runs' own evidence, the replay generation is a row of the base's forseti.generations topic and
+            // its declaration a later record of the same forseti.recovery-control topic; from the gate run's registrations, the base is the
+            // generation registered for the online run and the replay the next one registered on that store for this scenario's replay,
+            // every generation between them registered for another run of this gate run (in a shard nothing is between them: base + 1)
             JsonNode x = a.controlEvidence, y = b.controlEvidence;
             p.require(x != null && y != null, "control-store evidence of both runs: " + x + " / " + y);
             if (x != null && y != null) {
                 for (String k : List.of("cluster", "generationsTopic", "recoveryControlTopic"))
                     p.equal(x.path(k).asText(null), y.path(k).asText(null), "the replay's " + k + " (the base's)");
-                p.equal(x.path("generation").asLong() + 1, y.path("generation").asLong(), "the replay generation (base + 1)");
+                String between = replayAfterBase(p, c.registrations, x, y, a.generation.registeredRowSha256(), b.generation.registeredRowSha256());
                 p.require(y.path("declarationOffset").asLong(-1) > x.path("declarationOffset").asLong(Long.MAX_VALUE),
                     "the replay's declaration at offset " + y.path("declarationOffset") + " after the base's " + x.path("declarationOffset"));
                 store = "; one control store " + x.path("generationsTopic").asText() + " / " + x.path("recoveryControlTopic").asText() + ": generations "
-                    + x.path("generation") + " -> " + y.path("generation") + ", declarations at " + x.path("declarationOffset") + " -> " + y.path("declarationOffset");
+                    + x.path("generation") + " -> " + y.path("generation") + between + ", declarations at " + x.path("declarationOffset") + " -> " + y.path("declarationOffset");
             }
         }
         return p.result("online: W1 at the planned cut " + planned + " = A T0 + " + (A - a.t0()) + "; holeAt, holeAt - 1 attributed, holeAt - 2 replay-required beyond-horizon; "
             + t.path("ref").asText() + " missingPeriods 1 at cut " + planned + ", 0 at cut " + lateCut + "; replay (generation " + b.generation.generation() + "): " + kept
             + " deadlines keep their cut ids and are bracketed, holeAt - 2 attributed with cause replayed, no replay-required, "
             + (rc == null ? "" : rc.replayedTimerRows + " timer rows with the replayed timer cause, ") + "J-PROGRESS-ORDER clean; " + remain + "; both generations " + state + store);
+    }
+
+    /** Injection 23's base and replay generations identified by evidence, not by position: in the gate run's registrations
+     *  ({@code registrations}, the report's {@code generations}) on the control store of {@code x}, the base is the generation listed for
+     *  the online run {@value #PLANNED_LATE} with the row {@code baseRow} and the generation number of {@code x}, the replay the one
+     *  listed for {@value #PLANNED_LATE}{@code @replay} with the row {@code replayRow} and the number of {@code y}; the replay comes after
+     *  the base, and every generation number between them is listed once, for another run of this gate run (none of this scenario).
+     *  Returns the evidence text ("" or the generations between). */
+    static String replayAfterBase(P p, com.fasterxml.jackson.databind.node.ArrayNode registrations, JsonNode x, JsonNode y, String baseRow, String replayRow) {
+        if (registrations == null) { p.list.add("no registrations of the gate run to identify the base and replay generations by"); return ""; }
+        String topic = x.path("generationsTopic").asText(null), cluster = x.path("cluster").asText(null);
+        long base = x.path("generation").asLong(-1), replay = y.path("generation").asLong(-1);
+        Map<Long, List<JsonNode>> onStore = new TreeMap<>();
+        for (JsonNode g : registrations) {
+            JsonNode cs = g.path("controlStore");
+            if (!Objects.equals(topic, cs.path("generationsTopic").asText(null)) || !Objects.equals(cluster, cs.path("cluster").asText(null))) continue;
+            onStore.computeIfAbsent(g.path("generation").asLong(-1), k -> new ArrayList<>()).add(g);
+        }
+        String replayRun = PLANNED_LATE + "@replay";
+        List<JsonNode> b = onStore.getOrDefault(base, List.of()), r = onStore.getOrDefault(replay, List.of());
+        p.require(b.size() == 1 && PLANNED_LATE.equals(b.get(0).path("run").asText(null)) && Objects.equals(baseRow, b.get(0).path("registeredRowSha256").asText(null)),
+            "generation " + base + " of " + topic + " registered once, for " + PLANNED_LATE + " with the base run's row " + baseRow + ": " + b);
+        p.require(r.size() == 1 && replayRun.equals(r.get(0).path("run").asText(null)) && Objects.equals(replayRow, r.get(0).path("registeredRowSha256").asText(null)),
+            "generation " + replay + " of " + topic + " registered once, for " + replayRun + " with the replay run's row " + replayRow + ": " + r);
+        p.require(replay > base, "the replay generation " + replay + " after the base " + base);
+        List<String> mid = new ArrayList<>();
+        for (long g = base + 1; g < replay; g++) {
+            List<JsonNode> l = onStore.getOrDefault(g, List.of());
+            String run = l.size() == 1 ? l.get(0).path("run").asText("") : null;
+            boolean ours = run != null && (run.equals(PLANNED_LATE) || run.startsWith(PLANNED_LATE + "@"));
+            p.require(l.size() == 1 && !ours, "generation " + g + " between the base " + base + " and the replay " + replay + " registered once, for another run: " + l);
+            if (run != null) mid.add(g + " " + run);
+        }
+        return mid.isEmpty() ? " (base + 1)" : " (between them " + mid.size() + " generations of other runs of this gate run)";
     }
 
     /** The online journals after the replay: equal to the index written before the replay started, file for file, and folding to the same

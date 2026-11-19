@@ -72,13 +72,14 @@ class FlinkGateChecksTest {
     assertTrue(FlinkGate.readCommitted(ev).contains("stage1-pins (no job pins recorded)"));
   }
 
-  @Test void theProviderIsFoundByNameAndOffersOnlyTheGate() {
+  @Test void theProviderIsFoundByNameAndOffersTheGateAndTheRequirements() {
     Optional<EngineProviders.Loaded<EngineProvider>> p = EngineProviders.find("flink", List.of());
     assertTrue(p.isPresent(), "the flink provider on the class path");
     assertEquals(FlinkEngineProvider.class.getName(), p.get().provider().getClass().getName());
     PrintStream sink = new PrintStream(new ByteArrayOutputStream(), true, StandardCharsets.UTF_8);
     assertEquals(2, p.get().provider().run(new String[] {"run", "--engine", "flink"}, sink, sink));
-    assertEquals(2, p.get().provider().requirements(new String[] {"requirements", "--engine", "flink"}, sink, sink));
+    assertEquals(2, p.get().provider().requirements(new String[] {"requirements", "--engine", "flink"}, sink, sink), "--gate-report is required");
+    assertEquals(2, p.get().provider().requirements(new String[] {"requirements", "--engine", "flink", "--shard", "x"}, sink, sink), "an unknown flag is a usage error");
     assertEquals(2, p.get().provider().gate(new String[] {"gate", "--engine", "flink", "--no-such-flag", "x"}, sink, sink), "an unknown flag is a usage error");
   }
 

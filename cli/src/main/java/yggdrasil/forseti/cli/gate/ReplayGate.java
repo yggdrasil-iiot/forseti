@@ -106,6 +106,12 @@ public final class ReplayGate {
             for (Shard s : shards) if (s.name.equals(name)) return s;
             throw new IllegalArgumentException("no shard " + name);
         }
+        /** The engine settings of {@code name} in a gate run that runs every shard in one process (the full layout): those of the first
+         *  shard of the plan that runs it, so a horizon recording keeps its own shard's heap. */
+        JsonNode settingsOf(String name) {
+            for (Shard s : shards) if (s.scenarios.contains(name) || s.generationRuns.contains(name) || s.restartRuns.contains(name)) return s.settings;
+            return Json.object();
+        }
         /** Every scenario and generation run of the plan, in plan order. */
         List<String> everything() {
             List<String> l = new ArrayList<>();
@@ -207,6 +213,28 @@ public final class ReplayGate {
 
     // --- one gate run --------------------------------------------------------------------------------------------------------
 
+    /** The file of each run directory a later comparison between runs reads ({@code runs/<label>/comparison.json}). */
+    public static final String COMPARISON = "comparison.json";
+
+    /** What {@link #runScenarios} made: the context (its temporary directory to delete), the runs, and the gate-report lists. */
+    record Made(Context context, EngineRuns runs, ArrayNode generations, ArrayNode controlStores, ArrayNode runsOut, ObjectNode engineRuns, Path tmp) {}
+
+    /** {@code names} run on the engine {@code open} makes, outside any gate plan, into {@code outDir} (the requirements runs of
+     *  {@code forseti requirements}); flags as {@link #main}'s. */
+    static Made runScenarios(String engine, Map<String, String> flags, String command, List<String> names, Map<String, JsonNode> settings,
+                             Function<Map<String, String>, ReplayEngine> open, Path outDir, PrintStream out, PrintStream err) throws Exception {
+        Plan empty = new Plan();
+        return new Gate(engine, Path.of("").toAbsolutePath(), outDir, flags, command, null, empty, List.of(), null, null, null, open, out, err).runOnly(names, settings);
+    }
+
+    /** The ground-truth deadlines of {@code r} for the comparability rule between runs (spec 624): its own, and its starvation's held
+     *  deadlines. */
+    static List<Long> comparisonDeadlines(Run r) {
+        List<Long> l = new ArrayList<>(r.deadlines());
+        for (JsonNode h : r.manifest.path("starvation").path("heldDeadlines")) l.add(h.path("at").asLong());
+        return l;
+    }
+
     /** The engine runs a gate run made, by scenario name ({@code dedicated/<name>} for the dedicated placement) or generation run name. */
     static final class EngineRuns implements Scenarios.RunSource {
         final Map<String, Run> runs = new LinkedHashMap<>();
@@ -237,6 +265,8 @@ public final class ReplayGate {
         final PrintStream stdout, stderr;
         final Path registry, keys;
         final Set<String> crashed = new TreeSet<>();
+        /** Every run keeps its journals and recording ({@code forseti requirements} reads them after the runs). */
+        boolean keepAll;
 
         Gate(String engine, Path root, Path out, Map<String, String> flags, String command, GateFiles files, Plan plan, List<String> ids, String shard, Path aggregate,
              Control control, Function<Map<String, String>, ReplayEngine> open, PrintStream stdout, PrintStream stderr) {
@@ -302,7 +332,6 @@ public final class ReplayGate {
                     else names.addAll(plan.everything());
                     EngineRuns runs = new EngineRuns(names);
                     c.runs = runs;
-                    JsonNode settings = shard != null ? plan.shard(shard).settings : Json.object();
                     Map<String, String> engineFlags = new HashMap<>(flags);
                     try (ReplayEngine e = open.apply(engineFlags)) {
                         c.w1Form = e.w1Form();
@@ -314,9 +343,10 @@ public final class ReplayGate {
                         ReplayEngine.ControlStore pipeline = e.controlStore(GateEvidence.PIPELINE);
                         stores.add(pipeline.toJson());
                         register(c, e, pipeline, planned, generations, stores);
+                        c.registrations = generations;
                         Map<String, Planned> byName = new HashMap<>();
                         for (Planned p : planned) byName.put(p.name, p);
-                        for (Planned p : planned) execute(c, e, runs, byName, p, settings, runsOut, engineSummary);
+                        for (Planned p : planned) execute(c, e, runs, byName, p, shard != null ? plan.shard(shard).settings : plan.settingsOf(p.name), runsOut, engineSummary);
                     }
                     Summaries mine = new Summaries();
                     for (String n : names) {
@@ -504,11 +534,12 @@ public final class ReplayGate {
                 r.cutLog = Json.read(er.out().resolve("cuts.json"));
                 r.runJson = Json.read(er.out().resolve("run.json"));
                 r.ms.put("engine", (System.nanoTime() - t) / 1_000_000);
-                boolean keep = g != null || name.equals(Injections.RULE_CHANGE_BASE) || keepsJournals(name);
+                boolean keep = keepAll || g != null || name.equals(Injections.RULE_CHANGE_BASE) || keepsJournals(name);
                 if (keep) r.journals = er.out();
                 Path oracle = c.newDir(r.label + "-oracle").resolve("out");
                 Scenarios.fold(c, r, er.out(), oracle, registry, out.resolve("diffs"));
                 CoreGate.delete(oracle.getParent());
+                writeComparison(p.work.resolve(COMPARISON), r);
                 if (g != null && GateEvidence.REPLAY.equals(g.variant())) {
                     r.brackets = ReplayRecording.checkRun(r.manifest, r.cutLog);
                     if (!r.brackets.isEmpty()) throw new IllegalStateException("the reported W1 does not bracket the replay deadlines: " + r.brackets);
@@ -650,6 +681,68 @@ public final class ReplayGate {
             rule.put("attributionRuleId", Scenarios.RULE_NEXT.substring(0, at)).put("attributionRuleVersion", Scenarios.RULE_NEXT.substring(at + 1));
             r.rule = rule;
             return new ReplayEngine.Request(g.name(), scenario, base.recording, next, p.reg, c.control, "input", p.work, settings);
+        }
+
+        /** What a later comparison between runs of the same recording reads ({@link #COMPARISON}; the nightly three-run determinism,
+         *  comparison item 6, and {@code forseti requirements}): the ground-truth deadlines the comparability rule needs (spec 624; the
+         *  starvation's held deadlines included), and per cut the stations' {@code W1} and {@code admissionW}, the stations with an open
+         *  visit, and the body fingerprints of every output partition. The fingerprints are of the bodies only: run ids, paths, checkpoint
+         *  ids and every other envelope or diagnostic field are not in them. */
+        static void writeComparison(Path file, Run r) throws IOException {
+            if (r.fold == null || r.cutLog == null) return;
+            ObjectNode n = Json.object().put("name", r.name).put("label", r.label);
+            ArrayNode d = n.putArray("deadlines");
+            for (long x : comparisonDeadlines(r)) d.add(x);
+            ArrayNode cuts = n.putArray("cuts");
+            Map<String, Map<Long, String>> fps = r.fold.fingerprints();
+            for (long k : r.cutIds()) {
+                ObjectNode o = Json.putSafe(Json.object(), "cutId", k);
+                o.set("perStation", r.perStation(k).deepCopy());
+                ArrayNode open = o.putArray("open");
+                r.open.getOrDefault(k, Set.of()).forEach(open::add);
+                ObjectNode f = o.putObject("fingerprints");
+                fps.forEach((part, m) -> { String v = m.get(k); if (v != null) f.put(part, v); });
+                cuts.add(o);
+            }
+            Json.write(file, n);
+        }
+
+        /** Runs {@code names} on the engine outside any plan ({@code forseti requirements}, spec 705): each recording built and checked
+         *  against its lock, registered in that order on one isolated pipeline store before any run starts, run with its settings, and
+         *  compared with the oracle at every cut with its per-run replay findings, exactly as a gate run makes them; every run keeps its
+         *  journals and recording. */
+        Made runOnly(List<String> names, Map<String, JsonNode> settings) throws Exception {
+            keepAll = true;
+            Files.createDirectories(out);
+            CoreGate.delete(out.resolve("runs")); CoreGate.delete(out.resolve("logs")); CoreGate.delete(out.resolve("diffs"));
+            Path tmp = Files.createTempDirectory("forseti-replay-requirements-");
+            Context c = new Context(root, tmp, out.resolve("logs"), flags.getOrDefault("python", "python"));
+            c.scenarios = root.resolve("engine-fixtures/scenarios/shared");
+            c.trustedKeys = keys;
+            c.pipeline = new GateEvidence.Store(GateEvidence.PIPELINE, c.newDir("state"), false);
+            EngineRuns runs = new EngineRuns(names);
+            c.runs = runs;
+            ArrayNode generations = Json.JSON.createArrayNode(), stores = Json.JSON.createArrayNode(), runsOut = Json.JSON.createArrayNode();
+            ObjectNode engineSummary = Json.object();
+            try (ReplayEngine e = openOrClean(tmp)) {
+                c.w1Form = e.w1Form();
+                List<Planned> planned = new ArrayList<>();
+                for (String n : names) planned.add(prepare(c, n));
+                ReplayEngine.ControlStore pipeline = e.controlStore(GateEvidence.PIPELINE);
+                stores.add(pipeline.toJson());
+                register(c, e, pipeline, planned, generations, stores);
+                c.registrations = generations;
+                Map<String, Planned> byName = new HashMap<>();
+                for (Planned p : planned) byName.put(p.name, p);
+                for (Planned p : planned) execute(c, e, runs, byName, p, settings.getOrDefault(p.name, Json.object()), runsOut, engineSummary);
+            }
+            return new Made(c, runs, generations, stores, runsOut, engineSummary, tmp);
+        }
+
+        /** The engine, or, when it cannot be opened (no Docker, no broker), {@code tmp} removed and the failure rethrown. */
+        ReplayEngine openOrClean(Path tmp) {
+            try { return open.apply(new HashMap<>(flags)); }
+            catch (RuntimeException | Error e) { CoreGate.delete(tmp); throw e; }
         }
 
         static ObjectNode digestsOf(Path dir) throws IOException {

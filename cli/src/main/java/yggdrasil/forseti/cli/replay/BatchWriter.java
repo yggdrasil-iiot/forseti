@@ -9,8 +9,10 @@ import yggdrasil.forseti.cli.recording.Recording;
  *  once the broker acknowledged every record of the batch; the broker offsets it assigned are added to {@link #offsets}. The harness
  *  calls it for batch k+1 only after cut k is complete ({@link CompletionReader}), except where the spec's restart rule says otherwise. */
 public interface BatchWriter extends AutoCloseable {
-    /** What one call wrote: the business records and barriers, and per partition the broker through-offset its barrier carries. */
-    record Written(long cutId, long records, int barriers, Map<String, Map<Integer, Long>> brokerThrough) {}
+    /** What one call wrote: the business records and barriers, per partition the broker through-offset its barrier carries, and
+     *  {@code firstAppendNanos}: the batch's first append (spec 681: the earliest broker append time of its records), on the harness's
+     *  {@link System#nanoTime} clock. */
+    record Written(long cutId, long records, int barriers, Map<String, Map<Integer, Long>> brokerThrough, long firstAppendNanos) {}
 
     Written write(Recording.Batch batch, long restartEpoch, String recoveryRef);
 
