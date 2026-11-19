@@ -165,7 +165,7 @@ class StationRestoreTest {
     b1.feed(feed, first, second);
     Map<String, JsonNode> atSnapshot = b1.inspect(mine);
     OperatorSubtaskState snap = b1.h.snapshot(2, 2);
-    JsonNode segs = evidence(s1, "stage1-stations-" + SUBTASK + "-attempt-0").path("segments");
+    JsonNode segs = evidence(s1, "stage1-stations-" + SUBTASK + "-l0-cnone-a0").path("segments");
     List<String> outB = lines(b1.h.extractOutputValues());
     b1.h.close();
     boolean held = false, timers = false;
@@ -232,7 +232,7 @@ class StationRestoreTest {
     d1.feed(feed2, f1, f2);
     Map<String, JsonNode> at2 = d1.inspect(mine);
     OperatorSubtaskState snap2 = d1.h.snapshot(2, 2);
-    JsonNode segs2 = evidence(s2, "stage2-stations-" + SUBTASK + "-attempt-0").path("segments");
+    JsonNode segs2 = evidence(s2, "stage2-stations-" + SUBTASK + "-l0-cnone-a0").path("segments");
     List<String> outD = lines(d1.h.extractOutputValues());
     d1.h.close();
     boolean queued = false, open = false;

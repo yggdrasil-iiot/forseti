@@ -91,7 +91,8 @@ public final class JobSettings implements Serializable {
   // --- the job main: from the harness's job spec to the settings --------------------------------------------------------------
 
   /** The settings of the job the harness's {@code spec} describes: {@code {stage, bootstrap, prefix, topics?, generation, mappings,
-   *  definitions, routing, evidenceRanges, runId, artifactSha256, evidenceDir, checkpointDir, transactionTimeoutMs, negativeControl, causeKind}}.
+   *  definitions, routing, evidenceRanges, runId, artifactSha256, evidenceDir, checkpointDir, transactionTimeoutMs, negativeControl, causeKind,
+   *  launch}}.
    *  The spec carries no recording path: the definitions, the routing manifest and the evidence ranges come in the spec itself
    *  (reviewer decision 3 of 2026-11-18), so nothing here opens the recording directory. {@code topics}, when present, names the run
    *  topic of a contract topic in place of {@code <prefix><contract>} (an event-time replay shares its base run's generation and recovery
@@ -107,7 +108,8 @@ public final class JobSettings implements Serializable {
     String artifact = Json.text(spec, "artifactSha256"), own = engineArtifact();
     if (!artifact.equals(own)) throw new IllegalStateException("engine-artifact-mismatch: the job spec names " + artifact + ", the engine path digests to " + own);
     String control = spec.path("negativeControl").isTextual() ? spec.get("negativeControl").textValue() : null;
-    if (control != null && !Controls.harness(control)) throw new IllegalArgumentException("negative control " + control + " is not one the jobs apply");
+    if (control != null && !Controls.engine(control)) throw new IllegalArgumentException("negative control " + control + " is not one the jobs apply");
+    if (!spec.path("launch").canConvertToInt() || spec.path("launch").intValue() < 0) throw new IllegalArgumentException("job spec launch " + spec.path("launch"));
     List<ReplayTopics.Spec> plan = ReplayTopics.plan(prefix);
     ObjectNode names = Json.object();
     for (ReplayTopics.Spec s : plan) names.put(s.base(), spec.path("topics").path(s.base()).asText(s.name()));
@@ -188,6 +190,9 @@ public final class JobSettings implements Serializable {
       er.putArray(e.getKey()).add(e.getValue().get(0).longValue()).add(e.getValue().get(1).longValue());
     });
     Json.putSafe(n, "transactionTimeoutMs", spec.path("transactionTimeoutMs").longValue());
+    // the durable launch identity of this launch of the job's cluster (reviewer decision 3 of PR 5): the harness writes it into the job
+    // spec, and records it, before it starts the cluster; 0 at the first launch, plus one at every relaunch of a restart injection
+    n.put("launch", spec.path("launch").asInt(0));
     // the cause kind of every row (spec 616): input for an online generation, replayed for an event-time replay
     n.set("generationsReader", generationsReader);   // the job's own forseti.generations reader (spec 708), recorded in the job settings
     n.put("causeKind", Envelope.causeKind(spec.path("causeKind").asText(Envelope.ONLINE)));
@@ -202,6 +207,12 @@ public final class JobSettings implements Serializable {
       return Files.isRegularFile(p) ? EngineContract.engineArtifactSha256(p.getParent()) : "unpacked";
     } catch (java.net.URISyntaxException | RuntimeException e) { return "unpacked"; }
   }
+
+  /** The durable launch identity of this launch of the job (0 at the first). */
+  public int launch() { return node().path("launch").asInt(0); }
+
+  /** Control theta (spec 700, plan D9): the sinks are non-transactional at-least-once. */
+  public boolean nonTransactional() { return Controls.NON_TRANSACTIONAL_OUTPUT.equals(negativeControl()); }
 
   /** The negative control the jobs apply, null for none. */
   public String negativeControl() { return node().path("negativeControl").isTextual() ? node().get("negativeControl").textValue() : null; }

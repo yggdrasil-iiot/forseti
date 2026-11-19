@@ -93,6 +93,8 @@ public final class Stage1Stations extends AbstractStreamOperator<Out>
   /** Per cut closed by this subtask: {station, cutId, onlineVisits} (the cut log's operator evidence, appended at each close). */
   private transient ArrayNode cutEvidence;
   private transient ObjectNode initRecord;
+  /** This incarnation's part of the evidence file name ({@link RestoreEvidence#incarnation}). */
+  private transient String incarnation;
 
   public Stage1Stations(JobSettings settings) { this.settings = settings; }
 
@@ -158,7 +160,8 @@ public final class Stage1Stations extends AbstractStreamOperator<Out>
     int subtask = getContainingTask().getEnvironment().getTaskInfo().getIndexOfThisSubtask();
     int parallelism = getContainingTask().getEnvironment().getTaskInfo().getNumberOfParallelSubtasks();
     int maxParallelism = getContainingTask().getEnvironment().getTaskInfo().getMaxNumberOfParallelSubtasks();
-    RestoreEvidence restore = RestoreEvidence.of(context.isRestored(), context.getRestoredCheckpointId(), attempt);
+    RestoreEvidence restore = RestoreEvidence.of(settings.launch(), context.isRestored(), context.getRestoredCheckpointId(), attempt);
+    incarnation = restore.incarnation();
 
     // the writer's initialization reads the recovery control up to H, before any business input (spec 416, F5)
     RecoveryControlStore.Snapshot control = Writers.readControl(settings);
@@ -193,7 +196,7 @@ public final class Stage1Stations extends AbstractStreamOperator<Out>
       st.state.initialize(init);
     }
     initRecord = Json.object().put("operator", "stage1-stations").put("subtask", subtask).put("parallelism", parallelism).put("maxParallelism", maxParallelism)
-        .put("attemptNumber", attempt).put("negativeControl", settings.negativeControl());
+        .put("attemptNumber", attempt).put("launch", settings.launch()).put("negativeControl", settings.negativeControl());
     initRecord.putArray("keyGroupRange").add(range.getStartKeyGroup()).add(range.getEndKeyGroup());
     initRecord.set("stationKeyGroups", keyGroups);
     ArrayNode owned = initRecord.putArray("stations");
@@ -435,6 +438,6 @@ public final class Stage1Stations extends AbstractStreamOperator<Out>
     Json.putSafe(seg, "removed", segmentsRemoved);
     Json.putSafe(seg, "fullDrains", fullDrains);
     n.set("cuts", cutEvidence);
-    Writers.evidence(settings, "stage1-stations-" + subtask + "-attempt-" + n.path("attemptNumber").intValue(), n);
+    Writers.evidence(settings, "stage1-stations-" + subtask + "-" + incarnation, n);
   }
 }

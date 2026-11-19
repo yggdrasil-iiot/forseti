@@ -158,7 +158,9 @@ final class Integrity {
                 JsonNode x = byCut.getOrDefault(m.cutId(), Json.object()).path(s);
                 if (stage2) {
                     if (m.w() == null || m.w() != x.path("W1").asLong()) f.add("J-W2-EQUALS-W1", e.getKey() + " cut " + m.cutId() + ": W2 " + m.w() + ", the cut's W1 " + x.path("W1"));
-                    if (m.incidentOffsets() != 6) f.add("J-W2-EQUALS-W1", e.getKey() + " cut " + m.cutId() + ": " + m.incidentOffsets() + " incidentOffsets, not 6");
+                    // six per cut, the merged ones included (spec 725: 6 x (1 + number of mergedCutIds))
+                    int want = 6 * (1 + m.merged());
+                    if (m.incidentOffsets() != want) f.add("J-W2-EQUALS-W1", e.getKey() + " cut " + m.cutId() + ": " + m.incidentOffsets() + " incidentOffsets, not " + want);
                 } else {
                     if (m.w() == null || m.w() != x.path("W1").asLong()) f.add("J-W1-FORMULA", e.getKey() + " cut " + m.cutId() + ": progress W1 " + m.w() + ", cuts.json " + x.path("W1"));
                     if (!Objects.equals(prev, m.admissionW())) f.add("J-W1-FORMULA", e.getKey() + " cut " + m.cutId() + ": progress admissionW " + m.admissionW() + ", the previous W1 " + prev);

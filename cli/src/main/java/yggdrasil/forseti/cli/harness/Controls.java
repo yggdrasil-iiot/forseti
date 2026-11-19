@@ -13,6 +13,12 @@ public final class Controls {
         FIRST_WINS = "first-wins", STATION_GRANULARITY = "station-granularity", IGNORE_SESSION_GAP = "ignore-session-gap", WRONG_RULES_PIN = "wrong-rules-pin";
     public static final List<String> NAMES = List.of(PROCESSING_TIME, DROP_LATE, NO_CASCADE, LENIENT_ORACLE, FIRST_WINS, STATION_GRANULARITY,
         IGNORE_SESSION_GAP, WRONG_RULES_PIN);
+    /** Control theta (spec 700, plan D9): the engine jobs' sinks switched from transactional exactly-once to non-transactional
+     *  at-least-once, and the harness kills stage 1 right after its records are published and before the checkpoint completes. It is a
+     *  sink behaviour, so the core harness has none (step-3 plan: steps 6-7 only): never in {@link #NAMES}, only in {@link #ENGINE_NAMES}. */
+    public static final String NON_TRANSACTIONAL_OUTPUT = "non-transactional-output";
+    /** The controls of an engine's replay gate: the eight engine-independent ones and theta. */
+    public static final List<String> ENGINE_NAMES = java.util.stream.Stream.concat(NAMES.stream(), java.util.stream.Stream.of(NON_TRANSACTIONAL_OUTPUT)).toList();
 
     /** The flags of control {@code name}; {@link NegativeControls#NONE} for null. An unknown name is an {@link IllegalArgumentException}. */
     public static NegativeControls of(String name) {
@@ -26,10 +32,14 @@ public final class Controls {
             case IGNORE_SESSION_GAP: return new NegativeControls(false, false, false, false, false, true, false, false);
             case WRONG_RULES_PIN: return new NegativeControls(false, false, false, false, false, false, true, false);
             case LENIENT_ORACLE: return new NegativeControls(false, false, false, false, false, false, false, true);
+            case NON_TRANSACTIONAL_OUTPUT: return NegativeControls.NONE;   // the engine's sinks, never a decision function
             default: throw new IllegalArgumentException("--negative-control " + name + ": not one of " + NAMES);
         }
     }
 
     /** Whether the harness applies control {@code name} (every control but the oracle's {@code lenient-oracle}). */
     public static boolean harness(String name) { return name != null && !LENIENT_ORACLE.equals(name) && NAMES.contains(name); }
+
+    /** Whether an engine's jobs or harness apply control {@code name}: every control the core harness applies, and theta. */
+    public static boolean engine(String name) { return harness(name) || NON_TRANSACTIONAL_OUTPUT.equals(name); }
 }

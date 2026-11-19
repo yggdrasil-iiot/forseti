@@ -361,7 +361,8 @@ jobs:
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with: {name: "flink-shard-${{ matrix.shard }}", path: forseti/build/flink-shards/, if-no-files-found: error}
-  # The Flink negative controls (spec 689-700; the eight engine-independent ones, theta with PR 6): each on the shards that own or feed
+  # The Flink negative controls (spec 689-700; the eight engine-independent ones and theta, non-transactional-output, on the restart
+  # shards, plan D9): each on the shards that own or feed
   # its intended ids; a run passes only when scripts/check-control-report.py accepts it (exit 1 with its intended ids failed and the
   # verdict held; a crash or a missing run never counts as the intended failure).
   flink-control:

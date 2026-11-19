@@ -29,6 +29,7 @@ import yggdrasil.forseti.cli.replay.CompletionReader;
 import yggdrasil.forseti.cli.replay.EngineContract;
 import yggdrasil.forseti.cli.replay.ReplayEngine;
 import yggdrasil.forseti.cli.replay.ReplayTopics;
+import yggdrasil.forseti.cli.replay.Restarts;
 import yggdrasil.forseti.cli.replay.RunPreparation;
 import yggdrasil.forseti.core.Json;
 import yggdrasil.forseti.core.canon.Canonical;
@@ -80,15 +81,37 @@ final class FlinkRun {
   record Handle(String bootstrap, List<ReplayTopics.Spec> plan, Map<String, String> names, long generation, Path recording,
                 yggdrasil.forseti.cli.replay.OffsetMap offsets) {}
 
-  static ReplayEngine.Run run(String bootstrap, Path root, ReplayEngine.Request req, FlinkCluster.Memory stage1Memory, FlinkCluster.Memory stage2Memory) throws IOException {
+  static ReplayEngine.Run run(String bootstrap, Path root, ReplayEngine.Request req, FlinkCluster.Memory stage1Memory, FlinkCluster.Memory stage2Memory) throws Exception {
+    Restarts.Restart restart = req.restart();
+    if (restart == null) return attempt(bootstrap, root, req, req.generation(), stage1Memory, stage2Memory, null, 1, Json.JSON.createArrayNode());
+    // a restart run (plan D8): each attempt a fresh run on a generation of its own; an invalid attempt is recorded and repeated, and
+    // after the last one the injection is an error, never a pass
+    ArrayNode attempts = Json.JSON.createArrayNode();
+    for (int i = 0; i < restart.attempts().size(); i++) {
+      try { return attempt(bootstrap, root, req, restart.attempts().get(i), stage1Memory, stage2Memory, restart, i + 1, attempts); }
+      catch (RestartInjector.Invalid e) {
+        ObjectNode a = attempts.addObject().put("attempt", i + 1).put("valid", false).put("reason", e.getMessage());
+        Json.putSafe(a, "generation", restart.attempts().get(i).generation());
+        Path flink = req.work().resolve("flink"), kept = req.work().resolve("flink-attempt-" + (i + 1));
+        delete(kept);
+        if (Files.exists(flink)) Files.move(flink, kept);
+        a.put("logs", kept.getFileName().toString());
+      }
+    }
+    throw new IllegalStateException("error: injection " + restart.kind().spec() + ": " + attempts.size() + " invalid attempts, never a pass (plan D8): " + attempts);
+  }
+
+  /** One fresh run on {@code gen}: the whole run of {@link #run}, with the restart injection of {@code restart} when it is one. */
+  static ReplayEngine.Run attempt(String bootstrap, Path root, ReplayEngine.Request req, ReplayEngine.Registered gen, FlinkCluster.Memory stage1Memory,
+                                  FlinkCluster.Memory stage2Memory, Restarts.Restart restart, int attemptNo, ArrayNode attempts) throws Exception {
     long t0 = System.nanoTime();
     Path work = req.work(), out = work.resolve("run"), flink = work.resolve("flink");
     for (Path p : List.of(out, flink)) delete(p);
     Files.createDirectories(work);
     Recording rec = Recording.open(req.recording());
-    String control = req.negativeControl() != null && Controls.harness(req.negativeControl()) ? req.negativeControl() : null;
-    ReplayEngine.ControlStore cs = req.generation().store();
-    long generation = req.generation().generation();
+    String control = req.negativeControl() != null && Controls.engine(req.negativeControl()) ? req.negativeControl() : null;
+    ReplayEngine.ControlStore cs = gen.store();
+    long generation = gen.generation();
 
     // (1) the run's own input and output topics; forseti.generations and forseti.recovery-control are its control store's (spec 577: the
     // generation was registered there by the gate, before any run started)
@@ -120,8 +143,8 @@ final class FlinkRun {
       GenerationStore.Entry entry = store.registered(generation).orElseThrow(() -> new IllegalStateException("generation " + generation + " is not registered"));
       Generation g = entry.row();
       String rowSha = store.registeredRowSha256(generation).orElseThrow();
-      if (!rowSha.equals(req.generation().registeredRowSha256()))
-        throw new IllegalStateException("generation " + generation + " of " + generationsTopic + " has the row " + rowSha + ", the gate registered " + req.generation().registeredRowSha256());
+      if (!rowSha.equals(gen.registeredRowSha256()))
+        throw new IllegalStateException("generation " + generation + " of " + generationsTopic + " has the row " + rowSha + ", the gate registered " + gen.registeredRowSha256());
       HeadVerifier.Head head = EngineContract.head(g.releaseEvidence());
       Path mappings = req.registry().resolve("mappings");
       RuleSet rules;
@@ -149,6 +172,9 @@ final class FlinkRun {
       Map<String, Map<Integer, CutLog.Range>> consumed = new TreeMap<>();
       ObjectNode memoryOut = Json.object();
       KafkaBatchWriter writer = new KafkaBatchWriter(bootstrap, KafkaBatchWriter.inputNames(plan), rec, g.generation(), written);
+      Map<Integer, ObjectNode> specs = new HashMap<>();
+      ObjectNode manifest = null;
+      ArrayNode cutEpochs = Json.JSON.createArrayNode();
       try {
         for (int stage : List.of(2, 1)) {
           String name = "stage" + stage;
@@ -156,28 +182,72 @@ final class FlinkRun {
           Files.createDirectories(dir);
           ObjectNode spec = jobSpec(stage, bootstrap, prefix, names, g.generation(), mappings, rec, runId, artifact, jobEvidence, dir, control,
               req.causeKind());
-          Path specFile = dir.resolve("job-spec.json");
-          Json.write(specFile, spec);
+          specs.put(stage, spec);
+          Path specFile = specFile(dir, spec, 0);
           clusters.add(FlinkCluster.start(sup, name, dir, (stage == 1 ? Stage1Job.class : Stage2Job.class).getName(), specFile, Json.text(spec, "checkpointDir"),
               stage == 1 ? stage1Memory : stage2Memory));
         }
         for (FlinkCluster c : clusters) c.awaitRunning(RUNNING_TIMEOUT);
         firstBatchAfterMs = (System.nanoTime() - t0) / 1_000_000;
+        FlinkCluster s2c = clusters.get(0), s1c = clusters.get(1);
 
-        // (5) the batches, each written only after the previous cut completed
+        // the restart injection of a restart run, placed at cut k (spec 418): never the last batch, nor a bracketing batch or the one before
+        RestartInjector inj = null;
+        long k = -1;
+        if (restart != null) {
+          k = Restarts.place(rec, written.get(InputParser.MESSAGES));
+          inj = new RestartInjector(restart.kind(), k, Controls.NON_TRANSACTIONAL_OUTPUT.equals(control), sup.posix(), bootstrap, prefix, g.generation(),
+              routing.routingDigest(), routing, names, s1c, s2c, rc, (stage, launch) -> {
+                try { return specFile(flink.resolve("stage" + stage), specs.get(stage), launch); } catch (IOException e) { throw new UncheckedIOException(e); }
+              });
+        }
+
+        // (5) the batches, each written only after the previous cut completed; after a stage-1 restart injection, batch k+1 once every
+        // job is RUNNING, without waiting for cut k (spec 418), as the first batch of the new restartEpoch
         List<CompletionReader.Writer> all = CompletionReader.expected(routing, List.of());
         cuts = cutLog.putArray("cuts");
         Map<String, Long> previous = new HashMap<>();
+        Map<String, Long> timings = new TreeMap<>();
         try (KafkaCompletionReader completion = new KafkaCompletionReader(bootstrap, names, all, g.generation())) {
           evidence.client("batch-writer", writer.config());
           evidence.client("completion-reader", completion.config());
+          RestartInjector.Epoch epoch = new RestartInjector.Epoch(0, null);
+          List<Recording.Batch> pending = new ArrayList<>();
           for (Recording.Batch b : rec.batches()) {
-            var w = writer.write(b, 0, null);
+            if (inj != null && b.cutId() == k) inj.beforeBatch();
+            var w = writer.write(b, epoch.epoch(), epoch.ref());
+            ObjectNode ce = Json.putSafe(Json.object(), "cutId", b.cutId());
+            Json.putSafe(ce, "restartEpoch", epoch.epoch());
+            ce.put("recoveryRef", epoch.ref());
+            cutEpochs.add(ce);
             businessRecords += w.records();
             barriers += w.barriers();
-            List<CutAssembler.Idle> idle = EngineContract.idleInputs(b);
-            Map<CompletionReader.Writer, JsonNode> done = await(completion, b.cutId(), CompletionReader.expected(routing, idle), clusters);
-            cuts.add(cutEntry(b, done, routing, written, previous, consumed));
+            pending.add(b);
+            if (inj != null && b.cutId() == k) {
+              epoch = inj.inject(epoch, completion, timings);
+              if (restart.kind().stage1) continue;   // batch k+1 next, without waiting for cut k
+            }
+            for (Recording.Batch x : pending) {
+              List<CutAssembler.Idle> idle = EngineContract.idleInputs(x);
+              Map<CompletionReader.Writer, JsonNode> done = await(completion, x.cutId(), CompletionReader.expected(routing, idle), clusters);
+              cuts.add(cutEntry(x, done, routing, written, previous, consumed));
+            }
+            pending.clear();
+          }
+          if (!pending.isEmpty()) throw new IllegalStateException("cuts " + pending.size() + " never awaited");
+          if (inj != null) {
+            manifest = inj.finish();
+            ObjectNode m = manifest;
+            m.put("kind", restart.kind().spec()).put("run", req.label()).put("status", "valid");
+            Json.putSafe(m, "placedAt", k);
+            Json.putSafe(m, "attempt", attemptNo);
+            m.set("invalidAttempts", attempts.deepCopy());
+            m.put("theta", Controls.NON_TRANSACTIONAL_OUTPUT.equals(control));
+            m.set("cutEpochs", cutEpochs);
+            ObjectNode sw = m.putObject("stationWriters");
+            new TreeMap<>(routing.stations()).forEach(sw::put);
+            ObjectNode ls = m.putObject("launches");
+            for (FlinkCluster c : clusters) ls.set(c.name, c.record.path("launches"));
           }
         }
         for (FlinkCluster c : clusters) {
@@ -208,7 +278,16 @@ final class FlinkRun {
         for (Path p : s.filter(x -> x.toString().endsWith(".json")).sorted().toList()) jobs.set(p.getFileName().toString().replace(".json", ""), Json.read(p));
       }
       onlineVisits(cuts, jobs);
+      for (String stage : List.of("stage1", "stage2")) {
+        // the pins of the latest launch under the name the job settings read (every launch's pins stay under their own)
+        String latest = null;
+        for (Iterator<String> it = jobs.fieldNames(); it.hasNext();) { String n = it.next(); if (n.startsWith(stage + "-pins-l") && (latest == null || launchOf(n) > launchOf(latest))) latest = n; }
+        if (latest != null) jobs.set(stage + "-pins", jobs.get(latest).deepCopy());
+      }
       Json.write(out.resolve("cuts.json"), cutLog);
+      // every cut's restartEpoch and recoveryRef as the harness wrote its barriers (spec 412), and the restart run's injection manifest
+      Json.write(out.resolve("cut-epochs.json"), Json.object().<ObjectNode>set("cuts", cutEpochs));
+      if (manifest != null) Json.write(out.resolve(ReplayEngine.INJECTIONS), manifest);
       Json.write(out.resolve("offset-map.json"), writer.offsets().toJson());
       ObjectNode digests = Json.object();
       rec.digests().forEach(digests::put);
@@ -234,6 +313,7 @@ final class FlinkRun {
       prep.set("controlStore", cs.toJson());
       Json.putSafe(prep, "generation", generation);
       evidence.collect("flink", flinkEvidence);
+      if (manifest != null) evidence.collect("restart", manifest);
       ObjectNode ev = evidence.evidence();
       Json.write(out.resolve("evidence.json"), ev);
       long wall = (System.nanoTime() - t0) / 1_000_000;
@@ -253,7 +333,18 @@ final class FlinkRun {
       summary.set("segments", segmentSizes(jobs));
       summary.set("configuredMemory", Json.object().<ObjectNode>set("stage1", stage1Memory.toJson()).set("stage2", stage2Memory.toJson()));
       if (cuts.size() != rec.batches().size()) throw new IllegalStateException("cuts " + cuts.size() + " of " + rec.batches().size() + " batches");
-      return new ReplayEngine.Run(out, req.generation(), declaration, controlEnd, ev, summary, new Handle(bootstrap, plan, names, g.generation(), req.recording(), writer.offsets()));
+      if (manifest != null) {
+        ObjectNode rs = summary.putObject("restart").put("kind", restart.kind().spec());
+        Json.putSafe(rs, "placedAt", manifest.path("placedAt").asLong());
+        Json.putSafe(rs, "attempt", attemptNo);
+        ArrayNode rt = rs.putArray("relaunches");
+        for (JsonNode i : manifest.path("injections")) i.path("launches").fields().forEachRemaining(e -> {
+          ObjectNode x = rt.addObject().put("injection", i.path("injectionId").asText()).put("job", e.getKey());
+          Json.putSafe(x, "restoredCheckpointId", e.getValue().path("restoredCheckpointId").asLong());
+          Json.putSafe(x, "runningAfterLaunchMs", e.getValue().path("record").path("runningAfterLaunchMs").asLong(-1));
+        });
+      }
+      return new ReplayEngine.Run(out, gen, declaration, controlEnd, ev, summary, new Handle(bootstrap, plan, names, g.generation(), req.recording(), writer.offsets()));
     }
   }
 
@@ -276,7 +367,22 @@ final class FlinkRun {
     if (control == null) spec.putNull("negativeControl"); else spec.put("negativeControl", control);
     spec.put("causeKind", causeKind == null ? Envelope.ONLINE : causeKind);
     Json.putSafe(spec, "transactionTimeoutMs", TRANSACTION_TIMEOUT_MS);
+    spec.put("launch", 0);
     return spec;
+  }
+
+  /** The job spec of launch {@code launch} of a stage: {@code spec} with its durable launch identity, written before the launch starts
+   *  ({@code job-spec.json} at the first launch, {@code job-spec-l<n>.json} after). */
+  static Path specFile(Path dir, ObjectNode spec, int launch) throws IOException {
+    ObjectNode s = spec.deepCopy().put("launch", launch);
+    Path f = dir.resolve(launch == 0 ? "job-spec.json" : "job-spec-l" + launch + ".json");
+    Json.write(f, s);
+    return f;
+  }
+
+  static int launchOf(String evidenceName) {
+    int i = evidenceName.lastIndexOf("-l");
+    try { return Integer.parseInt(evidenceName.substring(i + 2)); } catch (RuntimeException e) { return -1; }
   }
 
   /** {@code generation new --store kafka} in-process with the registry's fixture clock (its head's signedAt + 60 s); the printed

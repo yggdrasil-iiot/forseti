@@ -68,6 +68,17 @@
       ]
     },
     {
+      "name": "non-transactional-output",
+      "intended": [
+        "I-21",
+        "I-22"
+      ],
+      "shards": [
+        "restart-21",
+        "restart-22"
+      ]
+    },
+    {
       "name": "wrong-rules-pin",
       "intended": [
         "I-1",
@@ -103,7 +114,9 @@
         "I-25",
         "I-26",
         "I-20",
-        "I-23"
+        "I-23",
+        "I-21",
+        "I-22"
       ],
       "shards": [
         "inj-baseline",
@@ -112,6 +125,8 @@
         "inj-clock-plc",
         "inj-plc-quiet",
         "inj-stage2",
+        "restart-21",
+        "restart-22",
         "horizon-no-departure",
         "horizon-reopened",
         "horizon-correction-beyond",

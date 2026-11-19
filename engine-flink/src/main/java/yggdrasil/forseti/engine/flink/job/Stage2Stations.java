@@ -61,6 +61,7 @@ public final class Stage2Stations extends AbstractStreamOperator<Out> implements
   private transient MapState<String, byte[]> stored;
   private transient Map<String, Station> stations;
   private transient ObjectNode initRecord;
+  private transient String incarnation;
   private transient long appliedCuts, snapshots, segmentsWritten, segmentBytes, segmentBytesMax, segmentsRemoved, headBytesMax;
 
   public Stage2Stations(JobSettings settings) { this.settings = settings; }
@@ -218,7 +219,10 @@ public final class Stage2Stations extends AbstractStreamOperator<Out> implements
       if (range.contains(kg)) stations.computeIfAbsent(s, Station::new);
     }
     initRecord = Json.object().put("operator", "stage2-stations").put("subtask", info.getIndexOfThisSubtask()).put("parallelism", info.getNumberOfParallelSubtasks())
-        .put("maxParallelism", info.getMaxNumberOfParallelSubtasks()).put("attemptNumber", info.getAttemptNumber()).put("isRestored", context.isRestored());
+        .put("maxParallelism", info.getMaxNumberOfParallelSubtasks()).put("attemptNumber", info.getAttemptNumber()).put("isRestored", context.isRestored())
+        .put("launch", settings.launch());
+    // stage 2 never reads the recovery control and carries no initEvidence; its incarnation names its evidence file all the same
+    incarnation = RestoreEvidence.of(settings.launch(), context.isRestored(), context.getRestoredCheckpointId(), info.getAttemptNumber()).incarnation();
     initRecord.putArray("keyGroupRange").add(range.getStartKeyGroup()).add(range.getEndKeyGroup());
     initRecord.set("stationKeyGroups", keyGroups);
     ArrayNode owned = initRecord.putArray("stations");
@@ -385,6 +389,6 @@ public final class Stage2Stations extends AbstractStreamOperator<Out> implements
     Json.putSafe(seg, "largestBytes", segmentBytesMax);
     Json.putSafe(seg, "largestHeadBytes", headBytesMax);
     Json.putSafe(seg, "removed", segmentsRemoved);
-    Writers.evidence(settings, "stage2-stations-" + n.path("subtask").intValue() + "-attempt-" + n.path("attemptNumber").intValue(), n);
+    Writers.evidence(settings, "stage2-stations-" + n.path("subtask").intValue() + "-" + incarnation, n);
   }
 }

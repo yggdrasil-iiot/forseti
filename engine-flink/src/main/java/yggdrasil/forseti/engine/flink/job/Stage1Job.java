@@ -68,7 +68,7 @@ public final class Stage1Job {
         .setParallelism(1).setMaxParallelism(1).name("stage1-rejects").uid("forseti-stage1-rejects");
     sinks.put("stage1-rejects", Topology.sinkProperties(s, "stage1-rejects"));
     collector.sinkTo(Topology.sink(s, "stage1-rejects")).setParallelism(1).name("stage1-rejects-sink").uid("forseti-stage1-rejects-sink");
-    Writers.evidence(s, "stage1-pins", Topology.pins(s, conf, parallelism, sources, sinks));
+    Writers.evidence(s, "stage1-pins-l" + s.launch(), Topology.pins(s, conf, parallelism, sources, sinks));
     env.execute(NAME);
   }
 }

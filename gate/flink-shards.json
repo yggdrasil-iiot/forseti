@@ -155,6 +155,50 @@
       }
     },
     {
+      "name": "restart-21",
+      "scenarios": [
+        "stage2-early"
+      ],
+      "generationRuns": [],
+      "restartRuns": [
+        "stage2-early@restart-21"
+      ],
+      "assertions": [
+        "I-21"
+      ],
+      "settings": {
+        "stage1": {
+          "tm.task.heap": "512m"
+        },
+        "stage2": {
+          "tm.task.heap": "512m"
+        }
+      }
+    },
+    {
+      "name": "restart-22",
+      "scenarios": [
+        "stage2-early"
+      ],
+      "generationRuns": [],
+      "restartRuns": [
+        "stage2-early@restart-22i",
+        "stage2-early@restart-22ii",
+        "stage2-early@restart-22iv"
+      ],
+      "assertions": [
+        "I-22"
+      ],
+      "settings": {
+        "stage1": {
+          "tm.task.heap": "512m"
+        },
+        "stage2": {
+          "tm.task.heap": "512m"
+        }
+      }
+    },
+    {
       "name": "horizon-no-departure",
       "scenarios": [
         "horizon-no-departure",
@@ -272,6 +316,12 @@
     "FL-JOB-SETTINGS",
     "FL-TIMER-INVARIANT",
     "R-INIT-EVIDENCE",
-    "R-CUT-EVIDENCE"
+    "R-CUT-EVIDENCE",
+    "R-MERGED-EXACT",
+    "R-MERGED-JUSTIFIED",
+    "R-RECOVERY-WINDOW",
+    "R-RECOVERED-EPOCH",
+    "R-BARRIER-REFS",
+    "C-3-RESTART-SKIPS"
   ]
 }

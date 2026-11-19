@@ -37,15 +37,27 @@ public interface ReplayEngine extends AutoCloseable {
     /** One run on a registered generation. {@code recording}: the built recording, already checked against its lock (an event-time
      *  replay's: the materialized replay recording); {@code causeKind}: {@code input}, or {@code replayed} for an event-time replay;
      *  {@code settings}: the shard's engine settings ({@code gate/<engine>-shards.json}), never a gate criterion. The run prepares its
-     *  generation on the store's {@code forseti.recovery-control} (the initial declaration) and writes no generation row. */
+     *  generation on the store's {@code forseti.recovery-control} (the initial declaration) and writes no generation row. {@code restart}:
+     *  the restart injection the run carries ({@link Restarts}), null for none; its attempts' generations replace {@code generation}, one
+     *  fresh run each, until an attempt is valid, and {@link Run#generation} names the one the run's files belong to. A restart run
+     *  writes its injection manifest beside the run files ({@code injections.json}, {@link #INJECTIONS}). */
     record Request(String label, Path scenario, Path recording, Path registry, Registered generation, String negativeControl, String causeKind,
-                   Path work, JsonNode settings) {}
+                   Path work, JsonNode settings, Restarts.Restart restart) {
+        /** A run without a restart injection. */
+        public Request(String label, Path scenario, Path recording, Path registry, Registered generation, String negativeControl, String causeKind,
+                       Path work, JsonNode settings) {
+            this(label, scenario, recording, registry, generation, negativeControl, causeKind, work, settings, null);
+        }
+    }
 
     /** A finished run: {@code out} holds the run files; {@code generation} what it ran on; {@code declarationOffset} and
      *  {@code controlEnd} the offset of its recovery declaration and the end offset H of the control topic after it; {@code evidence} the
      *  run's {@code evidence.json}; {@code summary} the engine's measurements for the report; {@code handle} the engine's own reference to
      *  the run (the topics an event-time replay's base journals are dumped from again). */
     record Run(Path out, Registered generation, long declarationOffset, long controlEnd, JsonNode evidence, ObjectNode summary, Object handle) {}
+
+    /** The injection manifest of a restart run under {@link Run#out} (spec 685). */
+    String INJECTIONS = "injections.json";
 
     /** Creates a control store of its own for the gate run ({@code forseti.generations}, {@code forseti.recovery-control}). */
     ControlStore controlStore(String name) throws Exception;

@@ -43,7 +43,8 @@ final class RunFold implements Closeable {
                 long revision, long cut, String digest) {}
 
     /** One progress record as read: its cut, its event time (W1 or W2; null for a ledger) and, for stage 2, its incident offsets. */
-    record Mark(long cutId, Long w, Long admissionW, int incidentOffsets) {}
+    /** One progress of a partition: its cut, event time, admissionW, incidentOffsets count and how many cuts it merged. */
+    record Mark(long cutId, Long w, Long admissionW, int incidentOffsets, int merged) {}
 
     final Path run;
     final String rulesDigest;
@@ -170,7 +171,7 @@ final class RunFold implements Closeable {
             Mark prev = marks.isEmpty() ? null : marks.get(marks.size() - 1);
             Long w = v.has("W1") ? Long.valueOf(v.get("W1").asLong()) : v.has("W2") ? Long.valueOf(v.get("W2").asLong()) : null;
             Long adm = v.path("admissionW").isIntegralNumber() ? Long.valueOf(v.get("admissionW").asLong()) : null;
-            Mark m = new Mark(c, w, adm, v.path("incidentOffsets").size());
+            Mark m = new Mark(c, w, adm, v.path("incidentOffsets").size(), v.path("mergedCutIds").size());
             if (prev != null && c <= prev.cutId()) findings.add("J-PROGRESS-ORDER", label() + ": progress cutId " + c + " after " + prev.cutId());
             if (prev != null && w != null && prev.w() != null && w < prev.w()) findings.add("J-PROGRESS-ORDER", label() + " cut " + c + ": event time " + w + " below " + prev.w());
             marks.add(m);

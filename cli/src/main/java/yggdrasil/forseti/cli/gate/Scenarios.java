@@ -201,6 +201,11 @@ final class Scenarios {
         com.fasterxml.jackson.databind.node.ObjectNode controlEvidence;
         /** Replay-gate findings of this run ({@link ReplayChecks}): assertion id -> {count, describe}; null on a core gate run. */
         com.fasterxml.jackson.databind.node.ObjectNode replay;
+        /** A replay-gate restart run's injection manifest ({@code injections.json}, spec 685), null on any other run. */
+        JsonNode restart;
+        /** A replay-gate run's cut accounting ({@link ReplayChecks#accounting}): completed cuts, and the (writer, cut) pairs merged into a
+         *  later progress, kept apart from them (spec 418, 620); null on a core gate run. */
+        com.fasterxml.jackson.databind.node.ObjectNode accounting;
         long t0() { return manifest.path("T0").asLong(); }
         JsonNode rule() { return rule != null ? rule : manifest.get("rule"); }
         JsonNode visit(String ref) {

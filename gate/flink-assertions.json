@@ -172,6 +172,16 @@
       "description": "Flink, shared placement (site-019): horizon-planned-late online: W1 = A at the planned cut, holeAt and holeAt - 1 admitted, holeAt - 2 replay-required beyond-horizon, visit 3 missingPeriods 1 before the late batch and 0 after; horizon-planned-late@replay on the locked replay recording: every deadline keeps its cut ids and is bracketed by the reported W1, the third sample attributed with cause replayed, no replay-required disposition, every timer row carries the replayed timer cause and precedes its progress; the base journals reread after the replay equal their index and fold alike, the replay journals carry only the replay generation; both generations shared under --state; on Flink, from the runs' evidence: the replay generation is a row of the base's forseti.generations topic in the same cluster, the next number after the base's, and its recovery declaration a later record of the same forseti.recovery-control topic"
     },
     {
+      "id": "I-21",
+      "pr": 6,
+      "description": "Flink, shared placement (site-019): stage2-early@restart-21 beside stage2-early: kill -9 of the JobManager and TaskManager JVMs of the stage-1 and stage-2 jobs together after batch k (placed by the harness: not the last batch, not a bracketing batch of a deadline nor the batch before them, batch k+1 at or above every telemetry partition's previous maximum), the recovery declaration targetEpoch = epochBefore + 1 committed before the kill, both jobs relaunched as a new launch restoring their latest completed checkpoint (restored checkpoint ids recorded, operator UIDs and transactional prefixes unchanged), batch k+1 written once every job is RUNNING as the first batch of the new restartEpoch; the run equal to the oracle at every planned cut, integrity clean (no duplicates, losses or revision gaps), its injection manifest complete (jobs restarted, epochBefore, targetEpoch, lastWrittenCutId, declaration, launches, expected = attributed = every stage-1 progress writer), its per-run restart assertions clean, and its committed outputs equal to the uninterrupted run's at every comparable cut both completed (the last cut among them)"
+    },
+    {
+      "id": "I-22",
+      "pr": 6,
+      "description": "Flink, shared placement (site-019): stage2-early@restart-22i, @restart-22ii and @restart-22iv beside stage2-early: (i) plan D8: the stage-1 station sink's transaction identified Ongoing, SIGSTOP of the stage-1 TaskManager, describeTransactions (transactional id, producer id, epoch) Ongoing with read_uncommitted end > LSO, SIGKILL, a second describeTransactions before the replacement starts still the same Ongoing transaction, the post-restart outcome (aborted or committed by the restored committer) recorded; an attempt with missing or ambiguous evidence is invalid and repeats on a fresh run up to 3 times, then error, never pass, every attempt recorded; (ii) stage 2 killed after stage-1 output of cut k is committed and before stage-2 processing (a process kill), no declaration, no stage-1 epoch moved; (iv) (i) then a second declaration and stage-1 kill once every job is RUNNING and before batch k+1, the first injection's attributed set empty; 22(iii) recorded as not applicable to Flink (spec 685), never a skip; each run equal to the oracle at every planned cut with clean integrity, a complete injection manifest, clean per-run restart assertions and its outputs equal to the uninterrupted run's at every comparable complete cut"
+    },
+    {
       "id": "J-DISPOSITION-COVERAGE",
       "pr": 5,
       "description": "Flink, over every execution of every shard: every scenario run and shuffled run: every delivered input has a disposition, every message member its part; inputsWithoutDisposition 0"
@@ -194,12 +204,12 @@
     {
       "id": "J-W1-FORMULA",
       "pr": 5,
-      "description": "Flink, over every execution of every shard: every run of the Flink gate (spec 718): W1 in cuts.json and in the stage-1 progress equals the Flink form, min over the subscribed raw telemetry partitions of (the largest sourceTs delivered on the partition through the cut - outOfOrdernessMs - 1), at every cut each station completed; admissionW = the previous W1"
+      "description": "Flink, over every execution of every shard: every run of the Flink gate (spec 718): W1 in cuts.json and in the stage-1 progress equals the Flink form, min over the subscribed raw telemetry partitions of (the largest sourceTs delivered on the partition through the cut - outOfOrdernessMs - 1), at every cut each station completed; admissionW = the previous W1; on a restart run at every cut a station completed after the restore too (the restored watermark starts at Long.MIN_VALUE and the first batch after the restart carries a record at or above every partition's previous maximum, spec 418)"
     },
     {
       "id": "J-W2-EQUALS-W1",
-      "pr": 5,
-      "description": "Flink, over every execution of every shard: every scenario run and shuffled run: stage-2 progress W2 equals the cut's W1, six incidentOffsets"
+      "pr": 6,
+      "description": "Flink, over every execution of every shard: every scenario run and shuffled run: stage-2 progress W2 equals the cut's W1, 6 x (1 + mergedCutIds) incidentOffsets (six on a cut that merged none, spec 725)"
     },
     {
       "id": "J-BASIS-CURRENT",
@@ -273,18 +283,48 @@
     },
     {
       "id": "FL-TIMER-INVARIANT",
-      "pr": 5,
-      "description": "Flink, over every execution of every shard: reviewer decision 4: at every cut close of every stage-1 station writer the native timers agree with the authoritative deadline index (every distinct deadline exactly one registration or held mark, Flink's timer queue exactly the registrations, held marks at or below the watermark) and every deadline registered before the close and at or below W1 is held; on a run with deadlines, timers were registered, fired and drained as held"
+      "pr": 6,
+      "description": "Flink, over every execution of every shard: reviewer decision 4: at every cut close of every stage-1 station writer the native timers agree with the authoritative deadline index (every distinct deadline exactly one registration or held mark, Flink's timer queue exactly the registrations, held marks at or below the watermark) and every deadline registered before the close and at or below W1 is held; on a run with deadlines, timers were registered, fired and drained as held; on a horizon run (a synthetic recording) the index had deadlines and Flink timers fired (reviewer decision 6 of PR 5), in every incarnation of the job summed"
     },
     {
       "id": "R-INIT-EVIDENCE",
-      "pr": 5,
-      "description": "Flink, over every execution of every shard: spec 723: the first progress of every stage-1 progress writer of every run (work records, samples, the station ledgers and the stage-1 reject collector) carries initEvidence naming the run's recovery declaration, the control end offset H its writers read and the engine's restore evidence of a first start; no later progress and no stage-2 progress carries one"
+      "pr": 6,
+      "description": "Flink, over every execution of every shard: spec 723: every stage-1 progress writer's first progress after each initialization (work records, samples, the station ledgers and the stage-1 reject collector) carries initEvidence: at the first start the run's recovery declaration, the control end offset H and the engine's first-start restore evidence; after a restart injection that injection's declaration, an H above it and the restore evidence the harness recorded for the launch (its restored checkpoint id); no other progress and no stage-2 progress carries one; for every restart injection the attributed set computed from the harness's records (launches, the committed progress at each kill) equals the set of stage-1 writers whose initEvidence points to its declaration, and the harness's progress log with Kafka offsets equals the dumped journals"
     },
     {
       "id": "R-CUT-EVIDENCE",
       "pr": 5,
       "description": "Flink, over every execution of every shard: every cut of every run's cuts.json has station entries and every station entry carries the onlineVisits its stage-1 operator recorded at that close (operator evidence, never derived from journal rows)"
+    },
+    {
+      "id": "R-MERGED-EXACT",
+      "pr": 6,
+      "description": "Flink, over every execution of every shard: spec 719: every progress's mergedCutIds are exactly the planned cuts between that writer's previous progress and this one, on every progress partition of both stages and both reject collectors"
+    },
+    {
+      "id": "R-MERGED-JUSTIFIED",
+      "pr": 6,
+      "description": "Flink, over every execution of every shard: spec 720: every merged cut of a stage-1 writer lies in a restart window of a stage-1 restart injection that reinitialized it (above its last committed progress at the kill, below the first cut at the injection's epoch: the recovery and the receive-order trigger inside the window) or is declared starved for the station; a stage-2 writer merges only the cuts its station's stage-1 writer merged; the stage-2 reject collector never merges"
+    },
+    {
+      "id": "R-RECOVERY-WINDOW",
+      "pr": 6,
+      "description": "Flink, over every execution of every shard: spec 721: no progress a reinitialized writer appended after the kill (at or above the high watermark the harness took at the kill, on each of its partitions) closes a cut below the first cut whose restartEpoch is at or above the epoch it fixed; committed is judged from the dumped read_committed journals"
+    },
+    {
+      "id": "R-RECOVERED-EPOCH",
+      "pr": 6,
+      "description": "Flink, over every execution of every shard: spec 722: every stage-1 progress carries the restartEpoch and recoveryRef the harness wrote the barriers of its cut with, and every recovered progress (a reinitialized writer's first after the kill) those of the declaration its writer fixed at initialization, so no barrier below that epoch closed it"
+    },
+    {
+      "id": "R-BARRIER-REFS",
+      "pr": 6,
+      "description": "Flink, over every execution of every shard: spec 725: every barrierRef names a barrier the harness wrote (cut, origin, through-offset), above the writer's previous progress and at or below this one, none twice, the closing cut's barriers the writer's required set; both evidence topics carry the same cutId and mergedCutIds; stage-2 incidentOffsets count 6 x (1 + mergedCutIds); no input of a run with merged cuts without a disposition"
+    },
+    {
+      "id": "C-3-RESTART-SKIPS",
+      "pr": 6,
+      "description": "Flink, over every execution of every shard: spec 726: comparison item 3 counts only restart skips, as (logical writer, cut) pairs (a station's two evidence topics and ledger once, an unfinished recovery attempt not again, the reject collectors apart); cuts.json lists a station at a cut exactly when the cut is neither a restart skip nor a starvation of it; report.json measurements.item3"
     }
   ]
 }
