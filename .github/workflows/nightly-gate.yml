@@ -87,8 +87,12 @@ jobs:
             forseti/engine-flink/target/engine/
           if-no-files-found: error
   # The Flink replay gate in one unsharded run: every scenario, generation run, restart run and assertion of gate/flink-shards.json in
-  # one process, each run with the engine settings of the first shard that plans it (a horizon recording keeps its shard's heap). The step
-  # records the summed resident memory of every java and python process every 2 s and prints the peak.
+  # one process, each run with the engine settings of the first shard that plans it (a horizon recording keeps its shard's heap), each
+  # run's own topics deleted on the one broker after the run. The step samples every 2 s the summed resident memory of every java and
+  # python process, the kernel's MemAvailable, the free disk and the broker container's memory (docker stats) into build/memory and
+  # prints a sample every minute to the job log (a runner that is shut down uploads no artifact; the log keeps what was printed); the
+  # gate prints and records one line per run (forseti.gate.memoryLog: harness heap after GC, live child processes, broker memory, data
+  # and topics, both clusters' TaskManager RSS), and the gate JVM writes its GC log there.
   flink-gate:
     name: flink gate, unsharded
     needs: [flink-package]
@@ -110,14 +114,26 @@ jobs:
         working-directory: forseti
         run: |
           mkdir -p build/memory
-          (while sleep 2; do echo "$(date +%s) $(ps -e -o rss=,comm= | awk '$2 ~ /^(java|python)/ {s += $1} END {print s + 0}')"; done) > build/memory/flink-rss-kib.txt &
+          free -m; df -h .
+          # columns: epoch s, summed RSS of java and python KiB, MemAvailable KiB, free disk KiB, broker container memory (docker stats)
+          (i=0; while sleep 2; do
+             b=$(docker stats --no-stream --format '{{.MemUsage}}' $(docker ps -q --filter name=forseti-replay-gate-) 2>/dev/null | head -1 | tr -d ' ')
+             l="$(date +%s) $(ps -e -o rss=,comm= | awk '$2 ~ /^(java|python)/ {s += $1} END {print s + 0}') $(awk '/^MemAvailable:/ {print $2}' /proc/meminfo) $(df -k --output=avail . | tail -1 | tr -d ' ') ${b:--}"
+             echo "$l" >> build/memory/flink-rss-kib.txt
+             if [ $((i % 20)) -eq 0 ]; then echo "sampler $(date -u +%H:%M:%S): java+python RSS, MemAvailable, free disk (KiB), broker: $l"; fi
+             i=$((i + 1))
+           done) &
           sampler=$!
           set +e
-          java -Xmx4g -Dforseti.engine.path=engine-flink/target/engine -jar cli/target/forseti.jar gate --engine flink --out build/flink --python "$(command -v python)"
+          java -Xmx4g -Xlog:gc:file=build/memory/flink-gate-gc.log:uptime -Dforseti.gate.memoryLog=build/memory/flink-runs.jsonl \
+            -Dforseti.engine.path=engine-flink/target/engine -jar cli/target/forseti.jar gate --engine flink --out build/flink --python "$(command -v python)"
           rc=$?
           set -e
           kill "$sampler"
           echo "peak summed RSS of java and python: $(awk '$2 > m {m = $2} END {printf "%.2f GiB", m / 1048576}' build/memory/flink-rss-kib.txt)"
+          echo "lowest MemAvailable: $(awk 'NR == 1 || $3 < m {m = $3} END {printf "%.2f GiB", m / 1048576}' build/memory/flink-rss-kib.txt)"
+          echo "lowest free disk: $(awk 'NR == 1 || $4 < m {m = $4} END {printf "%.2f GiB", m / 1048576}' build/memory/flink-rss-kib.txt)"
+          echo "peak gate heap after GC: $(sed -nE 's/.*->([0-9]+)M\(.*/\1/p' build/memory/flink-gate-gc.log | sort -n | tail -1) MiB"
           exit "$rc"
       - name: Flink gate report
         if: always()

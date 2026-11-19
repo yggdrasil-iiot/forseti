@@ -82,6 +82,19 @@ final class FlinkRun {
   record Handle(String bootstrap, List<ReplayTopics.Spec> plan, Map<String, String> names, long generation, Path recording,
                 yggdrasil.forseti.cli.replay.OffsetMap offsets) {}
 
+  /** The start of every topic prefix of the run labelled {@code label} (each attempt adds eight hex digits and a dot). */
+  static String labelPrefix(String label) { return "flink-" + label.replaceAll("[^a-z0-9.-]", "-") + "-"; }
+
+  /** The run's own topics (its inputs and outputs; never a control store's) among {@code topics}: those named
+   *  {@code labelPrefix(label) + <8 hex digits> + "." + <a planned input or output>}, of every attempt of the run. */
+  static List<String> ownTopics(String label, Collection<String> topics) {
+    List<String> bases = new ArrayList<>();
+    for (String b : ReplayTopics.INPUTS) bases.add(java.util.regex.Pattern.quote(b));
+    for (String b : ReplayTopics.OUTPUTS) bases.add(java.util.regex.Pattern.quote(b));
+    java.util.regex.Pattern p = java.util.regex.Pattern.compile(java.util.regex.Pattern.quote(labelPrefix(label)) + "[0-9a-f]{8}\\.(" + String.join("|", bases) + ")");
+    return topics.stream().filter(t -> p.matcher(t).matches()).sorted().toList();
+  }
+
   static ReplayEngine.Run run(String bootstrap, Path root, ReplayEngine.Request req, FlinkCluster.Memory stage1Memory, FlinkCluster.Memory stage2Memory) throws Exception {
     Restarts.Restart restart = req.restart();
     if (restart == null) return attempt(bootstrap, root, req, req.generation(), stage1Memory, stage2Memory, null, 1, Json.JSON.createArrayNode());
@@ -119,7 +132,7 @@ final class FlinkRun {
 
     // (1) the run's own input and output topics; forseti.generations and forseti.recovery-control are its control store's (spec 577: the
     // generation was registered there by the gate, before any run started)
-    String prefix = "flink-" + req.label().replaceAll("[^a-z0-9.-]", "-") + "-" + UUID.randomUUID().toString().substring(0, 8) + ".";
+    String prefix = labelPrefix(req.label()) + UUID.randomUUID().toString().substring(0, 8) + ".";
     List<ReplayTopics.Spec> plan = new ArrayList<>(), create = new ArrayList<>();
     for (ReplayTopics.Spec s : ReplayTopics.plan(prefix)) {
       String shared = s.base().equals(ReplayTopics.GENERATIONS) ? cs.generationsTopic() : s.base().equals(ReplayTopics.RECOVERY_CONTROL) ? cs.recoveryControlTopic() : null;

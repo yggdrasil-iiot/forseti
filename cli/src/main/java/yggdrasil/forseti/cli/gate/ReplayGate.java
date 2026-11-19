@@ -36,9 +36,11 @@ import yggdrasil.forseti.core.canon.Canonical;
  * <p>Layouts as the core gate's: {@code --shard <name>} runs that shard's scenarios and generation runs and evaluates its own
  * assertions, writing {@code report.json} and {@code summaries.json}; {@code --aggregate <dir>} reads every shard's output (the same
  * manifest, plan and engine artifact, each shard exactly its own ids) and evaluates the plan's aggregate ids; neither runs every shard in
- * one process. {@code --negative-control <name>} runs one control of the engine's control file on a shard that owns or feeds its intended
- * ids (or, with {@code --aggregate}, over that control's shard runs); its report has {@code kind: negative-control} and a {@code control}
- * verdict that {@code scripts/check-control-report.py} checks: a crash or a missing run never counts as an intended failure.
+ * one process. Without either (the full layout, the nightly unsharded gate) every shard's runs share one broker, and each run's own
+ * topics are deleted after the run ({@link ReplayEngine#release}). {@code --negative-control <name>} runs one control of the engine's
+ * control file on a shard that owns or feeds its intended ids (or, with {@code --aggregate}, over that control's shard runs); its report
+ * has {@code kind: negative-control} and a {@code control} verdict that {@code scripts/check-control-report.py} checks: a crash or a
+ * missing run never counts as an intended failure.
  * Exit 0 only when every expected id ran and held; 1 otherwise; 2 for a usage error.
  */
 public final class ReplayGate {
@@ -85,8 +87,11 @@ public final class ReplayGate {
             return 2;
         }
         Path outDir = Path.of(flags.getOrDefault("out", "build/" + engine)).toAbsolutePath();
-        return new Gate(engine, root, outDir, flags, command, files, plan, ids, shard, aggregateDir == null ? null : Path.of(aggregateDir).toAbsolutePath(), control, open,
-            out, err).run();
+        Gate g = new Gate(engine, root, outDir, flags, command, files, plan, ids, shard, aggregateDir == null ? null : Path.of(aggregateDir).toAbsolutePath(), control, open,
+            out, err);
+        // the unsharded layout: one broker serves every run of the plan; each run's own topics are deleted once nothing reads them again
+        g.releaseTopics = shard == null && aggregateDir == null && control == null;
+        return g.run();
     }
 
     // --- the plan and the controls -------------------------------------------------------------------------------------------
@@ -251,6 +256,16 @@ public final class ReplayGate {
         @Override public String notRun(String name) { return runs.containsKey(name) ? null : planned.contains(name) ? "not made: its run did not start" : "not run: not in this gate run's shards"; }
     }
 
+    /** Whether an event-time replay of scenario {@code name} that the gate run plans has still to run (its redump reads the scenario's
+     *  topics, so the unsharded layout deletes them only after it). */
+    static boolean redumpedLater(EngineRuns runs, String name) {
+        for (String x : runs.planned) {
+            Scenarios.GenerationRun g = Scenarios.generationRun(x);
+            if (g != null && GateEvidence.REPLAY.equals(g.variant()) && g.scenario().equals(name) && !runs.runs.containsKey(x)) return true;
+        }
+        return false;
+    }
+
     private static final class Gate {
         final String engine, command;
         final Path root, out;
@@ -267,6 +282,9 @@ public final class ReplayGate {
         final Set<String> crashed = new TreeSet<>();
         /** Every run keeps its journals and recording ({@code forseti requirements} reads them after the runs). */
         boolean keepAll;
+        /** The unsharded layout ({@link #release}): what each run's release deleted, by run label. */
+        boolean releaseTopics;
+        final ObjectNode released = Json.object();
 
         Gate(String engine, Path root, Path out, Map<String, String> flags, String command, GateFiles files, Plan plan, List<String> ids, String shard, Path aggregate,
              Control control, Function<Map<String, String>, ReplayEngine> open, PrintStream stdout, PrintStream stderr) {
@@ -346,6 +364,7 @@ public final class ReplayGate {
                         c.registrations = generations;
                         Map<String, Planned> byName = new HashMap<>();
                         for (Planned p : planned) byName.put(p.name, p);
+                        RunResources.after("(registered, before the first run)", e, null, null, stdout);
                         for (Planned p : planned) execute(c, e, runs, byName, p, shard != null ? plan.shard(shard).settings : plan.settingsOf(p.name), runsOut, engineSummary);
                     }
                     Summaries mine = new Summaries();
@@ -393,6 +412,7 @@ public final class ReplayGate {
             report.set("controlStores", stores);
             report.set("generations", generations);
             report.set("runs", runsOut);
+            if (releaseTopics) report.set("releasedTopics", released);
             if (control != null) report.set("control", verdict(intended, acc, error, exit, evaluated));
             else report.putNull("control");
             try { Files.createDirectories(out); Json.write(out.resolve("report.json"), report); }
@@ -576,6 +596,25 @@ public final class ReplayGate {
             try { Files.createDirectories(c.logs); Files.writeString(c.logs.resolve("run-" + r.label + ".log"), r.summary() + "\n" + r.ms + "\n" + (r.replay == null ? "" : r.replay.toString()) + "\n"); }
             catch (IOException | RuntimeException ignored) { /* for reading */ }
             stdout.println("    " + (r.failure != null ? "FAILED " + r.failure : (r.ok() ? "ok " : "NOT OK ") + r.summary()));
+            if (releaseTopics) release(e, runs, p);
+            ReplayEngine.Run done = runs.engineRuns.get(name);
+            RunResources.after(name, e, done == null ? null : done.summary(), released.get(name), stdout);
+        }
+
+        /** The unsharded layout, after a run (crashed or not): its own topics deleted on the broker ({@link ReplayEngine#release}) once
+         *  its dump, its comparison with the oracle and its per-run findings are made; the online base of an event-time replay after the
+         *  replay's redump of its journals. The comparison reads the dumped files only, and every later assertion the run summaries and
+         *  files: no topic of a finished run is read again. */
+        void release(ReplayEngine e, EngineRuns runs, Planned p) {
+            List<String> labels = new ArrayList<>();
+            if (p.g != null && GateEvidence.REPLAY.equals(p.g.variant())) { labels.add(p.name); labels.add(p.g.scenario()); }
+            else if (!redumpedLater(runs, p.name)) labels.add(p.name);
+            for (String l : labels) {
+                ObjectNode x = e.release(l);
+                released.set(l, x);
+                stdout.println("    topics of " + l + ": " + (x.has("error") ? "not deleted: " + x.path("error").asText()
+                    : "deleted " + x.path("deleted").asLong() + (x.path("remaining").isEmpty() ? "" : ", still listed " + x.path("remaining"))));
+            }
         }
 
         /** Whether a restart run of this gate run runs on scenario {@code name}'s recording. */

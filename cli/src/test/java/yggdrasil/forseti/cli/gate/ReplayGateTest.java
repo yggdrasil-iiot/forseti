@@ -208,4 +208,48 @@ class ReplayGateTest {
         rep.putArray("runs");
         Json.write(d.resolve("report.json"), rep);
     }
+
+    /** The unsharded layout deletes a run's topics after the run, except the online base of an event-time replay the gate run still
+     *  has to make: the replay's redump reads them. A rule change reads its base's recording, not its topics. */
+    @Test void onlyTheBaseOfAPendingEventTimeReplayKeepsItsTopics() {
+        ReplayGate.EngineRuns runs = new ReplayGate.EngineRuns(List.of("baseline", "horizon-planned-late", "baseline@rule-1.0.1", "horizon-planned-late@replay"));
+        assertTrue(ReplayGate.redumpedLater(runs, "horizon-planned-late"));
+        assertFalse(ReplayGate.redumpedLater(runs, "baseline"));
+        assertFalse(ReplayGate.redumpedLater(runs, "horizon-planned-late@replay"));
+        runs.runs.put("horizon-planned-late@replay", new Scenarios.Run());
+        assertFalse(ReplayGate.redumpedLater(runs, "horizon-planned-late"));
+        // a gate run that does not plan the replay (a shard of the base alone) never defers
+        assertFalse(ReplayGate.redumpedLater(new ReplayGate.EngineRuns(List.of("horizon-planned-late")), "horizon-planned-late"));
+    }
+
+    /** The per-run resource record is off unless {@code forseti.gate.memoryLog} names a file; its line names the harness heap, the live
+     *  children, the broker's memory and data, its topics and what the run's release deleted. */
+    @Test void theResourceRecordIsOffByDefaultAndItsLineNamesEveryMeasure() throws Exception {
+        assertNull(System.getProperty(RunResources.PROPERTY));
+        assertNull(RunResources.file());
+        ObjectNode h = RunResources.harness();
+        assertTrue(h.path("heapAfterGcBytes").asLong() > 0);
+        assertTrue(h.path("liveChildren").isArray());
+        ObjectNode engine = Json.object();
+        Json.putSafe(engine, "brokerMemoryBytes", 3L << 30);
+        Json.putSafe(engine, "brokerAnonBytes", 1L << 30);
+        Json.putSafe(engine, "brokerFileBytes", 2L << 30);
+        Json.putSafe(engine, "brokerDataBytes", 80L << 20);
+        Json.putSafe(engine, "topics", 13);
+        Json.putSafe(engine, "partitions", 70);
+        ObjectNode summary = Json.object();
+        Json.putSafe(summary.putObject("memory").putObject("stage1"), "taskManagerRssPeakBytes", 851L << 20);
+        ObjectNode released = Json.putSafe(Json.object(), "deleted", 11);
+        ObjectNode r = RunResources.record("baseline", h, engine, summary, released);
+        String line = RunResources.line(r);
+        assertTrue(line.startsWith("    memory baseline: harness heap after GC "), line);
+        assertTrue(line.contains("broker container 3072 MiB (anon 1024 MiB, file 2048 MiB), broker data 80 MiB, topics 13 / partitions 70 (11 deleted after the run)"), line);
+        assertTrue(line.contains("stage1 TM RSS peak 851 MiB"), line);
+        Path f = tmp.resolve("memory/runs.jsonl");
+        RunResources.append(f, r);
+        RunResources.append(f, r);
+        List<String> lines = Files.readAllLines(f);
+        assertEquals(2, lines.size());
+        assertEquals("baseline", Json.read(lines.get(0).getBytes(StandardCharsets.UTF_8)).path("run").asText());
+    }
 }

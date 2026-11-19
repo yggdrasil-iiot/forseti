@@ -123,4 +123,25 @@ class FlinkGateChecksTest {
     assertEquals(6, settings.path("stage1").path("keyedParallelism").asInt());
     assertEquals("read_committed", settings.path("dumpConsumer").path("isolation.level").asText());
   }
+
+  /** A run's own topics (the unsharded gate deletes them after the run): its inputs and outputs of every attempt, under the prefix
+   *  its label gives; never a control store's, nor those of another run whose label starts with this one's. */
+  @Test void aRunsOwnTopicsAreItsInputsAndOutputsOfEveryAttempt() {
+    String a = "flink-smoke-0a1b2c3d.", b = "flink-smoke-deadbeef.";
+    List<String> topics = new java.util.ArrayList<>();
+    for (yggdrasil.forseti.cli.replay.ReplayTopics.Spec s : yggdrasil.forseti.cli.replay.ReplayTopics.plan(a)) topics.add(s.name());
+    topics.add(b + "ot.messages");
+    topics.addAll(List.of("flink-smoke-plc-0a1b2c3d.ot.messages", "flink-store-pipeline-0a1b2c3d.forseti.generations", "flink-smoke-0A1B2C3D.ot.messages",
+        "flink-smoke-0a1b2c3.ot.messages", "flink-smoke-0a1b2c3d.forseti.lineage"));
+    List<String> own = FlinkRun.ownTopics("smoke", topics);
+    // 4 inputs and 7 outputs of the first attempt, the second attempt's input; its control topics are the store's (spec 577)
+    assertEquals(12, own.size(), own.toString());
+    assertTrue(own.contains(b + "ot.messages"));
+    assertFalse(own.contains(a + "forseti.generations"));
+    assertFalse(own.contains(a + "forseti.recovery-control"));
+    assertFalse(own.stream().anyMatch(t -> t.startsWith("flink-smoke-plc-") || t.startsWith("flink-store-")), own.toString());
+    assertEquals("flink-dedicated-baseline-", FlinkRun.labelPrefix("dedicated/baseline"));
+    assertEquals("flink-horizon-planned-late-replay-", FlinkRun.labelPrefix("horizon-planned-late@replay"));
+    assertEquals(List.of(), FlinkRun.ownTopics("horizon-planned-late", List.of("flink-horizon-planned-late-replay-0a1b2c3d.ot.messages")));
+  }
 }

@@ -16,6 +16,8 @@ import yggdrasil.forseti.core.Json;
  *  waits until it answers; {@link #close} removes exactly that container. The test helper {@code DockerKafka} starts the same broker. */
 public final class DockerBroker implements AutoCloseable {
     public static final String NAME_PREFIX = "forseti-replay-gate-";
+    /** The broker's log directory inside the container. */
+    static final String LOG_DIRS = "/tmp/kraft-combined-logs";
     private final String bootstrap, container, image;
 
     private DockerBroker(String bootstrap, String container, String image) { this.bootstrap = bootstrap; this.container = container; this.image = image; }
@@ -49,7 +51,7 @@ public final class DockerBroker implements AutoCloseable {
         env.put("KAFKA_TRANSACTION_STATE_LOG_MIN_ISR", "1");
         env.put("KAFKA_MIN_INSYNC_REPLICAS", "1");
         env.put("KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS", "0");
-        env.put("KAFKA_LOG_DIRS", "/tmp/kraft-combined-logs");
+        env.put("KAFKA_LOG_DIRS", LOG_DIRS);
         env.forEach((a, b) -> { cmd.add("-e"); cmd.add(a + "=" + b); });
         cmd.add(image);
         String out = exec(cmd, 300);
@@ -64,6 +66,26 @@ public final class DockerBroker implements AutoCloseable {
                 try { Thread.sleep(1000); } catch (InterruptedException x) { Thread.currentThread().interrupt(); broker.close(); throw new IllegalStateException(x); }
             }
         }
+    }
+
+    /** The container's memory as its cgroup reports it ({@code memory.current}, and {@code anon} and {@code file} of
+     *  {@code memory.stat}, cgroup v2; the page cache of the log segments is {@code file}) and the size of its log directory, for the
+     *  nightly resource record (never a gate criterion); a value that cannot be read is absent. */
+    public Map<String, Long> stats() {
+        Map<String, Long> m = new LinkedHashMap<>();
+        try {
+            String out = exec(List.of("docker", "exec", container, "sh", "-c",
+                "cat /sys/fs/cgroup/memory.current; grep -E '^(anon|file) ' /sys/fs/cgroup/memory.stat; du -sk " + LOG_DIRS), 60);
+            String[] lines = out.trim().split("\\R");
+            m.put("brokerMemoryBytes", Long.parseLong(lines[0].trim()));
+            for (String l : lines) {
+                String[] f = l.trim().split("\\s+");
+                if (f.length == 2 && f[0].equals("anon")) m.put("brokerAnonBytes", Long.parseLong(f[1]));
+                if (f.length == 2 && f[0].equals("file")) m.put("brokerFileBytes", Long.parseLong(f[1]));
+                if (f.length == 2 && f[1].equals(LOG_DIRS)) m.put("brokerDataBytes", Long.parseLong(f[0]) * 1024);
+            }
+        } catch (RuntimeException ignored) { /* not measured */ }
+        return m;
     }
 
     @Override public void close() {
