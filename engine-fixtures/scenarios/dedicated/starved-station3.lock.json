@@ -1,14 +1,14 @@
 {
   "lockVersion": 1,
   "scenario": "starved-station3",
-  "scenarioSha256": "178bacfef516fd2ac1a21a5a4775b9b72f1c5ab048f7d19ceaf4a774a296c841",
+  "scenarioSha256": "c00fa9277ae4ef1d242b9ee1a1142695539d72a3682272f9a6942d4ecd14b1fd",
   "generator": "forseti recordings build 0.1.0",
   "counts": {
     "messages": 15760,
     "samples": 22064,
     "sessions": 5,
     "occupancy": 32,
-    "incidents": 0,
+    "incidents": 1,
     "cuts": 74
   },
   "firstBatchTelemetryPartitions": [
@@ -91,12 +91,18 @@
         "ref": "visit-15",
         "station": "site-071:line2:station3",
         "at": 1794184320000
+      },
+      {
+        "kind": "incident-settlement",
+        "ref": "inc-24",
+        "station": "site-071:line2:station3",
+        "at": 1794183960000
       }
     ]
   },
   "files": {
-    "expected.json": "6c3d908c2d6f2de657a009553c660a303afde45b6d7e6ead012beda1b542c7f8",
-    "manifest.json": "7f5af2809f256fabd7e2a4234766e420ad7e5849f2d63fe103a466f71ca767e9",
+    "expected.json": "d55ee92fa8b257cb3a77ba3350d0bcf99751ff0cbe66a6df260e27ef1bcee11e",
+    "manifest.json": "d2a073974b61568762610fc7a1c55270c3e47f510a0c84ea50e21a46aabbfde6",
     "mfg.occupancy/0.jsonl": "596421ee5fbfb51b6a72f057dff2405e0d896dda3a445b318760d1f810c4c4f6",
     "mfg.occupancy/1.jsonl": "3f00b399f70deb4e465a1ce53561305c52a7ec9a077c20ae4c7da0b783074d17",
     "mfg.occupancy/2.jsonl": "12e15bdb480610a8164f541610bc0ae9d6000b998420033d900b8c8364c9d9cf",
@@ -112,7 +118,7 @@
     "ot.sessions/5.jsonl": "2c6bca4ba935bd85352be87fe4c3ba0b480fa17f023b233156227e6f8b3a58f0",
     "quality.incidents/0.jsonl": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
     "quality.incidents/1.jsonl": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-    "quality.incidents/2.jsonl": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "quality.incidents/2.jsonl": "3d1d506bf3f0f405c1ceb0942875711ea03f624191f935141c971fd507f9f0db",
     "quality.incidents/3.jsonl": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
     "quality.incidents/4.jsonl": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
     "quality.incidents/5.jsonl": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",

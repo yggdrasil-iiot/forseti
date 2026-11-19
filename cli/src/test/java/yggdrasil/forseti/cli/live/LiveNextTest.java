@@ -36,6 +36,10 @@ class LiveNextTest {
     static final Map<String, String> NOCHECK = Map.of("line2-dedicated-plc-nocheck", "dedicated-plc", "line2-shared-plc-nocheck", "shared-plc");
     static final Map<String, String> BUMPED = Map.of("line2-dedicated", "dedicated", "line2-shared", "shared");
     static final Set<String> DERIVED_FILES = Set.of("attribution-rules/0.json", "impact-rules/0.json", "proposal.json", "submission.json");
+    /** The streams appended after registry-next was written (injection 24's starvation releases, {@link LiveStarvationTest}): only in
+     *  registry, published under a third key of each principal. */
+    static final Set<String> STARVATION = LiveStarvationTest.STREAMS.keySet();
+    static final Set<String> IDENTITY = Set.of("identity/activation-policy.json", "identity/authorized-keys.jsonl");
 
     static long signedAt(Path mappings, String stream) {
         JsonNode env = Json.read(mappings.resolve("head-attestations").resolve(stream + ".dsse.json"));
@@ -61,18 +65,28 @@ class LiveNextTest {
     @Test void theStep5HeadsAreUnchangedAndRegistryNextOnlyAdvancesTheBumpedStreams() throws Exception {
         for (var e : STEP5_HEADS.entrySet())
             assertEquals(e.getValue(), Json.text(Json.read(REGISTRY.resolve("mappings/heads").resolve(e.getKey() + ".json")), "sha256"), e.getKey());
-        assertEquals(List.of("line2-dedicated", "line2-dedicated-plc", "line2-dedicated-plc-nocheck", "line2-shared", "line2-shared-plc", "line2-shared-plc-nocheck"),
-            streams(REGISTRY));
-        assertEquals(streams(REGISTRY), streams(NEXT));
-        // Every registry file is in registry-next byte for byte, but the bumped streams' heads, head attestations and anchors;
-        // their anchors only grow.
+        List<String> step6 = List.of("line2-dedicated", "line2-dedicated-plc", "line2-dedicated-plc-nocheck", "line2-shared", "line2-shared-plc", "line2-shared-plc-nocheck");
+        assertEquals(step6, streams(NEXT));
+        List<String> all = new ArrayList<>(step6);
+        all.addAll(STARVATION);
+        Collections.sort(all);
+        assertEquals(all, streams(REGISTRY));
+        // Every registry file is in registry-next byte for byte, but the bumped streams' heads, head attestations and anchors (their
+        // anchors only grow), the starvation streams' files (registry only) and the two identity files (registry-next's plus the
+        // starvation streams' rules and keys, appended).
         Map<String, String> reg = PlacementTest.inventory(REGISTRY), next = PlacementTest.inventory(NEXT);
         Set<String> moved = new TreeSet<>();
         for (String s : BUMPED.keySet())
             moved.addAll(List.of("mappings/heads/" + s + ".json", "mappings/head-attestations/" + s + ".dsse.json", "anchor/mapping-head-" + s + ".anchor.jsonl"));
         for (var e : reg.entrySet())
-            if (moved.contains(e.getKey())) assertNotEquals(e.getValue(), next.get(e.getKey()), e.getKey());
+            if (LiveStarvationTest.ofStarvation(e.getKey())) assertNull(next.get(e.getKey()), e.getKey());
+            else if (moved.contains(e.getKey()) || IDENTITY.contains(e.getKey())) assertNotEquals(e.getValue(), next.get(e.getKey()), e.getKey());
             else assertEquals(e.getValue(), next.get(e.getKey()), e.getKey());
+        String keys = Files.readString(REGISTRY.resolve("identity/authorized-keys.jsonl")), nextKeys = Files.readString(NEXT.resolve("identity/authorized-keys.jsonl"));
+        assertTrue(keys.startsWith(nextKeys) && keys.length() > nextKeys.length(), "the authorized keys are appended to");
+        JsonNode policy = Json.read(REGISTRY.resolve("identity/activation-policy.json")), nextPolicy = Json.read(NEXT.resolve("identity/activation-policy.json"));
+        for (int i = 0; i < nextPolicy.path("rules").size(); i++) assertEquals(nextPolicy.path("rules").get(i), policy.path("rules").get(i), "policy rule " + i);
+        assertEquals(nextPolicy.path("rules").size() + 2 * STARVATION.size(), policy.path("rules").size());
         for (String s : BUMPED.keySet()) {
             String a = Files.readString(REGISTRY.resolve("anchor/mapping-head-" + s + ".anchor.jsonl")), b = Files.readString(NEXT.resolve("anchor/mapping-head-" + s + ".anchor.jsonl"));
             assertTrue(b.startsWith(a) && b.length() > a.length(), s + " anchor is appended to");
@@ -119,7 +133,7 @@ class LiveNextTest {
 
     @Test void everyHeadVerifiesAtItsOwnClockUnderTheKeysThatSignedIt(@TempDir Path tmp) throws Exception {
         List<String> lines = Files.readAllLines(LIVE.resolve("trusted-keys.jsonl"));
-        assertEquals(4, lines.size());
+        assertEquals(6, lines.size(), "the step-5, step-6 and starvation keys");
         assertEquals(lines, Files.readAllLines(REGISTRY.resolve("identity/authorized-keys.jsonl")));
         TrustedKeys all = TrustedKeys.load(LIVE.resolve("trusted-keys.jsonl")), old = keys(tmp, "step5.jsonl", lines.subList(0, 2)),
             added = keys(tmp, "added.jsonl", lines.subList(2, 4));
@@ -127,6 +141,7 @@ class LiveNextTest {
         for (Path registry : List.of(REGISTRY, NEXT)) {
             Path m = registry.resolve("mappings");
             for (String s : streams(registry)) {
+                if (STARVATION.contains(s)) continue;   // LiveStarvationTest
                 long now = signedAt(m, s) + 60_000;
                 boolean bumped = registry == NEXT && BUMPED.containsKey(s);
                 HeadVerifier.Head h = HeadVerifier.verify(m, s, all, new FloorStore(tmp.resolve("f" + n++)), now);
@@ -145,7 +160,7 @@ class LiveNextTest {
         TrustedKeys all = TrustedKeys.load(LIVE.resolve("trusted-keys.jsonl"));
         Path m = NEXT.resolve("mappings");
         long latest = 0;
-        for (String s : streams(NEXT)) latest = Math.max(latest, signedAt(m, s));
+        for (String s : streams(NEXT)) latest = Math.max(latest, signedAt(m, s));   // registry-next has no starvation stream
         int n = 0;
         for (String s : streams(NEXT)) HeadVerifier.verify(m, s, all, new FloorStore(tmp.resolve("f" + n++)), latest + 60_000);
         // A step-5 head's clock is before every appended head: one stream's signedAt + 60 s would refuse them as signed in the future.

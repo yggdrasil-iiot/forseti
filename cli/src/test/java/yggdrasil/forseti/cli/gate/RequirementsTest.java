@@ -170,6 +170,75 @@ class RequirementsTest {
         assertThrows(IllegalArgumentException.class, () -> ReplayRequirements.Manifest.load(ROOT.resolve("gate/flink-requirements.json"), "kafka-streams"));
     }
 
+    // --- injection 24's incidents --------------------------------------------------------------------------------------------------
+
+    static ObjectNode set(boolean settled, String status) {
+        ObjectNode s = Json.object();
+        s.putObject("coverage").put("settled", settled).put("status", status);
+        s.putObject("incident").put("incidentId", "inc-24").put("stationRef", "s3");
+        return s;
+    }
+
+    /** An incident whose set and assessments are given per cut (the last value holds for every later cut). */
+    static ReplayRequirements.Incident incident(TreeMap<Long, JsonNode> sets, TreeMap<Long, Map<String, JsonNode>> units, long last) {
+        return new ReplayRequirements.Incident("k", "inc-24", "s3", c -> { var e = sets.floorEntry(c); return e == null ? null : e.getValue(); },
+            c -> { var e = units.floorEntry(c); return e == null ? Map.of() : e.getValue(); }, last);
+    }
+
+    static TreeMap<Long, JsonNode> sets(Object... cutAndSet) {
+        TreeMap<Long, JsonNode> m = new TreeMap<>();
+        for (int i = 0; i < cutAndSet.length; i += 2) m.put(((Number) cutAndSet[i]).longValue(), (JsonNode) cutAndSet[i + 1]);
+        return m;
+    }
+
+    static TreeMap<Long, Map<String, JsonNode>> units(Object... cutAndStatus) {
+        TreeMap<Long, Map<String, JsonNode>> m = new TreeMap<>();
+        for (int i = 0; i < cutAndStatus.length; i += 2) m.put(((Number) cutAndStatus[i]).longValue(), Map.of("u1", Json.object().put("status", (String) cutAndStatus[i + 1])));
+        return m;
+    }
+
+    @Test void anIncidentUnsettledBeforeTheStarvationStaysSoAtEveryStarvedCutAndEndsAsTheControl() {
+        // delivered at cut 3, starved cuts 6..8, settled after the resume at cut 10
+        TreeSet<Long> starved = new TreeSet<>(List.of(6L, 7L, 8L));
+        var mine = Map.of("k", incident(sets(3, set(false, "incomplete"), 10, set(true, "complete")), units(3, "insufficient", 10, "affected-candidate"), 12));
+        var control = Map.of("k", incident(sets(3, set(false, "incomplete"), 7, set(true, "complete")), units(3, "insufficient", 7, "affected-candidate"), 11));
+        ReplayRequirements.IncidentEvidence e = ReplayRequirements.incidentEvidence(mine, control, 5, starved);
+        assertEquals(List.of(), e.problems());
+        assertEquals(1, e.unsettled());
+        assertEquals(1, e.assessments());
+        // the set settles during the starvation
+        e = ReplayRequirements.incidentEvidence(Map.of("k", incident(sets(3, set(false, "incomplete"), 7, set(true, "complete")), units(3, "insufficient"), 12)), control, 5, starved);
+        assertTrue(e.problems().get(0).contains("its affected set changed at starved cut 7"), e.problems().toString());
+        // an assessment changes during the starvation
+        e = ReplayRequirements.incidentEvidence(Map.of("k", incident(sets(3, set(false, "incomplete"), 10, set(true, "complete")), units(3, "insufficient", 8, "affected-candidate"), 12)), control, 5, starved);
+        assertTrue(e.problems().get(0).contains("its assessments changed at starved cut 8"), e.problems().toString());
+        // after the resume the bodies are not the control's
+        e = ReplayRequirements.incidentEvidence(Map.of("k", incident(sets(3, set(false, "incomplete"), 10, set(true, "complete")), units(3, "insufficient", 10, "not-affected"), 12)), control, 5, starved);
+        assertEquals(List.of("incident inc-24: its assessments at the last cut differ from the control's"), e.problems());
+        // the control has no set of it
+        e = ReplayRequirements.incidentEvidence(mine, Map.of(), 5, starved);
+        assertEquals(List.of("incident inc-24: the control has no affected set of it"), e.problems());
+    }
+
+    @Test void anIncidentSettledOrNotDeliveredBeforeTheStarvationIsNotChecked() {
+        TreeSet<Long> starved = new TreeSet<>(List.of(6L, 7L, 8L));
+        var control = Map.of("k", incident(sets(3, set(true, "complete")), units(3, "affected-candidate"), 11));
+        // settled at cut 4, before the starvation
+        ReplayRequirements.IncidentEvidence e = ReplayRequirements.incidentEvidence(Map.of("k", incident(sets(3, set(false, "incomplete"), 4, set(true, "complete")), units(3, "affected-candidate"), 12)), control, 5, starved);
+        assertEquals(0, e.unsettled());
+        assertEquals(List.of(), e.problems());
+        // delivered with the late burst, after the starvation
+        e = ReplayRequirements.incidentEvidence(Map.of("k", incident(sets(9, set(true, "complete")), units(9, "affected-candidate"), 12)), control, 5, starved);
+        assertEquals(0, e.unsettled());
+    }
+
+    @Test void injection24sRunsAndTheirControlsAreInTheManifest() {
+        for (String pre : List.of("dedicated/", ""))
+            for (String n : List.of(ReplayRequirements.STARVED, ReplayRequirements.CONTROL)) assertTrue(ReplayRequirements.RUNS.contains(pre + n), pre + n);
+        assertEquals(10, ReplayRequirements.RUNS.size());
+        assertEquals(13, ReplayRequirements.IDS.size());
+    }
+
     // --- common cuts -------------------------------------------------------------------------------------------------------------
 
     static Map<Long, String> boundaries(String... keys) {

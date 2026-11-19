@@ -9,7 +9,9 @@
       "plcStream": "line2-shared-plc",
       "plcRelease": "line2-rules-shared-plc",
       "plcNocheckStream": "line2-shared-plc-nocheck",
-      "plcNocheckRelease": "line2-rules-shared-plc-nocheck"
+      "plcNocheckRelease": "line2-rules-shared-plc-nocheck",
+      "starvationStream": "line2-shared-starvation",
+      "starvationRelease": "line2-rules-shared-starvation"
     },
     "dedicated": {
       "site": "site-071",
@@ -18,7 +20,9 @@
       "plcStream": "line2-dedicated-plc",
       "plcRelease": "line2-rules-dedicated-plc",
       "plcNocheckStream": "line2-dedicated-plc-nocheck",
-      "plcNocheckRelease": "line2-rules-dedicated-plc-nocheck"
+      "plcNocheckRelease": "line2-rules-dedicated-plc-nocheck",
+      "starvationStream": "line2-dedicated-starvation",
+      "starvationRelease": "line2-rules-dedicated-starvation"
     }
   },
   "registry": "fixtures/live/registry",
@@ -287,6 +291,15 @@
       "synthetic": false
     },
     {
+      "name": "starved-station3-control",
+      "placement": "shared",
+      "file": "scenarios/shared/starved-station3-control.json",
+      "lock": "scenarios/shared/starved-station3-control.lock.json",
+      "source": "fixtures/scenarios/baseline.json",
+      "kind": "injection-24-control",
+      "synthetic": false
+    },
+    {
       "name": "baseline-batch-x2",
       "placement": "shared",
       "file": "scenarios/shared/baseline-batch-x2.json",
@@ -329,6 +342,15 @@
       "lock": "scenarios/dedicated/starved-station3.lock.json",
       "source": "fixtures/scenarios/baseline.json",
       "kind": "injection-24",
+      "synthetic": false
+    },
+    {
+      "name": "starved-station3-control",
+      "placement": "dedicated",
+      "file": "scenarios/dedicated/starved-station3-control.json",
+      "lock": "scenarios/dedicated/starved-station3-control.lock.json",
+      "source": "fixtures/scenarios/baseline.json",
+      "kind": "injection-24-control",
       "synthetic": false
     },
     {

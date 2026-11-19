@@ -35,15 +35,15 @@ python -I scripts/check-control-report.py build/flink-controls/first-wins/inj-st
 java -Xmx3g -Dforseti.engine.path=engine-flink/target/engine -jar cli/target/forseti.jar requirements --engine flink --gate-report build/flink/report.json --out build/requirements --python "$(command -v python)"
 ```
 
-`gate/flink-requirements.json` lists 13 requirements and the 8 runs they need: `baseline`, `starved-station3` (injection 24), `baseline-batch-x2` and `baseline-batch-half` on the dedicated (`site-071`) and on the shared (`site-019`) raw placement. Each run is compared with the oracle at every cut as a gate run is.
+`gate/flink-requirements.json` lists 13 requirements and the 10 runs they need: `baseline`, `starved-station3` (injection 24), `starved-station3-control` (the same recording without the starvation), `baseline-batch-x2` and `baseline-batch-half` on the dedicated (`site-071`) and on the shared (`site-019`) raw placement. `starved-station3` and its control pin the placement's starvation release (`line2-rules-dedicated-starvation`, `line2-rules-shared-starvation`), whose impact rule also accepts incidents on station3, and carry one closed incident on station3 delivered before the starvation. Each run is compared with the oracle at every cut as a gate run is.
 
 | Id | Item | Recorded from |
 |---|---|---|
 | `R-5A` | 5 (a) | the gate report's result for `I-26` |
 | `R-5B` | 5 (b) | the gate report's result for `I-7` |
-| `R-24-DEDICATED`, `R-24-SHARED` | injection 24 | the starved run equals the oracle; in the committed journals the starved station's writers commit no progress of a starved cut and their first progress after it merges exactly the starved cuts; none of its visits changes during the starvation |
+| `R-24-DEDICATED`, `R-24-SHARED` | injection 24 | the starved run equals the oracle; in the committed journals the starved station's writers commit no progress of a starved cut and their first progress after it merges exactly the starved cuts; none of its visits changes during the starvation; its incident accepted before the starvation with an unsettled affected set keeps its set and assessment bodies, unsettled, at every starved cut and at the last cut has the control's bodies; an `error` when the recording has no such incident |
 | `R-5C-DEDICATED`, `R-5C-SHARED` | 5 (c) | the starved run's observation (`isolation.json`) |
-| `R-5D-RESUME-DEDICATED`, `R-5D-RESUME-SHARED` | 5 (d) | the starved run against the baseline, from the first cut after the starvation |
+| `R-5D-RESUME-DEDICATED`, `R-5D-RESUME-SHARED` | 5 (d) | the starved run against its control, from the first cut after the starvation |
 | `R-5D-RESTART` | 5 (d) | the gate report's results for `I-21` and `I-22` |
 | `R-5D-SPEED-X2-*`, `R-5D-SPEED-HALF-*` | 5 (d) | the run at batch interval x2 or x1/2 against the baseline |
 

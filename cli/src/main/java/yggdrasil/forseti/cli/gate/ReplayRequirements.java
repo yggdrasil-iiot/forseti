@@ -22,8 +22,9 @@ import yggdrasil.forseti.core.cut.CutAssembler;
 /**
  * {@code forseti requirements --engine <name> --gate-report <report> --out <dir>} (spec 705, item 5; plan D14), engine-neutral: the
  * station-isolation requirement H-isolation of an external engine. It runs injection 24 ({@code starved-station3}) on the dedicated and
- * the shared raw placement with its observation deadline ({@link StarvationObserver}), the baseline and the baseline at batch interval
- * x2 and x1/2 on both placements, each compared with the oracle at every cut exactly as the replay gate compares its runs
+ * the shared raw placement with its observation deadline ({@link StarvationObserver}), its control ({@code starved-station3-control}, the
+ * same recording without the starvation), the baseline and the baseline at batch interval x2 and x1/2 on both placements, each compared
+ * with the oracle at every cut exactly as the replay gate compares its runs
  * ({@link ReplayGate#runScenarios}); it records 5 (a), 5 (b) and the restart part of 5 (d) from the semantic gate's results for
  * injections 26, 7, 21 and 22 in {@code --gate-report}. Every requirement of {@code gate/<engine>-requirements.json} is recorded as
  * {@code pass}, {@code miss} or {@code error} with its evidence ({@link RequirementsAccount}); it prints one line per requirement,
@@ -45,7 +46,7 @@ public final class ReplayRequirements {
     private ReplayRequirements() {}
 
     static final List<String> BODY_TOPICS = List.of(RunFold.WR, RunFold.SAMPLES, RunFold.AFFECTED, RunFold.SETS);
-    static final String STARVED = "starved-station3", BASELINE = "baseline", X2 = "baseline-batch-x2", HALF = "baseline-batch-half";
+    static final String STARVED = "starved-station3", CONTROL = "starved-station3-control", BASELINE = "baseline", X2 = "baseline-batch-x2", HALF = "baseline-batch-half";
     static final String FILE = "requirements.json";
 
     /** The engine's requirements manifest: the requirement ids in order and the runs with their settings. */
@@ -70,7 +71,8 @@ public final class ReplayRequirements {
     /** The requirement ids this command evaluates and the runs it needs (the manifest must list exactly these). */
     static final List<String> IDS = List.of("R-5A", "R-5B", "R-24-DEDICATED", "R-24-SHARED", "R-5C-DEDICATED", "R-5C-SHARED", "R-5D-RESUME-DEDICATED",
         "R-5D-RESUME-SHARED", "R-5D-RESTART", "R-5D-SPEED-X2-DEDICATED", "R-5D-SPEED-HALF-DEDICATED", "R-5D-SPEED-X2-SHARED", "R-5D-SPEED-HALF-SHARED");
-    static final List<String> RUNS = List.of("dedicated/" + BASELINE, "dedicated/" + STARVED, "dedicated/" + X2, "dedicated/" + HALF, BASELINE, STARVED, X2, HALF);
+    static final List<String> RUNS = List.of("dedicated/" + BASELINE, "dedicated/" + STARVED, "dedicated/" + CONTROL, "dedicated/" + X2, "dedicated/" + HALF,
+        BASELINE, STARVED, CONTROL, X2, HALF);
 
     /** The semantic gate as {@code --gate-report} records it. Usable (its results may decide a requirement) only when it is a {@code gate}
      *  report of this engine, scope {@code replay}, this checkout's assertion manifest and the engine artifact on the engine path (an
@@ -165,7 +167,6 @@ public final class ReplayRequirements {
         RequirementsAccount acc = new RequirementsAccount(manifest.ids(), out);
         ReplayGate.Made made = null;
         ObjectNode observations = Json.object();
-        ArrayNode untested = Json.JSON.createArrayNode();
         List<String> notExecuted = new ArrayList<>();
         try {
             record(acc, "R-5A", gate.from(List.of("I-26")));
@@ -175,13 +176,13 @@ public final class ReplayRequirements {
             for (String n : manifest.runs()) if (!made.runs().engineRuns.containsKey(n)) notExecuted.add(n + ": " + (made.runs().runs.get(n) == null ? "not made" : made.runs().runs.get(n).failure));
             for (String placement : List.of("dedicated", "shared")) {
                 String pre = placement.equals("dedicated") ? "dedicated/" : "", suf = "-" + placement.toUpperCase(Locale.ROOT);
-                Run starved = made.runs().runs.get(pre + STARVED), base = made.runs().runs.get(pre + BASELINE);
+                Run starved = made.runs().runs.get(pre + STARVED), control = made.runs().runs.get(pre + CONTROL), base = made.runs().runs.get(pre + BASELINE);
                 ReplayEngine.Run engineRun = made.runs().engineRuns.get(pre + STARVED);
                 JsonNode iso = isolation(engineRun);
                 if (iso != null) observations.set(placement, iso);
-                record(acc, "R-24" + suf, injection24(starved, engineRun == null ? null : engineRun.out(), untested, "R-24" + suf));
+                record(acc, "R-24" + suf, injection24(starved, engineRun == null ? null : engineRun.out(), control));
                 record(acc, "R-5C" + suf, settles(starved, iso));
-                record(acc, "R-5D-RESUME" + suf, resume(starved, base));
+                record(acc, "R-5D-RESUME" + suf, resume(starved, control));
                 record(acc, "R-5D-SPEED-X2" + suf, sameBodies(made.runs().runs.get(pre + X2), base, "batch interval x2"));
                 record(acc, "R-5D-SPEED-HALF" + suf, sameBodies(made.runs().runs.get(pre + HALF), base, "batch interval x1/2"));
             }
@@ -206,7 +207,6 @@ public final class ReplayRequirements {
         rep.set("results", acc.toJson());
         ArrayNode ne = rep.putArray("runsNotExecuted");
         notExecuted.forEach(ne::add);
-        rep.set("untested", untested);
         rep.set("isolation", observations);
         rep.put("engineArtifactSha256", flags.get("engine-artifact"));
         rep.put("command", command).put("startedAt", startedAt).put("finishedAt", Instant.now().toString()).put("error", error);
@@ -214,7 +214,6 @@ public final class ReplayRequirements {
         try { Files.createDirectories(outDir); Json.write(outDir.resolve(FILE), rep); }
         catch (IOException | RuntimeException e) { exit = 1; err.println("cannot write the requirements report: " + e.getMessage()); }
         for (String n : notExecuted) out.println("NOT EXECUTED " + n);
-        for (JsonNode u : untested) out.println("UNTESTED " + u.path("requirement").asText() + ": " + u.path("what").asText());
         out.println(acc.line() + (exit == 1 && acc.exitCode() == 0 ? " (exit 1: " + (error != null ? "the runs crashed" : notExecuted.size() + " runs not executed") + ")" : ""));
         out.println(el.line());
         return exit;
@@ -251,17 +250,18 @@ public final class ReplayRequirements {
      *  committed journals ({@code runDir/journals}) none of the starved station's writers commits a progress of a starved cut, and the
      *  first progress each commits after the starvation merges exactly the starved cuts (the resume); every visit of the station keeps, at
      *  every starved cut, the body it had at the last cut before the starvation (a visit not settled then stays not settled), with at
-     *  least one such unsettled visit. A recording without incidents leaves the incident expectation untested, recorded in
-     *  {@code untested}. */
-    static Entry injection24(Run r, Path runDir, ArrayNode untested, String id) throws IOException {
+     *  least one such unsettled visit; and every incident of the station ({@link #incidentEvidence}) accepted before the starvation with
+     *  its affected set not settled keeps its set and assessment bodies at every starved cut and ends with the bodies of the control
+     *  ({@code control}: the same recording without the starvation), with at least one such incident. A recording without an incident
+     *  of the starved station, or a control that was not made, is an error. */
+    static Entry injection24(Run r, Path runDir, Run control) throws IOException {
         if (r == null) return new Entry(Status.ERROR, "error: the run was not made");
         if (r.failure != null) return new Entry(Status.ERROR, "error: " + r.label() + ": " + r.failure);
         String starved = r.manifest.path("starvation").path("station").asText(null);
         if (starved == null) return new Entry(Status.ERROR, "error: " + r.label() + ": the recording carries no starvation");
-        if (r.expected.path("incidents").size() > 0) return new Entry(Status.ERROR, "error: the recording carries incidents, whose sets this command does not evaluate");
-        String incidents = "injection 24's incident expectation (its incidents not settled before the starvation stay not settled) is untested: the "
-            + r.label() + " recording carries no incident";
-        untested.addObject().put("requirement", id).put("what", incidents);
+        if (control == null) return new Entry(Status.ERROR, "error: the control run was not made");
+        if (control.failure != null) return new Entry(Status.ERROR, "error: " + control.label() + ": " + control.failure);
+        if (control.manifest.path("starvation").isObject()) return new Entry(Status.ERROR, "error: the control " + control.label() + " carries a starvation");
         List<String> bad = new ArrayList<>();
         if (!r.ok()) bad.add("the run does not hold: " + r.summary());
         TreeSet<Long> sc = starvedCuts(r, starved);
@@ -308,11 +308,80 @@ public final class ReplayRequirements {
             }
         }
         if (bad.isEmpty() && unsettled == 0) return new Entry(Status.ERROR, "error: no visit of " + starved + " was unsettled at cut " + before + ", before the starvation: nothing to check");
+        if (!control.ok()) bad.add("the control does not hold: " + control.summary());
+        Map<String, Incident> mine = new TreeMap<>(), theirs = new TreeMap<>();
+        for (Iterator<String> it = r.expected.path("incidents").fieldNames(); it.hasNext();) {
+            String key = it.next();
+            Incident x = Incident.of(r.fold, key, r.lastCut());
+            if (x == null) bad.add("affected set " + key + ": none at the last cut " + r.lastCut());
+            else if (starved.equals(x.station())) { mine.put(key, x); theirs.put(key, Incident.of(control.fold, key, control.lastCut())); }
+        }
+        if (mine.isEmpty() && bad.isEmpty()) return new Entry(Status.ERROR, "error: " + r.label() + " carries no incident of " + starved + ": nothing to check");
+        IncidentEvidence inc = incidentEvidence(mine, theirs, before, sc);
+        bad.addAll(inc.problems());
+        if (bad.isEmpty() && inc.unsettled() == 0)
+            return new Entry(Status.ERROR, "error: no incident of " + starved + " was accepted with its set unsettled at cut " + before + ", before the starvation: nothing to check");
         String text = r.label() + ": starved " + starved + " at cuts " + Injections.compact(new ArrayList<>(sc)) + "; " + unsettled + " of its " + visits
             + " visits unsettled at cut " + before + " (the last before the starvation) and unchanged at every starved cut; in the committed journals of partition " + part
             + " no progress of a starved cut, and the first progress after it merges exactly the starved cuts on " + merges.size() + " writers (" + String.join(", ", merges) + "); "
-            + incidents + "; " + r.summary();
+            + inc.unsettled() + " of its " + mine.size() + " incidents " + inc.summary() + " accepted with the affected set unsettled at cut " + before
+            + ", its set and " + inc.assessments() + " assessment bodies unchanged and unsettled at every starved cut and equal to " + control.label()
+            + "'s at the last cut (" + r.lastCut() + " / " + control.lastCut() + "); " + r.summary();
         return bad.isEmpty() ? new Entry(Status.PASS, text) : new Entry(Status.MISS, "PROBLEMS: " + abbrev(String.join("; ", bad), 1500) + " || " + text);
+    }
+
+    /** One incident of a run: its affected-set key, station ({@code incident.stationRef} of its set) and its set and assessment
+     *  ({@code forseti.affected}) bodies as the fold saw them, by cut. */
+    record Incident(String key, String id, String station, java.util.function.LongFunction<JsonNode> set, java.util.function.LongFunction<Map<String, JsonNode>> assessments,
+                    long last) {
+        /** The incident of {@code setKey} in {@code fold}, or null when it has no set at {@code last}. */
+        static Incident of(RunFold fold, String setKey, long last) {
+            JsonNode s = fold.at(RunFold.SETS, setKey, last);
+            if (s == null) return null;
+            JsonNode k = Json.read(setKey.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+            List<String> units = new ArrayList<>();
+            for (String u : fold.history(RunFold.AFFECTED).keySet()) {
+                JsonNode uk = Json.read(u.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+                if (uk.path("incidentId").equals(k.path("incidentId")) && uk.path("source").equals(k.path("source"))) units.add(u);
+            }
+            return new Incident(setKey, k.path("incidentId").asText(), s.path("incident").path("stationRef").asText(null), c -> fold.at(RunFold.SETS, setKey, c), c -> {
+                Map<String, JsonNode> m = new TreeMap<>();
+                for (String u : units) { JsonNode b = fold.at(RunFold.AFFECTED, u, c); if (b != null) m.put(u, b); }
+                return m;
+            }, last);
+        }
+    }
+
+    /** What {@link #incidentEvidence} found: the incidents accepted with an unsettled set before the starvation and checked, their
+     *  ids, the assessment bodies compared and the problems. */
+    record IncidentEvidence(int unsettled, String summary, int assessments, List<String> problems) {}
+
+    /** Injection 24's incident expectation on the starved station's incidents {@code mine} (set key -> incident of the starved run),
+     *  against the control's ({@code theirs}, same keys): an incident whose set exists at cut {@code before} (accepted before the
+     *  starvation) with {@code coverage.settled} false is checked; at every cut of {@code starved} its set body and every assessment body
+     *  equal those at {@code before} (so the set stays unsettled), and at the last cut its set and assessment bodies equal the control's
+     *  at its last cut (the resume converges to the run without the starvation). An incident settled or not yet delivered at
+     *  {@code before} is not checked. */
+    static IncidentEvidence incidentEvidence(Map<String, Incident> mine, Map<String, Incident> theirs, long before, SortedSet<Long> starved) {
+        List<String> bad = new ArrayList<>(), ids = new ArrayList<>();
+        int assessments = 0;
+        for (Incident x : mine.values()) {
+            JsonNode s0 = x.set().apply(before);
+            if (s0 == null || s0.path("coverage").path("settled").asBoolean(true)) continue;
+            ids.add(x.id());
+            Map<String, JsonNode> u0 = x.assessments().apply(before);
+            assessments += u0.size();
+            for (long k : starved) {
+                JsonNode sk = x.set().apply(k);
+                if (!Objects.equals(s0, sk)) { bad.add("incident " + x.id() + ": its affected set changed at starved cut " + k + " (settled " + (sk == null ? null : sk.path("coverage").path("settled")) + ")"); break; }
+                if (!u0.equals(x.assessments().apply(k))) { bad.add("incident " + x.id() + ": its assessments changed at starved cut " + k); break; }
+            }
+            Incident c = theirs.get(x.key());
+            if (c == null) { bad.add("incident " + x.id() + ": the control has no affected set of it"); continue; }
+            if (!Objects.equals(x.set().apply(x.last()), c.set().apply(c.last()))) bad.add("incident " + x.id() + ": its affected set at the last cut differs from the control's");
+            if (!x.assessments().apply(x.last()).equals(c.assessments().apply(c.last()))) bad.add("incident " + x.id() + ": its assessments at the last cut differ from the control's");
+        }
+        return new IncidentEvidence(ids.size(), ids.toString(), assessments, bad);
     }
 
     /** Item 5 (c) on one placement, from the run's observation ({@link StarvationObserver#FILE}): pass when every checked deadline
@@ -346,14 +415,16 @@ public final class ReplayRequirements {
 
     // --- item 5 (d) ------------------------------------------------------------------------------------------------------------
 
-    /** After injection 24's resume: the starved run's cuts from the first cut after the starvation, against the baseline. */
-    static Entry resume(Run starved, Run base) {
-        if (starved == null || base == null) return new Entry(Status.ERROR, "error: a run was not made");
-        if (starved.failure != null || base.failure != null) return new Entry(Status.ERROR, "error: " + (starved.failure != null ? starved.label() + ": " + starved.failure : base.label() + ": " + base.failure));
+    /** After injection 24's resume: the starved run's cuts from the first cut after the starvation, against its control (the same
+     *  recording without the starvation, the same release). */
+    static Entry resume(Run starved, Run control) {
+        if (starved == null || control == null) return new Entry(Status.ERROR, "error: a run was not made");
+        if (starved.failure != null || control.failure != null) return new Entry(Status.ERROR, "error: " + (starved.failure != null ? starved.label() + ": " + starved.failure : control.label() + ": " + control.failure));
         String station = starved.manifest.path("starvation").path("station").asText(null);
         if (station == null) return new Entry(Status.ERROR, "error: " + starved.label() + " carries no starvation");
+        if (control.manifest.path("starvation").isObject()) return new Entry(Status.ERROR, "error: the control " + control.label() + " carries a starvation");
         long resumed = starvedCuts(starved, station).last() + 1;
-        return compare(starved, base, resumed, "after the resume (cuts from " + resumed + ")");
+        return compare(starved, control, resumed, "after the resume (cuts from " + resumed + ")");
     }
 
     /** The speed change: the run at another batch interval against the baseline, at every common cut. */
