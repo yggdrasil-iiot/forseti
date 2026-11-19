@@ -51,15 +51,28 @@ public final class KafkaCompletionReader implements CompletionReader {
             }
             if (missing.isEmpty()) return found;
             if (System.nanoTime() > deadline) throw new IllegalStateException("cut " + cutId + " did not complete within " + timeout + ": no progress on " + missing);
-            for (ConsumerRecord<byte[], byte[]> r : consumer.poll(Duration.ofMillis(100))) {
-                Map<String, String> h = new TreeMap<>();
-                for (org.apache.kafka.common.header.Header x : r.headers()) h.put(x.key(), new String(x.value(), java.nio.charset.StandardCharsets.UTF_8));
-                JsonNode v;
-                try { v = OutputRecords.line(new OutputRecords.Transport(r.key(), h, r.value()), generation).get("value"); }
-                catch (IllegalArgumentException e) { throw new IllegalStateException(r.topic() + "/" + r.partition() + " offset " + r.offset() + ": " + e.getMessage(), e); }
-                if (OutputRecords.kind(v) != OutputRecords.Kind.PROGRESS) continue;
-                progress.get(new Writer(contractOf.get(r.topic()), r.partition())).add(v);
-            }
+            poll(Duration.ofMillis(100));
+        }
+    }
+
+    @Override public Map<Writer, JsonNode> latest(Collection<Writer> writers, Duration poll) {
+        for (Writer w : writers) if (!progress.containsKey(w)) throw new IllegalArgumentException("the completion reader does not read " + w);
+        poll(poll);
+        Map<Writer, JsonNode> m = new LinkedHashMap<>();
+        for (Writer w : writers) { List<JsonNode> l = progress.get(w); if (!l.isEmpty()) m.put(w, l.get(l.size() - 1)); }
+        return m;
+    }
+
+    /** One poll: every committed progress record read is kept under its writer. */
+    private void poll(Duration d) {
+        for (ConsumerRecord<byte[], byte[]> r : consumer.poll(d)) {
+            Map<String, String> h = new TreeMap<>();
+            for (org.apache.kafka.common.header.Header x : r.headers()) h.put(x.key(), new String(x.value(), java.nio.charset.StandardCharsets.UTF_8));
+            JsonNode v;
+            try { v = OutputRecords.line(new OutputRecords.Transport(r.key(), h, r.value()), generation).get("value"); }
+            catch (IllegalArgumentException e) { throw new IllegalStateException(r.topic() + "/" + r.partition() + " offset " + r.offset() + ": " + e.getMessage(), e); }
+            if (OutputRecords.kind(v) != OutputRecords.Kind.PROGRESS) continue;
+            progress.get(new Writer(contractOf.get(r.topic()), r.partition())).add(v);
         }
     }
 

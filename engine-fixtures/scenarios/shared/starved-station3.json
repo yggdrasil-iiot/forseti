@@ -2,8 +2,8 @@
   "scenarioVersion": 1,
   "name": "starved-station3",
   "rule": {
-    "stream": "line2-shared",
-    "releaseId": "line2-rules-shared",
+    "stream": "line2-shared-starvation",
+    "releaseId": "line2-rules-shared-starvation",
     "version": "1.0.0",
     "attributionRuleId": "line2-attribution",
     "attributionRuleVersion": "1.0.0"
@@ -201,7 +201,29 @@
       "max": 45.0
     }
   },
-  "incidents": [],
+  "incidents": [
+    {
+      "incidentId": "inc-24",
+      "revisions": [
+        {
+          "revision": 1,
+          "deliverAt": 900000,
+          "fields": {
+            "stationRef": "site-019:line2:station3",
+            "equipmentRef": "site-019:line2:station3",
+            "kind": "tool-check-failed",
+            "detectedAt": 840000,
+            "revisionEventTime": 840000,
+            "suspectFrom": 780000,
+            "suspectTo": 840000,
+            "status": "closed",
+            "evidenceRef": "urn:line2:qms:inc-24",
+            "source": "qms-line2"
+          }
+        }
+      ]
+    }
+  ],
   "batchMs": 60000,
   "tailMs": 751000,
   "injections": [

@@ -31,6 +31,7 @@ import yggdrasil.forseti.cli.replay.ReplayEngine;
 import yggdrasil.forseti.cli.replay.ReplayTopics;
 import yggdrasil.forseti.cli.replay.Restarts;
 import yggdrasil.forseti.cli.replay.RunPreparation;
+import yggdrasil.forseti.cli.replay.StarvationObserver;
 import yggdrasil.forseti.core.Json;
 import yggdrasil.forseti.core.canon.Canonical;
 import yggdrasil.forseti.core.cut.CutAssembler;
@@ -178,6 +179,8 @@ final class FlinkRun {
       Map<Integer, ObjectNode> specs = new HashMap<>();
       ObjectNode manifest = null;
       ArrayNode cutEpochs = Json.JSON.createArrayNode();
+      // injection 24 (spec 681, 418): a recording with a starvation carries its observation deadline; null for any other recording
+      StarvationObserver isolation = StarvationObserver.of(rec, rules.attribution().outOfOrdernessMs(), rules.attribution().expectedPeriodMs());
       try {
         for (int stage : List.of(2, 1)) {
           String name = "stage" + stage;
@@ -219,6 +222,8 @@ final class FlinkRun {
           for (Recording.Batch b : rec.batches()) {
             if (inj != null && b.cutId() == k) inj.beforeBatch();
             var w = writer.write(b, epoch.epoch(), epoch.ref());
+            // injection 24's checks count from the batch's first append (spec 681): the earliest broker append time of its records
+            if (isolation != null) isolation.appended(b.cutId(), w.firstAppendNanos());
             if (inj != null && b.cutId() == k) inj.batchWritten();
             ObjectNode ce = Json.putSafe(Json.object(), "cutId", b.cutId());
             Json.putSafe(ce, "restartEpoch", epoch.epoch());
@@ -231,14 +236,24 @@ final class FlinkRun {
               epoch = inj.inject(epoch, completion, timings);
               if (restart.kind().stage1) continue;   // batch k+1 next, without waiting for cut k
             }
-            for (Recording.Batch x : pending) {
-              List<CutAssembler.Idle> idle = EngineContract.idleInputs(x);
-              Map<CompletionReader.Writer, JsonNode> done = await(completion, x.cutId(), CompletionReader.expected(routing, idle), clusters);
+            // the pending cuts in order. A cut that injection 24's checks count from is awaited while the checks are observed on the
+            // committed progress (spec 681): the next batch follows once the cut is complete and every check settled or missed, or, when
+            // a check recorded its miss and the cut is still not complete, at once without waiting for the cut (spec 418); that cut is
+            // then awaited after the next batch is written
+            while (!pending.isEmpty()) {
+              Recording.Batch x = pending.get(0);
+              List<CompletionReader.Writer> expected = CompletionReader.expected(routing, EngineContract.idleInputs(x));
+              Map<CompletionReader.Writer, JsonNode> done = isolation != null && !isolation.resolved(x.cutId())
+                  ? awaitObserving(completion, x.cutId(), expected, clusters, isolation) : await(completion, x.cutId(), expected, clusters);
+              if (done == null) break;   // advance on the recorded miss
               cuts.add(cutEntry(x, done, routing, written, previous, consumed));
+              pending.remove(0);
             }
-            pending.clear();
           }
-          if (!pending.isEmpty()) throw new IllegalStateException("cuts " + pending.size() + " never awaited");
+          // a cut left by an advance on a miss of the last batch's checks
+          for (Recording.Batch x : pending) cuts.add(cutEntry(x, await(completion, x.cutId(), CompletionReader.expected(routing, EngineContract.idleInputs(x)), clusters),
+              routing, written, previous, consumed));
+          pending.clear();
           if (inj != null) {
             manifest = inj.finish();
             ObjectNode m = manifest;
@@ -292,6 +307,7 @@ final class FlinkRun {
       // every cut's restartEpoch and recoveryRef as the harness wrote its barriers (spec 412), and the restart run's injection manifest
       Json.write(out.resolve("cut-epochs.json"), Json.object().<ObjectNode>set("cuts", cutEpochs));
       if (manifest != null) Json.write(out.resolve(ReplayEngine.INJECTIONS), manifest);
+      if (isolation != null) Json.write(out.resolve(StarvationObserver.FILE), isolation.toJson());
       Json.write(out.resolve("offset-map.json"), writer.offsets().toJson());
       ObjectNode digests = Json.object();
       rec.digests().forEach(digests::put);
@@ -318,6 +334,7 @@ final class FlinkRun {
       Json.putSafe(prep, "generation", generation);
       evidence.collect("flink", flinkEvidence);
       if (manifest != null) evidence.collect("restart", manifest);
+      if (isolation != null) evidence.collect("isolation", isolation.toJson());
       ObjectNode ev = evidence.evidence();
       Json.write(out.resolve("evidence.json"), ev);
       long wall = (System.nanoTime() - t0) / 1_000_000;
@@ -468,6 +485,27 @@ final class FlinkRun {
         for (FlinkCluster c : clusters) c.sampleHeap();
         if (System.nanoTime() > until) throw new IllegalStateException(timeout.getMessage() + " (within " + CUT_TIMEOUT + ")", timeout);
       }
+    }
+  }
+
+  /** The cut awaited while injection 24's checks counting from it are observed (spec 681, 418): returns the cut's progress once the
+   *  cut is complete and every check resolved; null once every check resolved, one with a miss, while the cut is not complete (the
+   *  harness then writes the next batch); fails as {@link #await} does when neither happens within the cut timeout. */
+  private static Map<CompletionReader.Writer, JsonNode> awaitObserving(KafkaCompletionReader completion, long cutId, List<CompletionReader.Writer> expected,
+                                                                      List<FlinkCluster> clusters, StarvationObserver isolation) {
+    long until = System.nanoTime() + CUT_TIMEOUT.toNanos();
+    Map<CompletionReader.Writer, JsonNode> done = null;
+    long lastAlive = System.nanoTime();
+    while (true) {
+      if (done == null) {
+        try { done = completion.await(cutId, expected, Duration.ofMillis(100)); }
+        catch (IllegalStateException notYet) { /* observed below */ }
+      }
+      boolean resolved = isolation.poll(cutId, completion::latest, System::nanoTime);
+      if (resolved && done != null) return done;
+      if (resolved && isolation.missed(cutId)) return null;
+      if (System.nanoTime() - lastAlive > 2_000_000_000L) { for (FlinkCluster c : clusters) c.requireAlive(); lastAlive = System.nanoTime(); }
+      if (System.nanoTime() > until) throw new IllegalStateException("cut " + cutId + " did not complete within " + CUT_TIMEOUT + " and injection 24's checks did not resolve");
     }
   }
 

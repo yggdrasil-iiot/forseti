@@ -29,6 +29,17 @@ keys are deleted; old and new public halves both stay authorized and trusted) an
   live/registry-next: that registry, anchors included, plus line2-rules-dedicated and line2-rules-shared 1.0.1 on streams
                       line2-dedicated and line2-shared (bump_rules(), base = the exact current head, head version 2)
 lock.json gains the registryNext inventory and the trustedKeys digest, and its registry section is rewritten.
+--live-starvation appends injection 24's two releases to the committed live registry (step 6, spec 681). It first checks that
+upstream, definitions, registry and registry-next equal lock.json, then copies Tyr's two starvation bundles
+(<tyr>/placement/{dedicated,shared}-starvation/bundle: the placement bundle with station3 in the impact rule's incidentScope)
+untouched to fixtures/live/upstream/<variant>, gives the two principals a third fresh key each and publishes them byte for byte:
+  live/registry:      + line2-rules-dedicated-starvation and line2-rules-shared-starvation 1.0.0 on streams
+                      line2-dedicated-starvation and line2-shared-starvation, with their policy rules; every committed upstream,
+                      registry and registry-next byte stays as it is but the registry's two identity files and trusted-keys.jsonl,
+                      which are only appended to (policy rules at the end of the list, key lines at the end of the file)
+lock.json's upstream, registry and trustedKeys sections are rewritten and its tyr pin is set to --tyr-commit (default: the Tyr
+checkout's HEAD); that one field is the Tyr pin of every upstream bundle (the earlier bundles are byte-identical at any later
+Tyr commit, Tyr's scripts/test_placement_fixtures.py).
 fixtures/live/lock.json pins the Tyr and Bifrost commits and the sha256 of every file under upstream, definitions and
 registry, and of deployment.json. The routing manifests in fixtures/live/routing are derived from the published registry by forseti's own
 placement code (cli live.Placement), not by this script.
@@ -147,6 +158,9 @@ def main() -> None:
     ap.add_argument("--live", action="store_true", help="write fixtures/live only (step 5); the step-3 fixtures stay untouched")
     ap.add_argument("--live-next", action="store_true", help="append the nocheck streams to fixtures/live/registry and write fixtures/live/registry-next; "
                     "every committed live byte but the registry's two identity files stays as it is")
+    ap.add_argument("--live-starvation", action="store_true", help="append injection 24's two starvation releases to fixtures/live/registry; "
+                    "every committed live byte but the registry's two identity files and trusted-keys.jsonl (appended to) and lock.json stays as it is")
+    ap.add_argument("--tyr-commit", help="with --live-starvation: the Tyr commit lock.json pins (default: the Tyr checkout's HEAD)")
     ap.add_argument("--deployment-only", action="store_true", help="with --live: rewrite fixtures/live/deployment.json and its lock entry only")
     a = ap.parse_args()
     gates = Gates(a.bifrost / "gates" / "target" / "bifrost-gates.jar")
@@ -160,6 +174,8 @@ def main() -> None:
         print(f"wrote {out / 'deployment.json'}"); return
     if a.live_next:
         live_next(a, gates); return
+    if a.live_starvation:
+        live_starvation(a, gates, occupancy_sha, incident_sha); return
     if a.live:
         live(a, gates, occupancy_sha, incident_sha); return
     upstream = a.out / "upstream"
@@ -319,6 +335,67 @@ def live_next(a, gates: Gates) -> None:
     lock["trustedKeys"] = {"path": "trusted-keys.jsonl", "sha256": sha((out / "trusted-keys.jsonl").read_bytes())}
     dump(out / "lock.json", lock)
     print(f"appended {len(after) - len(before)} files to {target}, wrote {nxt} ({len(lock['registryNext'])} files)")
+
+
+LIVE_STARVATION = {"dedicated-starvation": ("line2-dedicated-starvation", "line2-rules-dedicated-starvation", "site-071"),
+                   "shared-starvation": ("line2-shared-starvation", "line2-rules-shared-starvation", "site-019")}
+
+
+def live_starvation(a, gates: Gates, occupancy_sha: str, incident_sha: str) -> None:
+    """Appends injection 24's releases (see the module docstring): Tyr's bytes, published with a third key of each principal."""
+    out = a.out / "live"; upstream = out / "upstream"; target = out / "registry"; nxt = out / "registry-next"
+    lock = load(out / "lock.json")
+    for section, d in (("upstream", upstream), ("definitions", out / "definitions"), ("registry", target), ("registryNext", nxt)):
+        if inventory(d) != lock[section]:
+            raise SystemExit(f"{d} differs from lock.json; --live-starvation appends only to the committed live fixtures")
+    if git_head(a.bifrost) != lock["bifrost"]:
+        raise SystemExit(f"--bifrost must be at the locked commit {lock['bifrost']}")
+    for name in LIVE_STARVATION:
+        if (upstream / name).exists(): raise SystemExit(f"{upstream / name} exists; --live-starvation writes it once")
+    before_up, before_reg, before_next = inventory(upstream), inventory(target), inventory(nxt)
+    trusted_before = (out / "trusted-keys.jsonl").read_bytes()
+    for name, (stream, _, site) in LIVE_STARVATION.items():
+        shutil.copytree(a.tyr / "placement" / name / "bundle", upstream / name)
+        check_upstream(upstream / name, stream, occupancy_sha, incident_sha); check_site(upstream / name, site)
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp = Path(tmp); keys = tmp / "keys"; reg = tmp / "registry"
+        shutil.copytree(target, reg)
+        lines = []
+        for principal in ("proposer", "approver"):
+            gates("identity", "keygen", principal, "--out", str(keys))
+            lines.append(json.dumps({"principal": principal, "publicKey": (keys / f"{principal}.pub").read_text().strip()}))
+        with open(reg / "identity" / "authorized-keys.jsonl", "a", encoding="utf-8", newline="\n") as f: f.write("\n".join(lines) + "\n")
+        policy = load(reg / "identity" / "activation-policy.json")
+        for stream, _, _ in LIVE_STARVATION.values():
+            policy["rules"] += [{"id": f"publish-{stream}", "principal": "proposer", "action": "publish", "target": "mapping-publication", "kind": "mapping-release", "ref": stream},
+                                {"id": f"approve-{stream}", "principal": "approver", "action": "approve", "target": "mapping-publication", "kind": "mapping-release", "ref": stream}]
+        dump(reg / "identity" / "activation-policy.json", policy)
+        signers = ["--by", "proposer", "--by-key", str(keys / "proposer.key"), "--approved-by", "approver", "--approved-by-key", str(keys / "approver.key")]
+        for name, (stream, release, _) in LIVE_STARVATION.items():
+            bundle = tmp / f"live-{release}-1.0.0"; shutil.copytree(upstream / name, bundle)   # Tyr's bytes, exactly as copied
+            gates("mapping", "validate", str(bundle))
+            gates("mapping", "approve", str(reg), str(bundle), f"approval-{release}-1.0.0", *signers)
+            gates("mapping", "publish", str(reg), str(bundle), release, "1.0.0", "--approval", f"approval-{release}-1.0.0", *signers, "--expires-in", "P366D")
+        after = {k: v for k, v in inventory(reg).items() if Path(k).name != ".lock"}
+        changed = sorted(k for k, v in before_reg.items() if after.get(k) != v)
+        if changed != sorted(IDENTITY): raise SystemExit(f"appending changed committed registry files: {changed}")
+        keys_rel = "identity/authorized-keys.jsonl"
+        if not (reg / keys_rel).read_bytes().startswith((target / keys_rel).read_bytes()): raise SystemExit(f"{keys_rel} is not appended to")
+        old_rules = load(target / "identity" / "activation-policy.json")["rules"]
+        if policy["rules"][:len(old_rules)] != old_rules: raise SystemExit("the committed policy rules are not a prefix")
+        for rel in sorted(set(after) - set(before_reg)) + list(IDENTITY):
+            (target / rel).parent.mkdir(parents=True, exist_ok=True); shutil.copyfile(reg / rel, target / rel)
+        with open(out / "trusted-keys.jsonl", "a", encoding="utf-8", newline="\n") as f: f.write("\n".join(lines) + "\n")
+    if inventory(target) != after: raise SystemExit(f"{target} is not the published registry")
+    up = inventory(upstream)
+    if any(up.get(k) != v for k, v in before_up.items()): raise SystemExit("a committed upstream file changed")
+    if inventory(nxt) != before_next: raise SystemExit(f"{nxt} changed")
+    if not (out / "trusted-keys.jsonl").read_bytes().startswith(trusted_before): raise SystemExit("trusted-keys.jsonl is not appended to")
+    lock["tyr"] = a.tyr_commit or git_head(a.tyr)
+    lock["upstream"] = up; lock["registry"] = inventory(target)
+    lock["trustedKeys"] = {"path": "trusted-keys.jsonl", "sha256": sha((out / "trusted-keys.jsonl").read_bytes())}
+    dump(out / "lock.json", lock)
+    print(f"appended {len(up) - len(before_up)} upstream files and {len(after) - len(before_reg)} registry files; tyr pin {lock['tyr']}")
 
 
 if __name__ == "__main__":

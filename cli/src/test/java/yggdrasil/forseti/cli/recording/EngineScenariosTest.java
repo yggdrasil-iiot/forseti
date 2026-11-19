@@ -26,8 +26,45 @@ class EngineScenariosTest {
         assertEquals(List.of(), EngineScenarios.check(STEP3, ENGINE));
         List<EngineScenarios.Derived> d = EngineScenarios.derive(STEP3);
         long shared = d.stream().filter(x -> x.placement() == EngineScenarios.SHARED).count();
-        assertEquals(EngineScenarios.STEP3.size() - EngineScenarios.NOT_REBUILT.size() + 3, shared, "every rebuilt step-3 scenario, injection 24 and the two speeds");
-        assertEquals(EngineScenarios.DEDICATED_TOO.size() + 3, d.size() - shared);
+        assertEquals(EngineScenarios.STEP3.size() - EngineScenarios.NOT_REBUILT.size() + 4, shared, "every rebuilt step-3 scenario, injection 24, its control and the two speeds");
+        assertEquals(EngineScenarios.DEDICATED_TOO.size() + 4, d.size() - shared);
+    }
+
+    /** Injection 24 and its control: the baseline on the placement's starvation release with one closed incident on the starved station
+     *  over its first visit, delivered before the starvation; the starved run is the control plus the starve-station overlay. */
+    @Test void injection24AndItsControlCarryTheStarvedStationsIncidentOnTheStarvationRelease() {
+        List<EngineScenarios.Derived> d = EngineScenarios.derive(STEP3);
+        for (EngineScenarios.Placement p : EngineScenarios.PLACEMENTS) {
+            ObjectNode starved = d.stream().filter(x -> x.placement() == p && x.name().equals(EngineScenarios.STARVED_SCENARIO)).findFirst().orElseThrow().scenario();
+            ObjectNode control = d.stream().filter(x -> x.placement() == p && x.name().equals(EngineScenarios.STARVED_CONTROL)).findFirst().orElseThrow().scenario();
+            String station = p.site() + ":" + EngineScenarios.STARVED_STATION;
+            for (ObjectNode s : List.of(starved, control)) {
+                assertEquals(p.starvationStream(), s.path("rule").path("stream").asText(), p.name());
+                assertEquals(p.starvationRelease(), s.path("rule").path("releaseId").asText(), p.name());
+                assertTrue(Files.isDirectory(LIVE.resolve("mappings/releases").resolve(p.starvationRelease()).resolve("1.0.0")), p.name() + ": the release is published");
+                assertEquals(1, s.path("incidents").size(), p.name());
+                JsonNode rev = s.path("incidents").get(0).path("revisions").get(0), f = rev.path("fields");
+                assertEquals(List.of(station, station, "tool-check-failed", "closed"),
+                    List.of(f.path("stationRef").asText(), f.path("equipmentRef").asText(), f.path("kind").asText(), f.path("status").asText()), p.name());
+                assertTrue(rev.path("deliverAt").longValue() < EngineScenarios.STARVE_FROM, p.name() + ": delivered before the starvation");
+                boolean visit = false;
+                for (JsonNode v : s.path("visits"))
+                    if (v.path("station").asText().equals(station) && v.path("enter").longValue() == f.path("suspectFrom").longValue() && v.path("leave").longValue() == f.path("suspectTo").longValue()) visit = true;
+                assertTrue(visit, p.name() + ": the suspect interval is a visit of the starved station");
+            }
+            // the impact rule of the release accepts incidents on the starved station
+            JsonNode impact = Json.read(LIVE.resolve("mappings/releases").resolve(p.starvationRelease()).resolve("1.0.0/payload/impact-rules/0.json"));
+            List<String> scope = new ArrayList<>();
+            impact.path("incidentScope").forEach(x -> scope.add(x.asText()));
+            assertTrue(scope.contains(station), scope.toString());
+            // the starved run is its control with the starvation
+            ObjectNode back = starved.deepCopy();
+            back.put("name", EngineScenarios.STARVED_CONTROL);
+            com.fasterxml.jackson.databind.node.ArrayNode inj = (com.fasterxml.jackson.databind.node.ArrayNode) back.get("injections");
+            assertEquals("starve-station", inj.get(inj.size() - 1).path("type").asText());
+            inj.remove(inj.size() - 1);
+            assertEquals(control, back, p.name());
+        }
     }
 
     @Test void everyStep3ScenarioIsRebuiltOnTheSharedPlacementUnderItsRulesRelease() {

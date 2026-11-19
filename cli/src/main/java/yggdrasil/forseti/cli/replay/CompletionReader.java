@@ -40,5 +40,9 @@ public interface CompletionReader extends AutoCloseable {
      *  progress value that closed it. Not within {@code timeout} is an {@link IllegalStateException} naming the writers still missing. */
     Map<Writer, JsonNode> await(long cutId, List<Writer> expected, Duration timeout);
 
+    /** Polls once for at most {@code poll} and returns, per writer of {@code writers} that has committed one, the latest progress value
+     *  read so far (injection 24's observation, {@link StarvationObserver}). */
+    Map<Writer, JsonNode> latest(Collection<Writer> writers, Duration poll);
+
     @Override void close();
 }

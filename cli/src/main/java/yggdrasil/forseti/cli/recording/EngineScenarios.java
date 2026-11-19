@@ -20,6 +20,12 @@ import yggdrasil.forseti.core.Json;
  *  to the placement's release of the same rule) and setting the W1 form; nothing else changes, so the visits, overlays, timing and seeds
  *  are the step-3 scenario's.
  *
+ *  <p>Injection 24 ({@link #STARVED_SCENARIO}) and its control ({@link #STARVED_CONTROL}, the same recording without the starvation) pin
+ *  the placement's starvation release ({@code line2-rules-<placement>-starvation}: the placement's rule with the starved station in the
+ *  impact rule's {@code incidentScope}) and carry one closed incident on the starved station ({@link #STARVED_INCIDENT}): its suspect
+ *  interval is the station's first visit, so its settlement deadline ({@code suspectTo + allowedLatenessMs}) is that visit's, and it is
+ *  delivered before the starvation, whose window holds the deadline.
+ *
  *  <p>The derived files live under {@code engine-fixtures/scenarios/<placement>/}, outside the paths of the core-input key (the core gate
  *  never replays them), each beside its lock in the step-3 lock format ({@link ScenarioBuilder#lockOf}); {@code
  *  engine-fixtures/engine-scenarios.json} lists them with their source and the step-3 scenarios that are not rebuilt and why. The
@@ -41,11 +47,11 @@ public final class EngineScenarios {
     /** A governed placement: its site id and the published streams of its rules (occupancy-join, plc-stamped with crossCheck occupancy,
      *  plc-stamped with crossCheck none). */
     public record Placement(String name, String site, String stream, String release, String plcStream, String plcRelease,
-                            String plcNocheckStream, String plcNocheckRelease) {}
+                            String plcNocheckStream, String plcNocheckRelease, String starvationStream, String starvationRelease) {}
     public static final Placement SHARED = new Placement("shared", "site-019", "line2-shared", "line2-rules-shared", "line2-shared-plc", "line2-rules-shared-plc",
-        "line2-shared-plc-nocheck", "line2-rules-shared-plc-nocheck");
+        "line2-shared-plc-nocheck", "line2-rules-shared-plc-nocheck", "line2-shared-starvation", "line2-rules-shared-starvation");
     public static final Placement DEDICATED = new Placement("dedicated", "site-071", "line2-dedicated", "line2-rules-dedicated", "line2-dedicated-plc", "line2-rules-dedicated-plc",
-        "line2-dedicated-plc-nocheck", "line2-rules-dedicated-plc-nocheck");
+        "line2-dedicated-plc-nocheck", "line2-rules-dedicated-plc-nocheck", "line2-dedicated-starvation", "line2-rules-dedicated-starvation");
     /** The step-3 releases, by rule. */
     static final String STEP3_RELEASE = "line2-rules", STEP3_PLC_RELEASE = "line2-rules-plc", STEP3_PLC_NOCHECK_RELEASE = "line2-rules-plc-nocheck";
     public static final List<Placement> PLACEMENTS = List.of(SHARED, DEDICATED);
@@ -66,6 +72,14 @@ public final class EngineScenarios {
     /** Injection 24: the station starved, and the window (milliseconds from T0) in which its telemetry is withheld. */
     public static final String STARVED_SCENARIO = "starved-station3", STARVED_STATION = "line2:station3";
     public static final long STARVE_FROM = 1_500_000, STARVE_RESUME = 2_100_000;
+    /** Injection 24's control: the starved scenario without the starvation (the same telemetry, occupancy and incident). */
+    public static final String STARVED_CONTROL = "starved-station3-control";
+    /** The starved station's incident: closed {@code tool-check-failed} on the station itself, suspect over its first visit
+     *  ([{@link #STARVED_INCIDENT_FROM}, {@link #STARVED_INCIDENT_TO}), the baseline's station3 visit 1), delivered at
+     *  {@link #STARVED_INCIDENT_DELIVER}, before the starvation; its deadline {@code suspectTo + allowedLatenessMs} is that visit's
+     *  settlement deadline, inside the starvation window. */
+    public static final String STARVED_INCIDENT = "inc-24";
+    public static final long STARVED_INCIDENT_FROM = 780_000, STARVED_INCIDENT_TO = 840_000, STARVED_INCIDENT_DELIVER = 900_000;
     /** Item 5 (d): the baseline at batch interval x2 and x1/2. */
     public static final String BASELINE_X2 = "baseline-batch-x2", BASELINE_HALF = "baseline-batch-half";
 
@@ -85,12 +99,15 @@ public final class EngineScenarios {
                 if (p == DEDICATED && !DEDICATED_TOO.contains(n)) continue;
                 l.add(new Derived(p, n, n, "semantic", onPlacement(read(step3, n), p)));
             }
-            ObjectNode starved = onPlacement(read(step3, "baseline"), p);
+            ObjectNode starved = starvationRun(read(step3, "baseline"), p);
             starved.put("name", STARVED_SCENARIO);
             ObjectNode inj = ((ArrayNode) starved.get("injections")).addObject().put("type", "starve-station").put("station", p.site() + ":" + STARVED_STATION);
             Json.putSafe(inj, "from", STARVE_FROM);
             Json.putSafe(inj, "resumeAt", STARVE_RESUME);
             l.add(new Derived(p, STARVED_SCENARIO, "baseline", "injection-24", starved));
+            ObjectNode control = starvationRun(read(step3, "baseline"), p);
+            control.put("name", STARVED_CONTROL);
+            l.add(new Derived(p, STARVED_CONTROL, "baseline", "injection-24-control", control));
             for (String n : List.of(BASELINE_X2, BASELINE_HALF)) {
                 ObjectNode x = onPlacement(read(step3, "baseline"), p);
                 x.put("name", n);
@@ -114,6 +131,30 @@ public final class EngineScenarios {
             default -> throw new IllegalArgumentException("scenario " + Json.text(s, "name") + ": no governed release for " + release);
         }
         s.put("w1Form", W1_FORM);
+        return s;
+    }
+
+    /** The step-3 baseline on {@code p} with the placement's starvation release pinned and the starved station's incident
+     *  ({@link #STARVED_INCIDENT}): injection 24's run and its control before the starvation overlay. */
+    static ObjectNode starvationRun(JsonNode baseline, Placement p) {
+        ObjectNode s = onPlacement(baseline, p);
+        ObjectNode rule = (ObjectNode) s.get("rule");
+        if (!p.release().equals(Json.text(rule, "releaseId"))) throw new IllegalArgumentException("the starvation run derives from the occupancy-join baseline");
+        rule.put("stream", p.starvationStream()).put("releaseId", p.starvationRelease());
+        String station = p.site() + ":" + STARVED_STATION;
+        boolean overlaps = false;
+        for (JsonNode v : s.path("visits"))
+            if (station.equals(Json.text(v, "station")) && v.path("enter").longValue() == STARVED_INCIDENT_FROM && v.path("leave").longValue() == STARVED_INCIDENT_TO) overlaps = true;
+        if (!overlaps) throw new IllegalArgumentException("no visit of " + station + " over [" + STARVED_INCIDENT_FROM + ", " + STARVED_INCIDENT_TO + ")");
+        if (!s.path("incidents").isEmpty()) throw new IllegalArgumentException("the baseline carries incidents");
+        ObjectNode f = ((ArrayNode) s.get("incidents")).addObject().put("incidentId", STARVED_INCIDENT).putArray("revisions").addObject()
+            .put("revision", 1).put("deliverAt", STARVED_INCIDENT_DELIVER).putObject("fields");
+        f.put("stationRef", station).put("equipmentRef", station).put("kind", "tool-check-failed");
+        Json.putSafe(f, "detectedAt", STARVED_INCIDENT_TO);
+        Json.putSafe(f, "revisionEventTime", STARVED_INCIDENT_TO);
+        Json.putSafe(f, "suspectFrom", STARVED_INCIDENT_FROM);
+        Json.putSafe(f, "suspectTo", STARVED_INCIDENT_TO);
+        f.put("status", "closed").put("evidenceRef", "urn:line2:qms:" + STARVED_INCIDENT).put("source", "qms-line2");
         return s;
     }
 
@@ -144,7 +185,8 @@ public final class EngineScenarios {
         ObjectNode n = Json.object().put("indexVersion", 1).put("w1Form", W1_FORM);
         ObjectNode ps = n.putObject("placements");
         for (Placement p : PLACEMENTS) ps.putObject(p.name()).put("site", p.site()).put("stream", p.stream()).put("release", p.release())
-            .put("plcStream", p.plcStream()).put("plcRelease", p.plcRelease()).put("plcNocheckStream", p.plcNocheckStream()).put("plcNocheckRelease", p.plcNocheckRelease());
+            .put("plcStream", p.plcStream()).put("plcRelease", p.plcRelease()).put("plcNocheckStream", p.plcNocheckStream()).put("plcNocheckRelease", p.plcNocheckRelease())
+            .put("starvationStream", p.starvationStream()).put("starvationRelease", p.starvationRelease());
         n.put("registry", "fixtures/live/registry").put("trustedKeys", "fixtures/live/trusted-keys.jsonl");
         ArrayNode sc = n.putArray("scenarios");
         for (Derived d : derived) {

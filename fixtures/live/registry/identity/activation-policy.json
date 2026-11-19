@@ -97,6 +97,38 @@
       "target": "mapping-publication",
       "kind": "mapping-release",
       "ref": "line2-shared-plc-nocheck"
+    },
+    {
+      "id": "publish-line2-dedicated-starvation",
+      "principal": "proposer",
+      "action": "publish",
+      "target": "mapping-publication",
+      "kind": "mapping-release",
+      "ref": "line2-dedicated-starvation"
+    },
+    {
+      "id": "approve-line2-dedicated-starvation",
+      "principal": "approver",
+      "action": "approve",
+      "target": "mapping-publication",
+      "kind": "mapping-release",
+      "ref": "line2-dedicated-starvation"
+    },
+    {
+      "id": "publish-line2-shared-starvation",
+      "principal": "proposer",
+      "action": "publish",
+      "target": "mapping-publication",
+      "kind": "mapping-release",
+      "ref": "line2-shared-starvation"
+    },
+    {
+      "id": "approve-line2-shared-starvation",
+      "principal": "approver",
+      "action": "approve",
+      "target": "mapping-publication",
+      "kind": "mapping-release",
+      "ref": "line2-shared-starvation"
     }
   ]
 }

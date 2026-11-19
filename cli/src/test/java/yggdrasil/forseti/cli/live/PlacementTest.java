@@ -203,13 +203,13 @@ class PlacementTest {
 
     @Test void theLockPinsTheUpstreamCommitsAndEveryImportedByte() throws Exception {
         JsonNode lock = Json.read(LIVE.resolve("lock.json"));
-        assertEquals("a113ef8f104004aae53de943a4b035e6870448db", Json.text(lock, "tyr"));
+        assertEquals("2d64d81f1b34f1b30a8e3e8476c6f71c8dd441ae", Json.text(lock, "tyr"));
         assertEquals("a405cb60ff032f5d870b35106fe2dbbca78c1552", Json.text(lock, "bifrost"));
         JsonNode step3 = Json.read(FIXTURES.resolve("registry.lock.json"));
         assertEquals(Json.text(step3, "occupancySchemaSha256"), Json.text(lock, "occupancySchemaSha256"));
         assertEquals(Json.text(step3, "incidentSchemaSha256"), Json.text(lock, "incidentSchemaSha256"));
         assertEquals(sha(Files.readAllBytes(Path.of("..", "schemas", "occupancy-1.0.0.schema.json"))), Json.text(lock, "occupancySchemaSha256"));
-        for (String[] f : new String[][] {{"upstream", "216"}, {"definitions", "4"}, {"registry", "382"}, {"registryNext", "476"}}) {
+        for (String[] f : new String[][] {{"upstream", "304"}, {"definitions", "4"}, {"registry", "482"}, {"registryNext", "476"}}) {
             Map<String, String> want = pinned(lock, f[0]);
             assertEquals(Integer.parseInt(f[1]), want.size(), f[0] + " entries");
             assertEquals(want, inventory(LIVE.resolve(f[0].equals("registryNext") ? "registry-next" : f[0])), f[0] + " bytes vs lock.json");

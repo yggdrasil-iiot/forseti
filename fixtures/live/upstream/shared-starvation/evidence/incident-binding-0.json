@@ -1,0 +1,19 @@
+{
+  "kind": "evidence-artifact",
+  "schemaVersion": "1.1.0",
+  "id": "incident-binding-line2",
+  "version": "1.0.0",
+  "origin": "synthetic",
+  "file": {
+    "path": "data/incident-binding-0.json",
+    "sha256": "23b076135ff790116842600ab99d82ee0cd36373283880ca75653c07ce19122b",
+    "mediaType": "application/vnd.forseti.incident-binding+json"
+  },
+  "capturedAt": "2026-11-07T00:00:00Z",
+  "product": null,
+  "scope": [
+    "station1",
+    "station2",
+    "station3"
+  ]
+}

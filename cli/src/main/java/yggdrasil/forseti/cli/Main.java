@@ -55,6 +55,15 @@ public final class Main {
             try { flags = Args.parse(args, 1, Set.of("shuffle")); } catch (IllegalArgumentException e) { err.println(e.getMessage()); return usage(err); }
             return run(flags, "forseti " + String.join(" ", args), out, err);
         }
+        if (args.length >= 1 && args[0].equals("determinism")) {
+            Args flags;
+            List<Path> runs = new ArrayList<>();
+            try {
+                flags = Args.parse(args, 1, Set.of()).only(Set.of("runs", "out"));
+                for (String r : flags.required("runs").split(",", -1)) { if (r.isEmpty()) throw new IllegalArgumentException("--runs <dir>,<dir>,<dir>"); runs.add(Path.of(r)); }
+            } catch (IllegalArgumentException e) { err.println(e.getMessage()); return usage(err); }
+            return yggdrasil.forseti.cli.gate.Determinism.main(runs, Path.of(flags.get("out").orElse("build/determinism")), out, err);
+        }
         if (args.length >= 1 && args[0].equals("generation")) {
             if (args.length < 2) return usage(err);
             return GenerationCli.run(Arrays.copyOfRange(args, 1, args.length), out, err, Clock.systemUTC());
@@ -131,6 +140,8 @@ public final class Main {
         err.println("       forseti recordings check-engine --scenario <file> --registry <dir> --trusted-keys <file> --python <interpreter> --out <dir>");
         err.println("                   [--w1-form per-station|min-over-partitions]");
         err.println("       forseti gate|run|requirements --engine <name> ...   (an engine provider on the engine path, -D" + EngineProviders.PATH_PROPERTY + " or " + EngineProviders.PATH_ENV + ")");
+        err.println("       forseti requirements --engine <name> --gate-report <report.json> [--out <dir>] [--python <interpreter>]");
+        err.println("       forseti determinism --runs <gate out>,<gate out>,<gate out> [--out <dir>]");
         err.println("       forseti gate --engine core [--out <dir>] [--python <interpreter>] [--negative-control <name>] [--seed <n>]");
         err.println("                    [--shard <name> | --aggregate <dir>] [--state <out>/state]");
         err.println("       forseti run --engine core --recording <dir> --registry <dir> --state <dir> --generation <n> --out <run dir>");

@@ -16,12 +16,14 @@ forseti has no write path to the plant. Applications of the yggdrasil family cou
 
 - `core/`: forseti-core, Java 17. Value types, RFC 8785 canonical digests, the release reader, rule and binding-profile loading from a Bifrost-published release, the two stage decision functions as pure functions, ProgressTracker. It depends on no engine and never on `cli/`.
 - `cli/`: the `forseti` command line. `generation new|promote|retire|list`, the reference harness that drives the core through cut barriers without an engine, the recording builder and synthesizer, event-time replay, and `forseti gate --engine core`.
+- `cli/replay/`, `replay-kafka/`: the engine-neutral replay harness (interfaces, and their Kafka implementation on `kafka-clients` 4.2.2) that every external engine runs on. `engine-flink/`: the Flink 2.2.1 stage-1 and stage-2 jobs and the `flink` engine provider, packaged with its dependencies into `engine-flink/target/engine/`.
+- `engine-fixtures/`: the engine scenarios (every step-3 scenario on the shared raw placement, baseline and smoke on the dedicated one, injection 24 and the baseline at batch interval x2 and x1/2 on both) with their locks.
 - `oracle/`: an independent Python oracle that recomputes every live row from scratch at every cut by sort-and-sweep. It shares no code with the Java modules; the two meet only at the JCS vector file, the recordings, the cut log, the released bytes and the journal files.
-- `gate/`: the assertion manifest `core-assertions.json` (82 assertions), the shard plan `core-shards.json`, and the negative-control plan `core-negative-controls.json`.
+- `gate/`: the assertion manifest `core-assertions.json` (82 assertions), the shard plan `core-shards.json`, and the negative-control plan `core-negative-controls.json`; for the Flink engine `flink-assertions.json` (66 assertions), `flink-shards.json`, `flink-negative-controls.json` and the requirements manifest `flink-requirements.json`.
 - `fixtures/`: the registry fixtures, the scenario files with their locks, and the three committed smoke recordings.
 - `vectors/jcs-vectors.json`: the canonical-form vectors both test suites run. `schemas/`: the occupancy and incident schemas.
 - `scripts/`: `gate-then-promote.sh`, `check-control-report.py`, `check-ascii-names.sh`, `check-dependency-closure.sh`.
-- `docs/CORE-GATE.md`: the assertion table, scenarios, formats and controls. `docs/superpowers/`: the design spec and the delivery plans.
+- `docs/CORE-GATE.md`: the assertion table, scenarios, formats and controls. `docs/FLINK-GATE.md`: the Flink replay gate, its shards and controls, `forseti requirements` and the determinism check. `docs/ENGINE-ASSUMPTIONS.md`: the engine behaviours the adapters rely on and the tests that confirm them. `docs/superpowers/`: the design spec and the delivery plans.
 
 ## Running the core gate
 
@@ -51,6 +53,16 @@ python -I scripts/check-control-report.py build/controls/first-wins/hand-made/re
 
 `docs/CORE-GATE.md` lists each control's mutation, shards and intended failures.
 
+## Running the Flink engine
+
+```bash
+mvn -B -ntp install
+java -Xmx3g -Dforseti.engine.path=engine-flink/target/engine -jar cli/target/forseti.jar gate --engine flink --shard inj-stage1 --out build/flink-shards/inj-stage1 --python "$(command -v python)"
+java -Xmx3g -Dforseti.engine.path=engine-flink/target/engine -jar cli/target/forseti.jar requirements --engine flink --gate-report build/flink/report.json --out build/requirements --python "$(command -v python)"
+```
+
+The gate starts the pinned Kafka image in Docker and removes it when it ends, runs each Flink job in its own application-mode cluster, and compares every run with the oracle at every cut; it prints `assertions run N / expected 66` and exits 0 only when every assertion ran and held. CI runs it in the shards of `gate/flink-shards.json` on every pull request, with the nine negative controls and the aggregate. `forseti requirements` runs injection 24 and comparison item 5 on both raw placements and records each requirement as pass, miss or error; it exits 0 when every requirement was run and recorded (1 when the runs crashed) and prints the engine eligibility line separately. It runs on pushes to main, nightly and on demand, never on a pull request. `docs/FLINK-GATE.md` has the details.
+
 ## Fixtures and their provenance
 
 `fixtures/registry.lock.json` pins the Bifrost and Tyr commits the registry fixtures were published from and the raw SHA-256 of every fixture file; `fixtures/upstream/manifest.json` pins the Tyr commit and digests of the upstream bundle. The registry fixtures are a Bifrost-published release; forseti reads them through its release reader and never edits them. Scenario files and their locks are committed; recordings other than the three smoke recordings are built deterministically at gate time and checked byte for byte against their locks.
@@ -65,4 +77,4 @@ Delivery step 3 is complete when, on main, the six gate shards and the aggregate
 
 ## Scope of the core gate
 
-The core gate establishes the engine-independent semantics: attribution, cascade, corrections, generations and event-time replay, compared with the oracle at every cut. Native event time in an engine, recovery, exactly-once delivery, broker retention, transaction visibility, isolation, bridge classification and engine eligibility are established by the engine gates of delivery steps 5 to 8.
+The core gate establishes the engine-independent semantics: attribution, cascade, corrections, generations and event-time replay, compared with the oracle at every cut. Native event time in an engine, recovery, exactly-once delivery, broker retention, transaction visibility, isolation, bridge classification and engine eligibility are established by the engine gates of delivery steps 5 to 8; for Flink, by `forseti gate --engine flink` and `forseti requirements --engine flink` (step 6).
