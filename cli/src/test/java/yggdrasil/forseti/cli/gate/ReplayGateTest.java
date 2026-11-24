@@ -252,4 +252,33 @@ class ReplayGateTest {
         assertEquals(2, lines.size());
         assertEquals("baseline", Json.read(lines.get(0).getBytes(StandardCharsets.UTF_8)).path("run").asText());
     }
+
+    /** The unsharded gate on the committed plan, its runs made in plan order: a shard's assertions are evaluated once its last run is
+     *  made, and a run is summarized (its fold and ground truth shed) only when every shard that plans it is evaluated, so a run is never
+     *  shed while an assertion or a later run of one of its shards (a restart run, a rule change, the event-time replay) still reads it;
+     *  after the last run every shard is evaluated and every run summarized. */
+    @Test void theUnshardedGateEvaluatesEachShardWhenItsRunsAreMadeAndShedsARunAfterItsLastShard() {
+        ReplayGate.Plan plan = ReplayGate.Plan.load(ROOT.resolve("gate/flink-shards.json"), ids());
+        Set<String> made = new HashSet<>(), settled = new HashSet<>(), shed = new HashSet<>();
+        Map<String, Integer> shedAt = new HashMap<>(), settledAt = new HashMap<>();
+        List<String> order = plan.everything();
+        for (int i = 0; i < order.size(); i++) {
+            made.add(order.get(i));
+            for (ReplayGate.Shard s : ReplayGate.complete(plan, made, settled)) { settled.add(s.name()); settledAt.put(s.name(), i); }
+            for (String n : made) if (!shed.contains(n) && ReplayGate.settled(plan, n, settled)) { shed.add(n); shedAt.put(n, i); }
+        }
+        assertEquals(plan.shards.size(), settled.size());
+        assertEquals(new HashSet<>(order), shed);
+        // every run is shed at or after the evaluation of every shard that plans it, never before
+        for (ReplayGate.Shard s : plan.shards) for (String n : ReplayGate.runsOf(s)) assertTrue(shedAt.get(n) >= settledAt.get(s.name()), n + " in " + s.name());
+        // the bases of later runs stay until those run: stage2-early until its last restart run, baseline until its rule change and the
+        // horizon shard that compares with it, horizon-planned-late until its event-time replay
+        assertEquals(order.indexOf("stage2-early@restart-22iv"), shedAt.get("stage2-early"));
+        assertTrue(shedAt.get("baseline") >= order.indexOf("horizon-no-departure"));
+        assertEquals(order.indexOf("horizon-planned-late@replay"), shedAt.get("horizon-planned-late"));
+        // and the small shards are summarized long before the horizon runs, so the last run starts with bounded state
+        assertTrue(shedAt.get("held-back-10min") < order.indexOf("horizon-no-departure"));
+        long keptAtTheLast = made.stream().filter(n -> shedAt.get(n) >= order.size() - 1).count();
+        assertTrue(keptAtTheLast <= 2, "runs still held when the last run is made: " + keptAtTheLast);
+    }
 }

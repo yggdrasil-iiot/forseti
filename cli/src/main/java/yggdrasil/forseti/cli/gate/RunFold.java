@@ -58,6 +58,8 @@ final class RunFold implements Closeable {
     private final Map<JsonNode, String> pinsDigests = new HashMap<>();
     private final Map<String, Map<Long, String>> fingerprints = new TreeMap<>();
     private final Map<String, Long> rows = new TreeMap<>();
+    /** One instance of each topic, part, disposition and reason text the ledger holds (a few dozen values over every delivery). */
+    private final Map<String, String> names = new HashMap<>();
     private long cut = 0;
 
     RunFold(Path run, String rulesDigest, long generation, boolean sampleHistory) throws IOException {
@@ -75,6 +77,8 @@ final class RunFold implements Closeable {
             }
         }
     }
+
+    private String name(String s) { return s == null ? null : names.computeIfAbsent(s, x -> x); }
 
     static List<String> concat(List<String> a, List<String> b) { List<String> l = new ArrayList<>(a); l.addAll(b); return l; }
 
@@ -280,8 +284,8 @@ final class RunFold implements Closeable {
         if (rev == 1 && p.lastProgress != null && covered(p.lastProgress, k.path("inputTopic").asText(), k.path("inputPartition").asInt(), k.path("inputOffset").asLong()))
             findings.add("J-PROGRESS-ORDER", label + " " + key + ": a disposition after the progress of cut " + p.lastProgress.path("cutId").asLong() + " it belongs to");
         rows.merge(p.topic, 1L, Long::sum);
-        ledger.put(key, new Disp(p.topic, k.path("inputTopic").asText(), k.path("inputPartition").asInt(), k.path("inputOffset").asLong(), k.path("part").asText(),
-            keyText(body.path("identity")), body.path("disposition").asText(null), body.path("reason").asText(null), rev, cutId, digest));
+        ledger.put(key, new Disp(p.topic, name(k.path("inputTopic").asText()), k.path("inputPartition").asInt(), k.path("inputOffset").asLong(), name(k.path("part").asText()),
+            keyText(body.path("identity")), name(body.path("disposition").asText(null)), name(body.path("reason").asText(null)), rev, cutId, digest));
     }
 
     /** Whether a business row belongs to the cut that progress {@code p} closed or an earlier one (then it must precede {@code p}): its
