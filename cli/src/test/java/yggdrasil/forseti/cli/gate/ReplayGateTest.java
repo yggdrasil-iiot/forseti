@@ -208,4 +208,77 @@ class ReplayGateTest {
         rep.putArray("runs");
         Json.write(d.resolve("report.json"), rep);
     }
+
+    /** The unsharded layout deletes a run's topics after the run, except the online base of an event-time replay the gate run still
+     *  has to make: the replay's redump reads them. A rule change reads its base's recording, not its topics. */
+    @Test void onlyTheBaseOfAPendingEventTimeReplayKeepsItsTopics() {
+        ReplayGate.EngineRuns runs = new ReplayGate.EngineRuns(List.of("baseline", "horizon-planned-late", "baseline@rule-1.0.1", "horizon-planned-late@replay"));
+        assertTrue(ReplayGate.redumpedLater(runs, "horizon-planned-late"));
+        assertFalse(ReplayGate.redumpedLater(runs, "baseline"));
+        assertFalse(ReplayGate.redumpedLater(runs, "horizon-planned-late@replay"));
+        runs.runs.put("horizon-planned-late@replay", new Scenarios.Run());
+        assertFalse(ReplayGate.redumpedLater(runs, "horizon-planned-late"));
+        // a gate run that does not plan the replay (a shard of the base alone) never defers
+        assertFalse(ReplayGate.redumpedLater(new ReplayGate.EngineRuns(List.of("horizon-planned-late")), "horizon-planned-late"));
+    }
+
+    /** The per-run resource record is off unless {@code forseti.gate.memoryLog} names a file; its line names the harness heap, the live
+     *  children, the broker's memory and data, its topics and what the run's release deleted. */
+    @Test void theResourceRecordIsOffByDefaultAndItsLineNamesEveryMeasure() throws Exception {
+        assertNull(System.getProperty(RunResources.PROPERTY));
+        assertNull(RunResources.file());
+        ObjectNode h = RunResources.harness();
+        assertTrue(h.path("heapAfterGcBytes").asLong() > 0);
+        assertTrue(h.path("liveChildren").isArray());
+        ObjectNode engine = Json.object();
+        Json.putSafe(engine, "brokerMemoryBytes", 3L << 30);
+        Json.putSafe(engine, "brokerAnonBytes", 1L << 30);
+        Json.putSafe(engine, "brokerFileBytes", 2L << 30);
+        Json.putSafe(engine, "brokerDataBytes", 80L << 20);
+        Json.putSafe(engine, "topics", 13);
+        Json.putSafe(engine, "partitions", 70);
+        ObjectNode summary = Json.object();
+        Json.putSafe(summary.putObject("memory").putObject("stage1"), "taskManagerRssPeakBytes", 851L << 20);
+        ObjectNode released = Json.putSafe(Json.object(), "deleted", 11);
+        ObjectNode r = RunResources.record("baseline", h, engine, summary, released);
+        String line = RunResources.line(r);
+        assertTrue(line.startsWith("    memory baseline: harness heap after GC "), line);
+        assertTrue(line.contains("broker container 3072 MiB (anon 1024 MiB, file 2048 MiB), broker data 80 MiB, topics 13 / partitions 70 (11 deleted after the run)"), line);
+        assertTrue(line.contains("stage1 TM RSS peak 851 MiB"), line);
+        Path f = tmp.resolve("memory/runs.jsonl");
+        RunResources.append(f, r);
+        RunResources.append(f, r);
+        List<String> lines = Files.readAllLines(f);
+        assertEquals(2, lines.size());
+        assertEquals("baseline", Json.read(lines.get(0).getBytes(StandardCharsets.UTF_8)).path("run").asText());
+    }
+
+    /** The unsharded gate on the committed plan, its runs made in plan order: a shard's assertions are evaluated once its last run is
+     *  made, and a run is summarized (its fold and ground truth shed) only when every shard that plans it is evaluated, so a run is never
+     *  shed while an assertion or a later run of one of its shards (a restart run, a rule change, the event-time replay) still reads it;
+     *  after the last run every shard is evaluated and every run summarized. */
+    @Test void theUnshardedGateEvaluatesEachShardWhenItsRunsAreMadeAndShedsARunAfterItsLastShard() {
+        ReplayGate.Plan plan = ReplayGate.Plan.load(ROOT.resolve("gate/flink-shards.json"), ids());
+        Set<String> made = new HashSet<>(), settled = new HashSet<>(), shed = new HashSet<>();
+        Map<String, Integer> shedAt = new HashMap<>(), settledAt = new HashMap<>();
+        List<String> order = plan.everything();
+        for (int i = 0; i < order.size(); i++) {
+            made.add(order.get(i));
+            for (ReplayGate.Shard s : ReplayGate.complete(plan, made, settled)) { settled.add(s.name()); settledAt.put(s.name(), i); }
+            for (String n : made) if (!shed.contains(n) && ReplayGate.settled(plan, n, settled)) { shed.add(n); shedAt.put(n, i); }
+        }
+        assertEquals(plan.shards.size(), settled.size());
+        assertEquals(new HashSet<>(order), shed);
+        // every run is shed at or after the evaluation of every shard that plans it, never before
+        for (ReplayGate.Shard s : plan.shards) for (String n : ReplayGate.runsOf(s)) assertTrue(shedAt.get(n) >= settledAt.get(s.name()), n + " in " + s.name());
+        // the bases of later runs stay until those run: stage2-early until its last restart run, baseline until its rule change and the
+        // horizon shard that compares with it, horizon-planned-late until its event-time replay
+        assertEquals(order.indexOf("stage2-early@restart-22iv"), shedAt.get("stage2-early"));
+        assertTrue(shedAt.get("baseline") >= order.indexOf("horizon-no-departure"));
+        assertEquals(order.indexOf("horizon-planned-late@replay"), shedAt.get("horizon-planned-late"));
+        // and the small shards are summarized long before the horizon runs, so the last run starts with bounded state
+        assertTrue(shedAt.get("held-back-10min") < order.indexOf("horizon-no-departure"));
+        long keptAtTheLast = made.stream().filter(n -> shedAt.get(n) >= order.size() - 1).count();
+        assertTrue(keptAtTheLast <= 2, "runs still held when the last run is made: " + keptAtTheLast);
+    }
 }

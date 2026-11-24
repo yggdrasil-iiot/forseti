@@ -1,6 +1,8 @@
 package yggdrasil.forseti.engine.flink.gate;
 
 import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.node.ArrayNode;
+import com.fasterxml.jackson.databind.node.ObjectNode;
 import java.io.PrintStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -116,6 +118,50 @@ final class FlinkEngine implements ReplayEngine {
   @Override public void redump(Run base) { FlinkRun.redump((FlinkRun.Handle) base.handle(), base.out()); }
 
   @Override public void close() { if (broker != null) broker.close(); }
+
+  /** Deletes the run's own topics ({@link FlinkRun#ownTopics}) and waits up to {@link #RELEASE_TIMEOUT_S} s until the broker lists
+   *  none of them. */
+  @Override public ObjectNode release(String label) {
+    ObjectNode n = Json.object();
+    long t = System.nanoTime();
+    try (org.apache.kafka.clients.admin.Admin a = org.apache.kafka.clients.admin.Admin.create(KafkaConfig.admin(bootstrap, "forseti-harness-release"))) {
+      List<String> own = FlinkRun.ownTopics(label, a.listTopics().names().get(30, java.util.concurrent.TimeUnit.SECONDS));
+      if (!own.isEmpty()) a.deleteTopics(own).all().get(60, java.util.concurrent.TimeUnit.SECONDS);
+      List<String> left = own;
+      long until = System.nanoTime() + java.util.concurrent.TimeUnit.SECONDS.toNanos(RELEASE_TIMEOUT_S);
+      while (!left.isEmpty()) {
+        Set<String> now = a.listTopics().names().get(30, java.util.concurrent.TimeUnit.SECONDS);
+        left = own.stream().filter(now::contains).toList();
+        if (left.isEmpty() || System.nanoTime() > until) break;
+        Thread.sleep(500);
+      }
+      Json.putSafe(n, "deleted", own.size() - left.size());
+      ArrayNode r = n.putArray("remaining");
+      left.forEach(r::add);
+    } catch (InterruptedException e) {
+      Thread.currentThread().interrupt();
+      n.put("error", e.toString());
+    } catch (Exception e) { n.put("error", e.toString()); }
+    Json.putSafe(n, "ms", (System.nanoTime() - t) / 1_000_000);
+    return n;
+  }
+
+  static final long RELEASE_TIMEOUT_S = 120;
+
+  /** The broker after a run, for the nightly resource record: the container's memory and data (when the engine started it) and the
+   *  topics and partitions it holds. */
+  @Override public ObjectNode resources() {
+    ObjectNode n = Json.object();
+    if (broker != null) broker.stats().forEach((k, v) -> Json.putSafe(n, k, v));
+    try (org.apache.kafka.clients.admin.Admin a = org.apache.kafka.clients.admin.Admin.create(KafkaConfig.admin(bootstrap, "forseti-harness-resources"))) {
+      Set<String> topics = a.listTopics().names().get(30, java.util.concurrent.TimeUnit.SECONDS);
+      long partitions = 0;
+      for (var d : a.describeTopics(topics).allTopicNames().get(60, java.util.concurrent.TimeUnit.SECONDS).values()) partitions += d.partitions().size();
+      Json.putSafe(n, "topics", topics.size());
+      Json.putSafe(n, "partitions", partitions);
+    } catch (Exception e) { n.put("topicsError", e.toString()); }
+    return n;
+  }
 
   @Override public Map<String, List<String>> findings(Run run, Path recording) throws Exception {
     Map<String, List<String>> f = new TreeMap<>();

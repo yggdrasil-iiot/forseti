@@ -36,9 +36,11 @@ import yggdrasil.forseti.core.canon.Canonical;
  * <p>Layouts as the core gate's: {@code --shard <name>} runs that shard's scenarios and generation runs and evaluates its own
  * assertions, writing {@code report.json} and {@code summaries.json}; {@code --aggregate <dir>} reads every shard's output (the same
  * manifest, plan and engine artifact, each shard exactly its own ids) and evaluates the plan's aggregate ids; neither runs every shard in
- * one process. {@code --negative-control <name>} runs one control of the engine's control file on a shard that owns or feeds its intended
- * ids (or, with {@code --aggregate}, over that control's shard runs); its report has {@code kind: negative-control} and a {@code control}
- * verdict that {@code scripts/check-control-report.py} checks: a crash or a missing run never counts as an intended failure.
+ * one process. Without either (the full layout, the nightly unsharded gate) every shard's runs share one broker, and each run's own
+ * topics are deleted after the run ({@link ReplayEngine#release}). {@code --negative-control <name>} runs one control of the engine's
+ * control file on a shard that owns or feeds its intended ids (or, with {@code --aggregate}, over that control's shard runs); its report
+ * has {@code kind: negative-control} and a {@code control} verdict that {@code scripts/check-control-report.py} checks: a crash or a
+ * missing run never counts as an intended failure.
  * Exit 0 only when every expected id ran and held; 1 otherwise; 2 for a usage error.
  */
 public final class ReplayGate {
@@ -85,8 +87,14 @@ public final class ReplayGate {
             return 2;
         }
         Path outDir = Path.of(flags.getOrDefault("out", "build/" + engine)).toAbsolutePath();
-        return new Gate(engine, root, outDir, flags, command, files, plan, ids, shard, aggregateDir == null ? null : Path.of(aggregateDir).toAbsolutePath(), control, open,
-            out, err).run();
+        Gate g = new Gate(engine, root, outDir, flags, command, files, plan, ids, shard, aggregateDir == null ? null : Path.of(aggregateDir).toAbsolutePath(), control, open,
+            out, err);
+        // the unsharded layout: one broker serves every run of the plan; each run's own topics are deleted once nothing reads them again
+        g.releaseTopics = shard == null && aggregateDir == null && control == null;
+        // and the harness keeps bounded per-run state: a shard's assertions are evaluated once its runs are made, and a run whose shards
+        // are all evaluated keeps only its summary
+        g.bounded = g.releaseTopics;
+        return g.run();
     }
 
     // --- the plan and the controls -------------------------------------------------------------------------------------------
@@ -251,6 +259,37 @@ public final class ReplayGate {
         @Override public String notRun(String name) { return runs.containsKey(name) ? null : planned.contains(name) ? "not made: its run did not start" : "not run: not in this gate run's shards"; }
     }
 
+    /** Whether an event-time replay of scenario {@code name} that the gate run plans has still to run (its redump reads the scenario's
+     *  topics, so the unsharded layout deletes them only after it). */
+    static boolean redumpedLater(EngineRuns runs, String name) {
+        for (String x : runs.planned) {
+            Scenarios.GenerationRun g = Scenarios.generationRun(x);
+            if (g != null && GateEvidence.REPLAY.equals(g.variant()) && g.scenario().equals(name) && !runs.runs.containsKey(x)) return true;
+        }
+        return false;
+    }
+
+    /** Every run a shard plans: its scenarios, generation runs and restart runs. */
+    static List<String> runsOf(Shard s) {
+        List<String> l = new ArrayList<>(s.scenarios);
+        l.addAll(s.generationRuns);
+        l.addAll(s.restartRuns);
+        return l;
+    }
+
+    /** The shards of {@code plan} not in {@code settled} whose runs are all in {@code made}, in plan order. */
+    static List<Shard> complete(Plan plan, Set<String> made, Set<String> settled) {
+        List<Shard> l = new ArrayList<>();
+        for (Shard s : plan.shards) if (!settled.contains(s.name) && made.containsAll(runsOf(s))) l.add(s);
+        return l;
+    }
+
+    /** Whether every shard of {@code plan} that plans run {@code name} is in {@code settled} (its assertions evaluated). */
+    static boolean settled(Plan plan, String name, Set<String> settled) {
+        for (Shard s : plan.shards) if (runsOf(s).contains(name) && !settled.contains(s.name)) return false;
+        return true;
+    }
+
     private static final class Gate {
         final String engine, command;
         final Path root, out;
@@ -267,6 +306,17 @@ public final class ReplayGate {
         final Set<String> crashed = new TreeSet<>();
         /** Every run keeps its journals and recording ({@code forseti requirements} reads them after the runs). */
         boolean keepAll;
+        /** The unsharded layout ({@link #release}): what each run's release deleted, by run label. */
+        boolean releaseTopics;
+        final ObjectNode released = Json.object();
+        /** The unsharded layout ({@link #settle}): each shard's assertions evaluated as soon as every run of the shard is made (an
+         *  injection assertion reads only its own shard's runs, as on a shard), their results recorded in manifest order at the end; a
+         *  run whose every shard is evaluated is summarized and sheds its fold, ground truth and logs; the ground truth of a scenario is
+         *  read from its recording when its run starts, not kept from the preparation of every recording. */
+        boolean bounded;
+        final Map<String, Result> early = new HashMap<>();
+        final Set<String> settledShards = new HashSet<>();
+        final Map<String, ObjectNode> summarized = new HashMap<>();
 
         Gate(String engine, Path root, Path out, Map<String, String> flags, String command, GateFiles files, Plan plan, List<String> ids, String shard, Path aggregate,
              Control control, Function<Map<String, String>, ReplayEngine> open, PrintStream stdout, PrintStream stderr) {
@@ -346,13 +396,18 @@ public final class ReplayGate {
                         c.registrations = generations;
                         Map<String, Planned> byName = new HashMap<>();
                         for (Planned p : planned) byName.put(p.name, p);
-                        for (Planned p : planned) execute(c, e, runs, byName, p, shard != null ? plan.shard(shard).settings : plan.settingsOf(p.name), runsOut, engineSummary);
+                        RunResources.after("(registered, before the first run)", e, null, null, stdout);
+                        for (Planned p : planned) {
+                            execute(c, e, runs, byName, p, shard != null ? plan.shard(shard).settings : plan.settingsOf(p.name), runsOut, engineSummary);
+                            if (bounded) settle(c, runs, checks, expected);
+                            RunResources.after(p.name, e, engineSummary.get(p.name), released.get(p.name), stdout);
+                        }
                     }
                     Summaries mine = new Summaries();
                     for (String n : names) {
                         Run r = runs.runs.get(n);
                         if (r == null) { mine.missing.add(n + " not made"); continue; }
-                        ObjectNode s = Summaries.of(r);
+                        ObjectNode s = summarized.containsKey(n) ? summarized.get(n) : Summaries.of(r);
                         s.put("name", n);
                         if (shard != null) s.put("shard", shard);
                         if (Scenarios.generationRun(n) != null || Restarts.parse(n) != null) mine.generationRuns.put(n, s); else mine.runs.put(n, s);
@@ -393,6 +448,7 @@ public final class ReplayGate {
             report.set("controlStores", stores);
             report.set("generations", generations);
             report.set("runs", runsOut);
+            if (releaseTopics) report.set("releasedTopics", released);
             if (control != null) report.set("control", verdict(intended, acc, error, exit, evaluated));
             else report.putNull("control");
             try { Files.createDirectories(out); Json.write(out.resolve("report.json"), report); }
@@ -402,12 +458,52 @@ public final class ReplayGate {
         }
 
         void check(Context c, Assertions acc, Check k) {
+            Result r = early.containsKey(k.id()) ? early.get(k.id()) : evaluate(c, k);
+            try { acc.check(k.id(), r.ok(), r.evidence()); } catch (Assertions.Refused ignored) { /* recorded by the accountant */ }
+        }
+
+        Result evaluate(Context c, Check k) {
             Result r;
             c.current = k.id();
             try { r = k.body().run(c); }
             catch (Exception | Error e) { r = new Result(false, "crashed: " + e); crashed.add(k.id()); }
             finally { c.current = null; }
-            try { acc.check(k.id(), r.ok(), r.evidence()); } catch (Assertions.Refused ignored) { /* recorded by the accountant */ }
+            return r;
+        }
+
+        /** The unsharded layout after a run ({@link #bounded}): every shard whose runs are all made has its own assertions evaluated
+         *  now (recorded at the end, in order); every run whose shards are all evaluated is summarized ({@link Summaries#of}, what the
+         *  aggregate assertions read) and sheds the rest ({@link #shed}). */
+        void settle(Context c, EngineRuns runs, List<Check> checks, List<String> expected) {
+            for (Shard s : complete(plan, runs.runs.keySet(), settledShards)) {
+                for (Check k : checks) if (s.assertions.contains(k.id()) && expected.contains(k.id()) && !early.containsKey(k.id())) early.put(k.id(), evaluate(c, k));
+                settledShards.add(s.name);
+            }
+            for (Map.Entry<String, Run> e : runs.runs.entrySet()) {
+                String n = e.getKey();
+                if (summarized.containsKey(n) || !settled(plan, n, settledShards)) continue;
+                summarized.put(n, Summaries.of(e.getValue()));
+                shed(e.getValue());
+                runs.engineRuns.remove(n);
+            }
+        }
+
+        /** What a summarized run no longer holds: its fold, ground truth, recording manifest, cut log, run record and evidence (no
+         *  assertion reads them after its shards are evaluated); its name, failure and summary remain. */
+        static void shed(Run r) {
+            if (r.fold != null) try { r.fold.close(); } catch (Exception ignored) { /* already closed */ }
+            r.fold = null;
+            r.expected = null;
+            r.cutLog = null;
+            r.runJson = null;
+            r.census = null;
+            r.replay = null;
+            r.restart = null;
+            r.plannedLate = null;
+            r.foldDigest = null;
+            r.accounting = null;
+            r.controlEvidence = null;
+            r.rules = null;
         }
 
         /** One planned run of this gate run: the scenario run or generation run, its prepared Run, its directory, its registration. */
@@ -516,6 +612,7 @@ public final class ReplayGate {
             try {
                 if (r.failure != null) throw new IllegalStateException(r.failure);
                 if (p.reg == null) throw new IllegalStateException("not registered");
+                if (r.expected == null && g == null && p.restart == null && r.recording != null) r.expected = Recording.open(r.recording).expected();
                 ReplayEngine.Request req = g != null ? generationRequest(c, runs, byName, p, settings)
                     : p.restart != null ? restartRequest(c, runs, p, settings)
                     : new ReplayEngine.Request(name, scenarioFile(name), r.recording, registry, p.reg, c.control, "input", p.work, settings);
@@ -576,6 +673,23 @@ public final class ReplayGate {
             try { Files.createDirectories(c.logs); Files.writeString(c.logs.resolve("run-" + r.label + ".log"), r.summary() + "\n" + r.ms + "\n" + (r.replay == null ? "" : r.replay.toString()) + "\n"); }
             catch (IOException | RuntimeException ignored) { /* for reading */ }
             stdout.println("    " + (r.failure != null ? "FAILED " + r.failure : (r.ok() ? "ok " : "NOT OK ") + r.summary()));
+            if (releaseTopics) release(e, runs, p);
+        }
+
+        /** The unsharded layout, after a run (crashed or not): its own topics deleted on the broker ({@link ReplayEngine#release}) once
+         *  its dump, its comparison with the oracle and its per-run findings are made; the online base of an event-time replay after the
+         *  replay's redump of its journals. The comparison reads the dumped files only, and every later assertion the run summaries and
+         *  files: no topic of a finished run is read again. */
+        void release(ReplayEngine e, EngineRuns runs, Planned p) {
+            List<String> labels = new ArrayList<>();
+            if (p.g != null && GateEvidence.REPLAY.equals(p.g.variant())) { labels.add(p.name); labels.add(p.g.scenario()); }
+            else if (!redumpedLater(runs, p.name)) labels.add(p.name);
+            for (String l : labels) {
+                ObjectNode x = e.release(l);
+                released.set(l, x);
+                stdout.println("    topics of " + l + ": " + (x.has("error") ? "not deleted: " + x.path("error").asText()
+                    : "deleted " + x.path("deleted").asLong() + (x.path("remaining").isEmpty() ? "" : ", still listed " + x.path("remaining"))));
+            }
         }
 
         /** Whether a restart run of this gate run runs on scenario {@code name}'s recording. */
@@ -628,6 +742,7 @@ public final class ReplayGate {
             r.registry = registry;
             r.manifest = rec.manifest();
             r.expected = rec.expected();
+            if (bounded) r.expected = null;   // read again when the run starts (execute)
             r.synthetic = Json.read(scenario).path("synthetic").asBoolean(false);
             r.manifestSha256 = Canonical.digestOf(Files.readAllBytes(dir.resolve(Recording.MANIFEST)));
             JsonNode counts = Json.read(lock).path("counts");

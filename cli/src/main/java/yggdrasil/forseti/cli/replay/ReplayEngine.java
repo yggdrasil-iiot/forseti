@@ -98,5 +98,15 @@ public interface ReplayEngine extends AutoCloseable {
      *  {@code cuts.json} to declare it. */
     String w1Form();
 
+    /** Deletes the topics only the run labelled {@code label} wrote and read (its input and output topics, of every attempt of a
+     *  restart run; never a control store's), once nothing of the gate run reads them again, and waits until the broker no longer lists
+     *  them; returns what it deleted ({@code deleted}, {@code remaining}). The unsharded gate calls it after each run, so the one broker
+     *  that serves every run holds the topics of the run in progress, as the broker of a shard does. */
+    default ObjectNode release(String label) { return Json.object(); }
+
+    /** The engine's shared infrastructure after a run, for the nightly resource record only, never a gate criterion
+     *  ({@code forseti.gate.memoryLog}): for a broker the engine started, its container's memory and data and the topics it holds. */
+    default ObjectNode resources() { return Json.object(); }
+
     @Override void close();
 }

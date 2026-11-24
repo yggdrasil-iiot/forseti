@@ -102,13 +102,11 @@ final class Expectations {
             long extra = samples.keySet().stream().filter(k -> !named.contains(k)).count();
             if (extra > 0) o.problem(extra + " sample rows the ground truth does not name, e.g. " + samples.keySet().stream().filter(k -> !named.contains(k)).findFirst().orElse(""));
         }
-        // dispositions: (identity, part) -> the judgements of its deliveries
-        Map<String, List<Disp>> have = new HashMap<>(), byIdentity = new HashMap<>();
-        for (Disp d : fold.dispositions()) {
-            have.computeIfAbsent(d.identity() + "\u0000" + d.part(), k -> new ArrayList<>()).add(d);
-            byIdentity.computeIfAbsent(d.identity(), k -> new ArrayList<>()).add(d);
-        }
-        Set<String> listed = new HashSet<>();
+        // dispositions: (identity, part) -> the judgements of its deliveries. The fold's dispositions sorted (stably: each group keeps
+        // the fold's order) by identity and part, so a group and an identity are ranges of one list, indexed by the identity strings the
+        // dispositions already hold: no map of new (identity, part) strings over every delivery of a horizon run
+        Groups g = new Groups(fold.dispositions());
+        Set<String> listedEmpty = new HashSet<>();   // (identity, part) the ground truth lists and no disposition has
         ExpectedSamples.forEachDisposition(expected, (identity, entry) -> {
             Iterator<Map.Entry<String, JsonNode>> ps = entry.path("parts").fields();
             while (ps.hasNext()) {
@@ -116,14 +114,13 @@ final class Expectations {
                 o.dispositions++;
                 // a sampleId's part is written "member": the member part of its metric
                 String part = p.getKey().equals("member") ? "member:" + Json.read(identity.getBytes(java.nio.charset.StandardCharsets.UTF_8)).path("metric").asText() : p.getKey();
-                String k = identity + "\u0000" + part;
-                listed.add(k);
-                judge(o, identity, part, p.getValue(), have.get(k));
+                if (!g.list(identity, part)) listedEmpty.add(identity + "\u0000" + part);
+                judge(o, identity, part, p.getValue(), g.group(identity, part));
             }
             // deliveries and duplicates count the identity's input records over all its parts
             Set<String> records = new HashSet<>();
             long duplicates = 0;
-            for (Disp d : byIdentity.getOrDefault(identity, List.of())) {
+            for (Disp d : g.identity(identity)) {
                 records.add(d.topic() + "/" + d.partition() + "/" + d.offset());
                 if ("duplicate".equals(d.disposition()) && "identical-redelivery".equals(d.reason())) duplicates++;
             }
@@ -136,13 +133,12 @@ final class Expectations {
         for (String id : named) {
             JsonNode n = Json.read(id.getBytes(java.nio.charset.StandardCharsets.UTF_8));
             String part = "member:" + n.path("metric").asText();
-            String k = id + "\u0000" + part;
-            if (listed.contains(k)) continue;
-            listed.add(k);
+            if (g.listed(id, part) || listedEmpty.contains(id + "\u0000" + part)) continue;
+            if (!g.list(id, part)) listedEmpty.add(id + "\u0000" + part);
             o.dispositions++;
-            judge(o, id, part, member, have.get(k));
+            judge(o, id, part, member, g.group(id, part));
         }
-        for (String k : have.keySet()) if (!listed.contains(k)) o.problem("disposition " + k.replace('\u0000', ' ') + " " + judgements(have.get(k)) + ": not in the ground truth");
+        g.unlisted(l -> o.problem("disposition " + l.get(0).identity() + " " + l.get(0).part() + " " + judgements(l) + ": not in the ground truth"));
         // incident sets
         Map<String, Rev> sets = fold.live(RunFold.SETS);
         Iterator<Map.Entry<String, JsonNode>> incs = expected.path("incidents").fields();
@@ -198,6 +194,66 @@ final class Expectations {
             }
         }
         return o;
+    }
+
+    /** The dispositions of a fold sorted by identity and part (a stable sort: each group in the fold's order), with each identity's
+     *  first index; which (identity, part) groups the ground truth lists. */
+    static final class Groups {
+        private final List<Disp> all;
+        private final Map<String, Integer> first = new HashMap<>();
+        private final boolean[] listed;
+
+        Groups(Collection<Disp> dispositions) {
+            all = new ArrayList<>(dispositions);
+            all.sort(Comparator.comparing(Disp::identity).thenComparing(Disp::part));
+            for (int i = 0; i < all.size(); i++) first.putIfAbsent(all.get(i).identity(), i);
+            listed = new boolean[all.size()];
+        }
+
+        /** The identity's range [from, to). */
+        private int[] range(String identity) {
+            Integer f = first.get(identity);
+            if (f == null) return new int[] {0, 0};
+            int t = f;
+            while (t < all.size() && all.get(t).identity().equals(identity)) t++;
+            return new int[] {f, t};
+        }
+
+        private int[] range(String identity, String part) {
+            int[] r = range(identity);
+            int f = r[0];
+            while (f < r[1] && !all.get(f).part().equals(part)) f++;
+            int t = f;
+            while (t < r[1] && all.get(t).part().equals(part)) t++;
+            return new int[] {f, t};
+        }
+
+        /** Every disposition of {@code identity}, over all its parts. */
+        List<Disp> identity(String identity) { int[] r = range(identity); return all.subList(r[0], r[1]); }
+
+        /** The judgements of (identity, part) in the fold's order; null when it has none. */
+        List<Disp> group(String identity, String part) { int[] r = range(identity, part); return r[0] == r[1] ? null : all.subList(r[0], r[1]); }
+
+        /** Marks (identity, part) as listed by the ground truth; false when it has no disposition. */
+        boolean list(String identity, String part) {
+            int[] r = range(identity, part);
+            for (int i = r[0]; i < r[1]; i++) listed[i] = true;
+            return r[0] != r[1];
+        }
+
+        boolean listed(String identity, String part) { int[] r = range(identity, part); return r[0] != r[1] && listed[r[0]]; }
+
+        /** Each (identity, part) group the ground truth does not list, in identity and part order. */
+        void unlisted(java.util.function.Consumer<List<Disp>> f) {
+            int i = 0;
+            while (i < all.size()) {
+                Disp d = all.get(i);
+                int t = i;
+                while (t < all.size() && all.get(t).identity().equals(d.identity()) && all.get(t).part().equals(d.part())) t++;
+                if (!listed[i]) f.accept(all.subList(i, t));
+                i = t;
+            }
+        }
     }
 
     private static void judge(Outcome o, String identity, String part, JsonNode want, List<Disp> got) {
