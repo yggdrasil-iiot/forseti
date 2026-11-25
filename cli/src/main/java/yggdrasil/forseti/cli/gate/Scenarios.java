@@ -170,6 +170,9 @@ final class Scenarios {
         Comparison.Tally tally;
         Integrity.Measures measures;
         Expectations.Outcome outcome;
+        /** For a run whose engine job stopped on its own ({@link yggdrasil.forseti.cli.replay.ReplayEngine.Failed}): what its dumped
+         *  journals hold ({@link FailedRuns#afterFailure}), for the report only; the run stays crashed and no assertion reads it. */
+        ObjectNode afterFailure;
         final Map<Long, Set<String>> open = new TreeMap<>();
         final Map<String, Long> ms = new LinkedHashMap<>();
         final Map<String, Integer> visitKeys = new HashMap<>();

@@ -258,13 +258,20 @@ public final class Stage2Stations extends AbstractStreamOperator<Out> implements
   /** Stage 2 has no engine watermark (spec 412): watermarks are neither used nor forwarded. */
   @Override public void processWatermark(Watermark mark) {}
 
+  /** The heads of a station's two evidence queues announce one cut: the same {@code cutId} and the same {@code mergedCutIds} (one stage-1
+   *  writer writes both). Anything else is a stage-1 output stage 2 cannot apply (a cut announced on one journal only, then merged into the
+   *  next): the job fails here, before the cut is observed or any progress is written. */
+  static void requireAgreement(String station, Progress.Stage1 pw, Progress.Stage1 ps) {
+    if (pw.cutId() != ps.cutId() || !pw.mergedCutIds().equals(ps.mergedCutIds()))
+      throw new IllegalStateException(station + ": the evidence topics disagree on cut " + pw.cutId() + "/" + ps.cutId() + " merged " + pw.mergedCutIds() + "/" + ps.mergedCutIds());
+  }
+
   private void tryCuts(Station st) {
     while (true) {
       Segment wr = st.peek(Stage1.WORK_RECORDS), sm = st.peek(Stage1.SAMPLES);
       if (wr == null || sm == null) return;
       Progress.Stage1 pw = wr.progress(), ps = sm.progress();
-      if (pw.cutId() != ps.cutId() || !pw.mergedCutIds().equals(ps.mergedCutIds()))
-        throw new IllegalStateException(st.name + ": the evidence topics disagree on cut " + pw.cutId() + "/" + ps.cutId() + " merged " + pw.mergedCutIds() + "/" + ps.mergedCutIds());
+      requireAgreement(st.name, pw, ps);
       long cutId = pw.cutId();
       st.tracker.observe(Stage1.WORK_RECORDS, st.name, pw);
       st.tracker.observe(Stage1.SAMPLES, st.name, ps);

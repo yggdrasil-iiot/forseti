@@ -23,8 +23,9 @@ import yggdrasil.forseti.core.canon.Canonical;
  *  with the oracle, in order), {@code equal}, {@code rowsCompared} and {@code dispositionsReconciled} (what the comparison compared over
  *  every cut, read by {@code C-1}), {@code findings {check: {count,
  *  describe}}}, {@code rows {topic: records}}, {@code measures}, {@code ms}, the rule's {@code horizonMs, allowedLatenessMs,
- *  outOfOrdernessMs}, {@code heldBackWantMs} ({@link Injections#heldBackLateness}) and, for a horizon recording, {@code afterHorizon}
- *  (what {@code J-AFTER-HORIZON-CUTS} checks). */
+ *  outOfOrdernessMs}, {@code heldBackWantMs} ({@link Injections#heldBackLateness}), for a horizon recording, {@code afterHorizon}
+ *  (what {@code J-AFTER-HORIZON-CUTS} checks) and, for a run whose engine job stopped on its own, {@code afterFailure} (what its dumped
+ *  journals hold, {@link FailedRuns}; read by no assertion). */
 final class Summaries {
     /** The memo key of this gate run's own summaries. */
     static final String MEMO = "scenario-summaries";
@@ -102,6 +103,7 @@ final class Summaries {
             x.set("invalidAttempts", r.restart.path("invalidAttempts").deepCopy());
         }
         if (r.controlEvidence != null) o.set("controlStore", r.controlEvidence.deepCopy());
+        if (r.afterFailure != null) o.set("afterFailure", r.afterFailure.deepCopy());
         boolean complete = r.failure == null && r.tally != null && r.fold != null && r.outcome != null;
         if (r.synthetic && complete) {
             try { o.set("afterHorizon", afterHorizon(r)); }

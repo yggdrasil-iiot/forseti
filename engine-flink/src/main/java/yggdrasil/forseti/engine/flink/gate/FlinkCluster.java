@@ -386,10 +386,13 @@ final class FlinkCluster implements AutoCloseable {
   }
 
   /** Throws with the job's failure when either JVM ended or the job left RUNNING. */
+  /** The job stopped on its own: a JobManager or TaskManager process exited, or the job left RUNNING ({@link #requireAlive}). */
+  static final class Exited extends IllegalStateException { Exited(String m) { super(m); } }
+
   void requireAlive() {
-    if (!jm.alive() || !tm.alive()) throw new IllegalStateException(name + ": " + (jm.alive() ? "" : "JobManager exited ") + (tm.alive() ? "" : "TaskManager exited ") + failure());
+    if (!jm.alive() || !tm.alive()) throw new Exited(name + ": " + (jm.alive() ? "" : "JobManager exited ") + (tm.alive() ? "" : "TaskManager exited ") + failure());
     Status s = status();
-    if (s != null && !s.state().equals("RUNNING")) throw new IllegalStateException(name + ": job " + s.state() + " " + failure());
+    if (s != null && !s.state().equals("RUNNING")) throw new Exited(name + ": job " + s.state() + " " + failure());
   }
 
   /** Waits until the job and every one of its tasks report RUNNING (spec 418: the harness writes a generation's first batch only then). */

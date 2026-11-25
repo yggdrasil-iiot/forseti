@@ -194,6 +194,7 @@ final class FlinkRun {
       ArrayNode cutEpochs = Json.JSON.createArrayNode();
       // injection 24 (spec 681, 418): a recording with a starvation carries its observation deadline; null for any other recording
       StarvationObserver isolation = StarvationObserver.of(rec, rules.attribution().outOfOrdernessMs(), rules.attribution().expectedPeriodMs());
+      FlinkCluster.Exited stopped = null;
       try {
         for (int stage : List.of(2, 1)) {
           String name = "stage" + stage;
@@ -289,10 +290,16 @@ final class FlinkRun {
           checkpoints.set(c.name, c.checkpointStatistics());
         }
         for (FlinkCluster c : clusters) c.stop(STOP_TIMEOUT);
+      } catch (FlinkCluster.Exited x) {
+        stopped = x;
+        cuts = null;
+        firstBatchAfterMs = -1;
       } finally {
         for (FlinkCluster c : clusters) { c.close(); clusterRecords.set(c.name, c.record); }
         writer.close();
       }
+      // a job that stopped on its own: the run failed; what the jobs committed is dumped once both clusters are closed (no writer left)
+      if (stopped != null) throw failed(stopped, bootstrap, plan, g.generation(), writer, out, cutLog, cutEpochs, rules.rulesDigest());
 
       // (6) the dump, the cut log, the run record and the evidence
       Files.createDirectories(out);
@@ -380,6 +387,25 @@ final class FlinkRun {
       }
       return new ReplayEngine.Run(out, gen, declaration, controlEnd, ev, summary, new Handle(bootstrap, plan, names, g.generation(), req.recording(), writer.offsets()));
     }
+  }
+
+  /** The failure of a run whose job stopped on its own ({@link FlinkCluster.Exited}): its committed output dumped into {@code out}
+   *  ({@code read_committed}, up to each partition's last stable offset, as after a completed run), beside {@code cuts.json} of the cuts
+   *  that completed, {@code cut-epochs.json} and {@code offset-map.json}. A dump that fails is attached to the failure, which then
+   *  carries no files; the failure is never replaced. */
+  static ReplayEngine.Failed failed(FlinkCluster.Exited stopped, String bootstrap, List<ReplayTopics.Spec> plan, long generation, KafkaBatchWriter writer, Path out,
+                                    ObjectNode cutLog, ArrayNode cutEpochs, String rulesDigest) {
+    try {
+      Files.createDirectories(out);
+      try (KafkaJournalDump dump = new KafkaJournalDump(bootstrap, plan, generation)) { dump.dump(out, writer.offsets()); }
+      Json.write(out.resolve("cuts.json"), cutLog);
+      Json.write(out.resolve("cut-epochs.json"), Json.object().<ObjectNode>set("cuts", cutEpochs));
+      Json.write(out.resolve("offset-map.json"), writer.offsets().toJson());
+    } catch (Exception | Error e) {
+      stopped.addSuppressed(e);
+      return new ReplayEngine.Failed(stopped, null, generation, rulesDigest);
+    }
+    return new ReplayEngine.Failed(stopped, out, generation, rulesDigest);
   }
 
   /** The harness's job spec of one stage: no recording path (reviewer decision 3), the definitions, the routing manifest and the
