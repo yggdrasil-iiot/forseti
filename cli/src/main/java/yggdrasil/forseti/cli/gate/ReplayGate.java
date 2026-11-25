@@ -667,6 +667,11 @@ public final class ReplayGate {
                 if (r.failure == null || !r.failure.startsWith("crashed")) r.failure = "crashed: " + x;
                 stderr.println(name + ": " + x);
                 x.printStackTrace(stderr);
+                ReplayEngine.Failed stopped = FailedRuns.of(x);
+                if (stopped != null) {
+                    r.afterFailure = FailedRuns.afterFailure(stopped);
+                    stdout.println("    after the failure: " + FailedRuns.describe(r.afterFailure));
+                }
             }
             r.ms.put("total", (System.nanoTime() - t) / 1_000_000);
             runs.runs.put(name, r);
@@ -986,25 +991,9 @@ public final class ReplayGate {
                 else failed.add(id);
             }
             if (evaluated != null) {
-                for (String m : evaluated.missing) problems.add("missing: " + m);
-                for (JsonNode r : Injections.concat(evaluated.runs.values(), evaluated.generationRuns.values()))
-                    if (Summaries.failed(r)) problems.add(r.path("name").asText() + ": " + r.path("failure").asText());
-                    else if (!r.path("plannedCutIds").equals(r.path("comparedCutIds"))) problems.add(r.path("name").asText() + ": not every cut compared with the oracle");
-            }
-            if (control.name.equals(yggdrasil.forseti.cli.harness.Controls.NON_TRANSACTIONAL_OUTPUT) && evaluated != null) {
-                // theta (spec 700): the intended failure must come from duplicates, losses or revision gaps the gate found in a restart
-                // run (an integrity finding of that kind, or an oracle difference), never from any other failure of I-21 or I-22
-                ArrayNode tf = v.putArray("thetaFindings");
-                for (JsonNode r : evaluated.generationRuns.values()) {
-                    String n = r.path("name").asText();
-                    if (Restarts.parse(n) == null) continue;
-                    List<String> kinds = new ArrayList<>();
-                    for (String id : THETA_FINDINGS) if (r.path("findings").path(id).path("count").asLong() > 0) kinds.add(id + " " + r.path("findings").path(id).path("count").asLong());
-                    if (r.has("equal") && !r.path("equal").asBoolean(true)) kinds.add("oracle differences");
-                    tf.addObject().put("run", n).put("findings", String.join(", ", kinds));
-                    if (kinds.isEmpty()) problems.add(n + ": failed without a duplicate, loss or revision-gap finding (spec 700)");
-                }
-                if (tf.isEmpty()) problems.add("theta: no restart run evaluated");
+                List<String> p = new ArrayList<>();
+                runProblems(evaluated, control.name.equals(yggdrasil.forseti.cli.harness.Controls.NON_TRANSACTIONAL_OUTPUT) ? v.putArray("thetaFindings") : null, p);
+                p.forEach(problems::add);
             }
             if (!owned.isEmpty() && exit != 1) problems.add("exit " + exit + ", 1 expected");
             v.put("held", problems.isEmpty());
@@ -1012,5 +1001,27 @@ public final class ReplayGate {
         }
 
         private static void strings(ArrayNode a, List<String> l) { l.forEach(a::add); }
+    }
+
+    /** The part of a control verdict read from the run summaries ({@code evaluated}): every missing run, every failed run and every
+     *  run not compared with the oracle at every cut is a problem. For control theta ({@code thetaFindings} not null, spec 700) the
+     *  intended failure must come from duplicates, losses or revision gaps the gate found in each restart run (an integrity finding of
+     *  that kind, or an oracle difference), never from any other failure of I-21 or I-22; a run's {@code afterFailure} is never read. */
+    static void runProblems(Summaries evaluated, ArrayNode thetaFindings, List<String> problems) {
+        for (String m : evaluated.missing) problems.add("missing: " + m);
+        for (JsonNode r : Injections.concat(evaluated.runs.values(), evaluated.generationRuns.values()))
+            if (Summaries.failed(r)) problems.add(r.path("name").asText() + ": " + r.path("failure").asText());
+            else if (!r.path("plannedCutIds").equals(r.path("comparedCutIds"))) problems.add(r.path("name").asText() + ": not every cut compared with the oracle");
+        if (thetaFindings == null) return;
+        for (JsonNode r : evaluated.generationRuns.values()) {
+            String n = r.path("name").asText();
+            if (Restarts.parse(n) == null) continue;
+            List<String> kinds = new ArrayList<>();
+            for (String id : THETA_FINDINGS) if (r.path("findings").path(id).path("count").asLong() > 0) kinds.add(id + " " + r.path("findings").path(id).path("count").asLong());
+            if (r.has("equal") && !r.path("equal").asBoolean(true)) kinds.add("oracle differences");
+            thetaFindings.addObject().put("run", n).put("findings", String.join(", ", kinds));
+            if (kinds.isEmpty()) problems.add(n + ": failed without a duplicate, loss or revision-gap finding (spec 700)");
+        }
+        if (thetaFindings.isEmpty()) problems.add("theta: no restart run evaluated");
     }
 }

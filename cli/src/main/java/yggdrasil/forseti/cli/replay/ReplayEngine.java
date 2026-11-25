@@ -56,6 +56,21 @@ public interface ReplayEngine extends AutoCloseable {
      *  the run (the topics an event-time replay's base journals are dumped from again). */
     record Run(Path out, Registered generation, long declarationOffset, long controlEnd, JsonNode evidence, ObjectNode summary, Object handle) {}
 
+    /** A run whose engine job stopped on its own before the last cut (a job FAILED, a JobManager or TaskManager that exited): the run
+     *  failed, and {@code out} still holds what the jobs committed, dumped after they stopped ({@code journals/}, {@code quarantine/}),
+     *  with {@code cuts.json} of the cuts that completed; {@code generation} and {@code rulesDigest} are the generation the files belong
+     *  to. The gate records the run as crashed and reads the files for its report only ({@code afterFailure}), never for a verdict. */
+    final class Failed extends IllegalStateException {
+        public final transient Path out;
+        public final long generation;
+        public final String rulesDigest;
+        public Failed(RuntimeException cause, Path out, long generation, String rulesDigest) {
+            super(cause.getMessage(), cause);
+            this.out = out; this.generation = generation; this.rulesDigest = rulesDigest;
+        }
+        @Override public String toString() { return getCause().toString(); }
+    }
+
     /** The injection manifest of a restart run under {@link Run#out} (spec 685). */
     String INJECTIONS = "injections.json";
 
